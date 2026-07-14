@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "id": "zimspace-storage",
+    "name": "Zimspace Storage",
+    "description": "Storage control-plane source and provider infrastructure",
+    "sortOrder": 30
+  },
+  "apps": [
+    {
+      "id": "z-s_app",
+      "name": "Zimspace Storage App",
+      "description": "Sync-only local checkout for the Z-s control-plane source; runtime is not deployed.",
+      "port": null,
+      "type": "service",
+      "role": "main",
+      "workingDir": ".",
+      "startCommand": "not-configured",
+      "healthCheckUrl": null,
+      "actionsEnabled": false,
+      "includeInGitSync": true,
+      "isGateway": false,
+      "autoStartWith": [],
+      "sortOrder": 20
+    }
+  ]
+}
