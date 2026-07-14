@@ -1,0 +1,28 @@
+{
+  "name": "@zimspace/z-s-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Private Zimspace Storage control-plane foundation for governed app storage assignments.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:compile": "node scripts/clean-test.mjs && tsc -p tsconfig.test.json",
+    "test:focused": "npm run test:compile && node --test .test-dist/tests/control-plane.test.js .test-dist/tests/integrity.test.js",
+    "test": "npm run test:compile && node --test .test-dist/tests/*.test.js",
+    "lint": "node scripts/lint.mjs",
+    "validate:migration": "node scripts/validate-migration.mjs",
+    "validate:seed": "node scripts/validate-seed.mjs",
+    "validate:secrets": "node scripts/scan-secrets.mjs",
+    "validate:legacy-id": "node scripts/validate-no-legacy-delivery-id.mjs",
+    "validate": "npm run test:focused && npm test && npm run typecheck && npm run lint && npm run build && npm run validate:migration && npm run validate:seed && npm run validate:secrets && npm run validate:legacy-id"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3"
+  }
+}
