@@ -20,7 +20,7 @@
     "validate:seed": "node scripts/validate-seed.mjs",
     "validate:secrets": "node scripts/scan-secrets.mjs",
     "validate:legacy-id": "node scripts/validate-no-legacy-delivery-id.mjs",
-    "validate": "npm run test:focused && npm test && npm run typecheck && npm run lint && npm run build && npm run validate:migration && npm run validate:seed && npm run validate:secrets && npm run validate:legacy-id"
+    "validate": "npm run test:focused && npm test && npm run typecheck && npm run lint && npm run build && npm run validate:migration && npm run validate:seed && npm run validate:secrets && npm run validate:legacy-id && npm run local:readiness"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
