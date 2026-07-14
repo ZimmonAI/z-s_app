@@ -24,6 +24,16 @@ npm run validate
 
 `npm run validate` runs focused tests, the full test suite, TypeScript checks, repository linting, a production build, migration static validation, seed idempotency validation, secret-pattern enforcement, and legacy delivery-identifier enforcement.
 
+## Local checkout readiness
+
+From the official local checkout at `\apps\z-s_app`, run:
+
+```text
+npm run local:readiness
+```
+
+The preflight verifies only the expected folder name, Git metadata presence, Node.js version, package identity, and required repository artifacts. It does not read secrets, query a database, modify a provider, start a service, or open a browser. Live DB, storage, runtime, and browser actions remain separate governed local handoffs.
+
 ## Artifacts
 
 - Migration: `db/migrations/0001_z_s_control_plane_foundation.sql`
