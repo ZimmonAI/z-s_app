@@ -15,6 +15,7 @@
     "test:focused": "npm run test:compile && node --test .test-dist/tests/control-plane.test.js .test-dist/tests/integrity.test.js",
     "test": "npm run test:compile && node --test .test-dist/tests/*.test.js",
     "lint": "node scripts/lint.mjs",
+    "local:readiness": "node scripts/local-readiness.mjs",
     "validate:migration": "node scripts/validate-migration.mjs",
     "validate:seed": "node scripts/validate-seed.mjs",
     "validate:secrets": "node scripts/scan-secrets.mjs",
