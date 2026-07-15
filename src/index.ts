@@ -5,4 +5,6 @@ export * from './fingerprint.js';
 export * from './integrity.js';
 export * from './prefix-authorizer.js';
 export * from './profile-registry.js';
+export * from './runtime-contract.js';
+export * from './runtime-service.js';
 export * from './service.js';
