@@ -1,0 +1,31 @@
+name: 2B-03 runtime contract validation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/2b-03-runtime-contract-validation.yml'
+      - 'docs/02b-03-package-installable-contract-and-runtime-service-foundation.md'
+      - 'docs/runtime-contract.md'
+      - 'package.json'
+      - 'scripts/install-smoke.mjs'
+      - 'src/index.ts'
+      - 'src/runtime-contract.ts'
+      - 'src/runtime-service.ts'
+      - 'tests/runtime-service.test.ts'
+  push:
+    branches:
+      - agent/02b-03-runtime-contract-foundation
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --ignore-scripts
+      - run: npm run validate
