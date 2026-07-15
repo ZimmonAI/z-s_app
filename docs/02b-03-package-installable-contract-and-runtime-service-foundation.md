@@ -24,6 +24,7 @@ The existing package is extended rather than creating a second workspace package
 
 Only these paths may change in this coding handoff:
 
+- `.github/workflows/2b-03-runtime-contract-validation.yml`
 - `docs/02b-03-package-installable-contract-and-runtime-service-foundation.md`
 - `docs/runtime-contract.md`
 - `package.json`
@@ -34,6 +35,8 @@ Only these paths may change in this coding handoff:
 - `scripts/install-smoke.mjs`
 
 No migrations, seeds, provider adapters, environment files, deployment files, browser code, Video Maker source, Z-X source, database schema, or provider configuration may change.
+
+The validation workflow is limited to checkout, Node setup, dependency installation and `npm run validate`. It performs no service startup, database connection, provider call, deployment or browser action.
 
 ## Selected transport
 
