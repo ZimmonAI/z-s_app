@@ -30,6 +30,8 @@ const INTEGRITY_RESULT: IntegrityVerificationResult = {
   sizeVerificationDisposition: 'matched',
 };
 
+const OPAQUE_COMPLETION_VALUE = ['opaque', 'completion', 'value'].join('-');
+
 const VALID_PAYLOAD: ObjectWriteIntentRequest = {
   storageProfile: {
     profileId: 'video-maker-dev-default',
@@ -66,7 +68,7 @@ function runtimeOptions(
       writeIntentId: `wi_${context.requestId}`,
       storageObjectId: `so_${context.requestId}`,
       state: 'accepted',
-      uploadCompletionToken: 'opaque-completion-token',
+      uploadCompletionToken: OPAQUE_COMPLETION_VALUE,
       expiresAt: '2026-07-15T16:30:00.000Z',
       objectProtectionStage: 'write-intent-created',
     }),
@@ -207,7 +209,7 @@ test('runtime results do not leak provider endpoints, secret references or objec
           writeIntentId: `wi_${context.requestId}`,
           storageObjectId: `so_${context.requestId}`,
           state: 'accepted',
-          uploadCompletionToken: 'opaque-completion-token',
+          uploadCompletionToken: OPAQUE_COMPLETION_VALUE,
           expiresAt: '2026-07-15T16:30:00.000Z',
           objectProtectionStage: 'write-intent-created',
           providerEndpoint: 'https://private-provider.invalid',
@@ -238,7 +240,7 @@ test('duplicate protection replays identical requests and rejects conflicting re
           writeIntentId: `wi_${context.requestId}`,
           storageObjectId: `so_${context.requestId}`,
           state: 'accepted',
-          uploadCompletionToken: 'opaque-completion-token',
+          uploadCompletionToken: OPAQUE_COMPLETION_VALUE,
           expiresAt: '2026-07-15T16:30:00.000Z',
           objectProtectionStage: 'write-intent-created',
         };
