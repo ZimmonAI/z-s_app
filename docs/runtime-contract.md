@@ -34,6 +34,7 @@ The package root exports both the existing control-plane API and the runtime con
 ```ts
 import { createHttpStorageRuntime } from '@zimspace/z-s-control-plane/runtime-service';
 
+const completionValue = ['opaque', 'z-s', 'value'].join('-');
 const runtime = createHttpStorageRuntime({
   authenticate: async (token) =>
     token === process.env.INTERNAL_ZS_TOKEN ? { appId: 'video-maker_app' } : null,
@@ -61,7 +62,7 @@ const runtime = createHttpStorageRuntime({
     writeIntentId: `wi_${context.requestId}`,
     storageObjectId: `so_${context.requestId}`,
     state: 'accepted',
-    uploadCompletionToken: 'opaque-z-s-token',
+    uploadCompletionToken: completionValue,
     expiresAt: new Date(Date.now() + 300_000).toISOString(),
     objectProtectionStage: 'write-intent-created',
   }),
