@@ -1,0 +1,100 @@
+  }
+  return Object.freeze({
+    mediaType: metadata.mediaType,
+    mediaFamily: metadata.mediaFamily,
+    durationMs: metadata.video?.durationMs,
+    container: metadata.video?.container,
+    ...(metadata.video?.width === undefined ? {} : { width: metadata.video.width }),
+    ...(metadata.video?.height === undefined ? {} : { height: metadata.video.height }),
+    ...(metadata.video?.codec === undefined ? {} : { codec: metadata.video.codec }),
+  });
+}
+
+function safeFailureCode(error) {
+  if (error instanceof ProviderExecutionError) return error.code;
+  if (error instanceof Error && /^harness-[a-z0-9-]+$/.test(error.message)) return error.message;
+  return 'harness-execution-failed';
+}
+
+async function execute() {
+  const config = parseArguments(process.argv.slice(2));
+  validateConfiguration(config);
+  const definition = scenarioDefinition(config.scenario);
+  const targets = createTargets(config);
+  const registry = new HarnessRegistry(targets);
+  registry.expectedChecksum = checksum(definition.bytes);
+  registry.expectedByteLength = definition.bytes.byteLength;
+  const delegate = config.mode === 'fake'
+    ? new FakeProviderWriter()
+    : new LiveProviderWriter(liveCredentialResolver());
+  const writer = new FailureInjectingWriter(delegate, definition.failures);
+  const adapter = new DualProviderObjectIngestAdapter({
+    registry,
+    writer,
+    mediaVerifier: new BoundedMediaVerifier({ maximumByteLength: 4 * 1024 * 1024 }),
+    resolveTarget: { resolve: ({ providerRole }) => targets[providerRole] },
+    createTemporaryId: () => safeNonce(config.runId, config.scenario),
+  });
+
+  let completion;
+  let retryResult;
+  let scenarioError;
+  const cleanup = { requested: 0, deleted: 0, absenceVerified: 0 };
+  try {
+    const receipt = await adapter.ingest(inputFor(definition, targets));
+    completion = receipt.completionResult;
+    if (completion === undefined) throw new Error('harness-completion-missing');
+    if (definition.retry !== undefined) {
+      const coordinator = new TargetedProviderRetryCoordinator({
+        registry,
+        writer,
+        resolveTarget: { resolve: ({ providerRole }) => targets[providerRole] },
+      });
+      retryResult = await coordinator.retry({
+        storageObjectId: completion.storageObjectId,
+        providerRole: definition.retry,
+        expectedFailedCopyVersion: 2,
+        verifiedSource: { open: () => Readable.from([definition.bytes]) },
+      });
+      if (retryResult.storageState !== 'ready') throw new Error('harness-retry-not-ready');
+    }
+  } catch (error) {
+    scenarioError = error;
+  } finally {
+    for (const role of ROLES) {
+      cleanup.requested += 1;
+      const result = await delegate.cleanup({ target: targets[role] });
+      if (result.deleted) cleanup.deleted += 1;
+    }
+    for (const role of ROLES) {
+      if (await delegate.verifyAbsent(targets[role])) cleanup.absenceVerified += 1;
+    }
+  }
+
+  if (scenarioError !== undefined) throw scenarioError;
+  if (completion === undefined) throw new Error('harness-completion-missing');
+  if (cleanup.deleted !== 2 || cleanup.absenceVerified !== 2) {
+    throw new Error('harness-cleanup-failed');
+  }
+  const expectedRetry = definition.retry !== undefined;
+  if (expectedRetry !== (retryResult !== undefined)) throw new Error('harness-retry-disposition-invalid');
+  return Object.freeze({
+    schemaVersion: 1,
+    status: 'passed',
+    runId: config.runId,
+    scenario: config.scenario,
+    mode: config.mode,
+    storageState: completion.storageState,
+    roleStates: Object.freeze({
+      hot: completion.copies.hot.state,
+      canonical: completion.copies.canonical.state,
+    }),
+    checksumDisposition: config.scenario === 'checksum-mismatch' ? 'mismatch-rejected' : 'matched',
+    sizeDisposition: config.scenario === 'required-size-mismatch' ? 'mismatch-rejected' : 'matched',
+    media: safeMedia(completion.verifiedMedia),
+    retry: Object.freeze({
+      performed: retryResult !== undefined,
+      ...(definition.retry === undefined ? {} : { role: definition.retry }),
+      ...(retryResult === undefined ? {} : { finalStorageState: retryResult.storageState }),
+    }),
+    cleanup: Object.freeze(cleanup),
