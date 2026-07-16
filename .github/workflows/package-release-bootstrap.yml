@@ -137,7 +137,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
-          npm publish "${{ steps.artifact.outputs.tarball }}" \
+          npm publish "./${{ steps.artifact.outputs.tarball }}" \
             --registry="$REGISTRY_URL" \
             --access=restricted \
             > /tmp/z-s-npm-publish.log 2>&1
