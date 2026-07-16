@@ -1,0 +1,100 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
+import {
+  HeadObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
+import {
+  BoundedMediaVerifier,
+  DualProviderObjectIngestAdapter,
+  ProviderExecutionError,
+  S3CompatibleProviderObjectWriter,
+  TargetedProviderRetryCoordinator,
+} from '../dist/runtime-service.js';
+
+const ALLOWED_SCENARIOS = Object.freeze([
+  'png-both-success',
+  'mp4-both-success',
+  'hot-failure',
+  'canonical-failure',
+  'both-failure',
+  'checksum-mismatch',
+  'required-size-mismatch',
+  'hot-retry',
+  'canonical-retry',
+]);
+const APPROVED_ALIASES = Object.freeze({
+  profile: 'video-maker-dev-default',
+  hotProvider: 'r2_video_maker_dev_01',
+  hotBucket: 'video-maker-hot',
+  canonicalProvider: 'minio_zimspace_local_pc_01',
+  canonicalBucket: 'zs-dev-app-video-maker-canon',
+});
+const SAFE_RUN_ID = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/;
+const SAFE_NONCE = /^[a-f0-9]{12}$/;
+const ROLES = Object.freeze(['hot', 'canonical']);
+
+function u32(value) {
+  return Uint8Array.of(
+    (value >>> 24) & 0xff,
+    (value >>> 16) & 0xff,
+    (value >>> 8) & 0xff,
+    value & 0xff,
+  );
+}
+
+function ascii(value) {
+  return Uint8Array.from([...value].map((entry) => entry.charCodeAt(0)));
+}
+
+function join(...parts) {
+  const output = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.byteLength;
+  }
+  return output;
+}
+
+function png() {
+  const data = join(u32(2), u32(3), Uint8Array.of(8, 6, 0, 0, 0));
+  return join(
+    Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10),
+    u32(data.byteLength),
+    ascii('IHDR'),
+    data,
+    new Uint8Array(4),
+    u32(0),
+    ascii('IEND'),
+    new Uint8Array(4),
+  );
+}
+
+function box(type, payload) {
+  return join(u32(8 + payload.byteLength), ascii(type), payload);
+}
+
+function mp4() {
+  const ftyp = box('ftyp', join(ascii('isom'), u32(0), ascii('mp42')));
+  const mvhd = box('mvhd', join(
+    Uint8Array.of(0, 0, 0, 0),
+    u32(0),
+    u32(0),
+    u32(1_000),
+    u32(2_000),
+  ));
+  return join(ftyp, box('moov', mvhd));
+}
+
+function checksum(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function parseArguments(argv) {
+  const values = new Map();
+  for (let index = 0; index < argv.length; index += 1) {
+    const flag = argv[index];
+    if (!flag?.startsWith('--')) throw new Error('harness-argument-invalid');
+    const value = argv[index + 1];
