@@ -1,0 +1,251 @@
+name: Bootstrap exact immutable Z-s package release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/package-release-bootstrap.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+  statuses: write
+  issues: write
+
+env:
+  RELEASE_COMMIT: 98233f3bdd5b8708c65bc2e0f39faa0293bcad0c
+  RELEASE_TAG: z-s-control-plane-v0.2.1
+  PACKAGE_SPEC: '@zimmonai/z-s-control-plane@0.2.1'
+  REGISTRY_URL: https://npm.pkg.github.com
+
+jobs:
+  release:
+    if: github.repository == 'ZimmonAI/z-s_app'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@zimmonai'
+
+      - name: Gate exact reviewed source identity
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags --force
+          git cat-file -e "${RELEASE_COMMIT}^{commit}"
+          git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main
+          git show "$RELEASE_COMMIT:package.json" > /tmp/z-s-release-package.json
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFile } from 'node:fs/promises';
+          const manifest = JSON.parse(await readFile('/tmp/z-s-release-package.json', 'utf8'));
+          assert.equal(manifest.name, '@zimmonai/z-s-control-plane');
+          assert.equal(manifest.version, '0.2.1');
+          assert.equal(manifest.publishConfig?.registry, 'https://npm.pkg.github.com');
+          assert.equal(manifest.publishConfig?.access, 'restricted');
+          assert.deepEqual(Object.keys(manifest.exports ?? {}), [
+            '.',
+            './runtime-contract',
+            './runtime-service',
+            './runtime-storage-registry',
+          ]);
+          NODE
+
+      - name: Create or verify the exact release tag
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          remote_sha="$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}')"
+          if [ -z "$remote_sha" ]; then
+            git tag "$RELEASE_TAG" "$RELEASE_COMMIT"
+            git push origin "refs/tags/${RELEASE_TAG}"
+          else
+            git fetch origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}" --force
+            actual_sha="$(git rev-list -n 1 "$RELEASE_TAG")"
+            test "$actual_sha" = "$RELEASE_COMMIT"
+          fi
+          verified_sha="$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}')"
+          test "$verified_sha" = "$RELEASE_COMMIT"
+
+      - name: Check out the exact tagged source
+        run: |
+          set -euo pipefail
+          git checkout --detach "$RELEASE_COMMIT"
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+
+      - run: npm install --ignore-scripts
+
+      - name: Validate the complete reviewed package
+        run: npm run validate
+
+      - name: Pack and verify exact artifact
+        id: artifact
+        run: |
+          set -euo pipefail
+          mkdir -p package-output evidence
+          npm pack --json --silent --pack-destination package-output > package-output/pack.json
+          node scripts/verify-package-artifact.mjs \
+            --pack-json package-output/pack.json \
+            --tarball-root package-output \
+            --output evidence/package-artifact.json
+          echo "tarball=package-output/$(node -p \"require('./evidence/package-artifact.json').tarballFilename\")" >> "$GITHUB_OUTPUT"
+
+      - name: Determine immutable-version state
+        id: registry_before
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          set +e
+          output="$(npm view "$PACKAGE_SPEC" --registry="$REGISTRY_URL" --json 2>&1)"
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            printf '%s\n' "$output" > evidence/registry-before.json
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+            echo 'publication_mode=verify-existing-exact-artifact' >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$output" | grep -Eq 'E404|404 Not Found'; then
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+            echo 'publication_mode=publish-now' >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$output" >&2
+            echo 'Unable to determine whether the immutable version already exists.' >&2
+            exit 1
+          fi
+
+      - name: Publish the exact package once
+        if: steps.registry_before.outputs.exists == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish "${{ steps.artifact.outputs.tarball }}" --registry="$REGISTRY_URL" --access=restricted
+
+      - name: Verify registry identity and artifact integrity
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          npm view "$PACKAGE_SPEC" --registry="$REGISTRY_URL" --json > evidence/registry-after.json
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFile } from 'node:fs/promises';
+          const artifact = JSON.parse(await readFile('evidence/package-artifact.json', 'utf8'));
+          const registry = JSON.parse(await readFile('evidence/registry-after.json', 'utf8'));
+          assert.equal(registry.name, artifact.packageName);
+          assert.equal(registry.version, artifact.packageVersion);
+          assert.equal(registry.dist?.integrity, artifact.npmIntegrity);
+          assert.equal(registry.dist?.shasum, artifact.npmShasum);
+          NODE
+
+      - name: Clean exact-version post-publication install
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/install-smoke.mjs \
+            --spec "$PACKAGE_SPEC" \
+            --registry "$REGISTRY_URL" \
+            --evidence evidence/registry-install.json
+
+      - name: Write retained publication handback
+        env:
+          PUBLICATION_MODE: ${{ steps.registry_before.outputs.publication_mode }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          const artifact = JSON.parse(await readFile('evidence/package-artifact.json', 'utf8'));
+          const registry = JSON.parse(await readFile('evidence/registry-after.json', 'utf8'));
+          const install = JSON.parse(await readFile('evidence/registry-install.json', 'utf8'));
+          const workflowRun = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+          const report = {
+            status: 'completed',
+            source_repository: 'ZimmonAI/z-s_app',
+            source_merge_commit: process.env.RELEASE_COMMIT,
+            release_tag: process.env.RELEASE_TAG,
+            release_tag_commit: process.env.RELEASE_COMMIT,
+            package_name: artifact.packageName,
+            package_version: artifact.packageVersion,
+            contract_version: artifact.contractVersion,
+            package_owner_namespace: artifact.packageOwnerNamespace,
+            registry_or_artifact_authority: process.env.REGISTRY_URL,
+            package_url: artifact.packageUrl,
+            workflow_run: workflowRun,
+            publication_mode: process.env.PUBLICATION_MODE,
+            artifact_filename: artifact.tarballFilename,
+            exact_file_count: artifact.files.length,
+            tarball_sha256: artifact.tarballSha256,
+            package_manager_integrity: registry.dist.integrity,
+            npm_shasum: registry.dist.shasum,
+            registry_clean_install: 'passed',
+            installed_package_name: install.packageName,
+            installed_package_version: install.packageVersion,
+            required_exports_verified: install.exports,
+            package_access_handoff_status: 'planned-ready',
+            video_maker_verification_status: 'blocked-pending-2B-03B',
+            secret_value_recorded: false,
+          };
+          await writeFile('evidence/02b-03a-final-publication-report.json', `${JSON.stringify(report, null, 2)}\n`);
+          await writeFile(
+            'evidence/02b-03a-final-publication-report.md',
+            `# 2B-03A final publication report\n\n\`\`\`yaml\n${Object.entries(report).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join('\n')}\n\`\`\`\n`,
+          );
+          await writeFile(
+            'evidence/issue-4-publication-comment.md',
+            `## 2B-03A exact-tag publication completed\n\n` +
+            `- source merge: \`${report.source_merge_commit}\`\n` +
+            `- exact tag: \`${report.release_tag}\` → \`${report.release_tag_commit}\`\n` +
+            `- package: \`${report.package_name}@${report.package_version}\`\n` +
+            `- contract: \`${report.contract_version}\`\n` +
+            `- workflow: ${report.workflow_run}\n` +
+            `- tarball SHA-256: \`${report.tarball_sha256}\`\n` +
+            `- registry integrity: \`${report.package_manager_integrity}\`\n` +
+            `- npm shasum: \`${report.npm_shasum}\`\n` +
+            `- clean exact-version registry install: passed\n` +
+            `- all four exports verified, including \`runtime-storage-registry\`\n\n` +
+            `2B-03A publication is complete. 2B-03B package-settings evidence and the independent Video Maker 11-03B acquisition proof remain required before this issue can close.\n`,
+          );
+          NODE
+          if grep -R -E 'git\+ssh|ssh://|_authToken|npm_[A-Za-z0-9]{20,}|https?://[^/@[:space:]]+:[^/@[:space:]]+@' evidence; then
+            echo 'Prohibited credential-shaped value found in retained evidence.'
+            exit 1
+          fi
+
+      - name: Retain immutable publication evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: z-s-control-plane-0.2.1-final-publication-evidence
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish successful status and issue handback
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/statuses/${RELEASE_COMMIT}" \
+            -f state='success' \
+            -f context='2B-03A immutable package publication' \
+            -f description='Exact tag, registry publication, integrity and clean install passed' \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh issue comment 4 --repo "$GITHUB_REPOSITORY" --body-file evidence/issue-4-publication-comment.md
+
+      - name: Publish failed status
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/statuses/${RELEASE_COMMIT}" \
+            -f state='failure' \
+            -f context='2B-03A immutable package publication' \
+            -f description='Exact-tag publication bootstrap failed; inspect the workflow run' \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" || true
