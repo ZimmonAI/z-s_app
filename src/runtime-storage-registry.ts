@@ -2,15 +2,156 @@ import type { SafeDiagnostic } from './runtime-contract.js';
 import { PostgresRuntimeStorageRegistryObjectCore } from './runtime-storage-registry-object.js';
 import {
   RuntimeStorageRegistryError,
+  type DurableDuplicateResultCodec,
   type ProviderAttemptInput,
   type ProviderAttemptRow,
   type ReconciliationIssueInput,
   type ReconciliationIssueRow,
   type SafeStorageEventInput,
 } from './runtime-storage-registry-types.js';
-import { assertSafeJsonObject } from './runtime-storage-registry-support.js';
+import {
+  asIso,
+  asNumber,
+  assertSafeJsonObject,
+  requireUuid,
+} from './runtime-storage-registry-support.js';
 
 export * from './runtime-storage-registry-types.js';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function createRuntimeStorageDuplicateResultCodec(): DurableDuplicateResultCodec {
+  return Object.freeze({
+    async encode(value, _client) {
+      if (!isRecord(value)) {
+        throw new RuntimeStorageRegistryError('internal', 'invalid-idempotency-result', 500);
+      }
+      const writeIntentId = requireUuid(
+        typeof value.writeIntentId === 'string' ? value.writeIntentId : '',
+        'duplicate-result-write-intent',
+      );
+      const storageObjectId = requireUuid(
+        typeof value.storageObjectId === 'string' ? value.storageObjectId : '',
+        'duplicate-result-storage-object',
+      );
+      let resultKind: string;
+      if (value.state === 'accepted') resultKind = 'object-write-intent';
+      else if (value.state === 'recorded') resultKind = 'object-upload-completion';
+      else if (value.state === 'cancelled') resultKind = 'object-write-intent-cancel';
+      else {
+        throw new RuntimeStorageRegistryError('internal', 'unsupported-idempotency-result', 500);
+      }
+      return Object.freeze({
+        resultKind,
+        resultReferenceId: writeIntentId,
+        storageObjectId,
+      });
+    },
+
+    async decode(reference, client) {
+      const writeIntentId = requireUuid(
+        reference.resultReferenceId,
+        'duplicate-result-reference',
+      );
+      const storageObjectId = requireUuid(
+        reference.storageObjectId ?? '',
+        'duplicate-result-storage-object',
+      );
+      if (reference.resultKind === 'object-write-intent') {
+        const result = await client.query<{
+          object_write_intent_id: string;
+          storage_object_id: string;
+          expires_at: Date | string;
+        }>(
+          `SELECT intent.object_write_intent_id, intent.storage_object_id, intent.expires_at
+             FROM public.object_write_intents AS intent
+            WHERE intent.object_write_intent_id = $1
+              AND intent.storage_object_id = $2`,
+          [writeIntentId, storageObjectId],
+        );
+        const row = result.rows[0];
+        if (row === undefined) {
+          throw new RuntimeStorageRegistryError('internal', 'idempotency-result-missing', 500);
+        }
+        return Object.freeze({
+          writeIntentId: row.object_write_intent_id,
+          storageObjectId: row.storage_object_id,
+          state: 'accepted' as const,
+          expiresAt: asIso(row.expires_at),
+          objectProtectionStage: 'write-intent-created' as const,
+        });
+      }
+      if (reference.resultKind === 'object-upload-completion') {
+        const result = await client.query<{
+          object_write_intent_id: string;
+          storage_object_id: string;
+          state: string;
+          expected_checksum_sha256: string;
+          expected_byte_length: string | number;
+          object_protection_stage: string;
+        }>(
+          `SELECT intent.object_write_intent_id, intent.storage_object_id, intent.state,
+                  object_record.expected_checksum_sha256,
+                  object_record.expected_byte_length,
+                  object_record.object_protection_stage
+             FROM public.object_write_intents AS intent
+             JOIN public.storage_objects AS object_record
+               ON object_record.storage_object_id = intent.storage_object_id
+            WHERE intent.object_write_intent_id = $1
+              AND intent.storage_object_id = $2`,
+          [writeIntentId, storageObjectId],
+        );
+        const row = result.rows[0];
+        if (
+          row === undefined ||
+          row.state !== 'completed' ||
+          row.object_protection_stage !== 'upload-completion-recorded'
+        ) {
+          throw new RuntimeStorageRegistryError('internal', 'idempotency-result-missing', 500);
+        }
+        return Object.freeze({
+          storageObjectId: row.storage_object_id,
+          writeIntentId: row.object_write_intent_id,
+          state: 'recorded' as const,
+          checksumSha256: row.expected_checksum_sha256,
+          byteLength: asNumber(row.expected_byte_length),
+          integrityVerification: Object.freeze({
+            verified: true as const,
+            checksumVerified: true as const,
+            sizeVerified: true,
+            sizeVerificationDisposition: 'matched' as const,
+          }),
+          objectProtectionStage: 'upload-completion-recorded' as const,
+        });
+      }
+      if (reference.resultKind === 'object-write-intent-cancel') {
+        const result = await client.query<{
+          object_write_intent_id: string;
+          storage_object_id: string;
+          state: string;
+        }>(
+          `SELECT object_write_intent_id, storage_object_id, state
+             FROM public.object_write_intents
+            WHERE object_write_intent_id = $1
+              AND storage_object_id = $2`,
+          [writeIntentId, storageObjectId],
+        );
+        const row = result.rows[0];
+        if (row === undefined || row.state !== 'cancelled') {
+          throw new RuntimeStorageRegistryError('internal', 'idempotency-result-missing', 500);
+        }
+        return Object.freeze({
+          storageObjectId: row.storage_object_id,
+          writeIntentId: row.object_write_intent_id,
+          state: 'cancelled' as const,
+        });
+      }
+      throw new RuntimeStorageRegistryError('internal', 'unsupported-idempotency-result-kind', 500);
+    },
+  });
+}
 
 export class PostgresRuntimeStorageRegistry extends PostgresRuntimeStorageRegistryObjectCore {
   async appendProviderAttempt(input: ProviderAttemptInput): Promise<string> {
