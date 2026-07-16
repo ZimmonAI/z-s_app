@@ -92,7 +92,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p package-output evidence
-          npm pack --json --silent --pack-destination package-output > package-output/pack.json
+          npm pack --json --silent --ignore-scripts --pack-destination package-output > package-output/pack.json
           node scripts/verify-package-artifact.mjs \
             --pack-json package-output/pack.json \
             --tarball-root package-output \
@@ -186,7 +186,12 @@ jobs:
             registry_clean_install: 'passed',
             installed_package_name: install.packageName,
             installed_package_version: install.packageVersion,
-            required_exports_verified: install.exports,
+            required_exports_verified: {
+              root: install.rootExportVerified,
+              runtime_contract: install.runtimeContractExportVerified,
+              runtime_service: install.runtimeServiceExportVerified,
+              runtime_storage_registry: install.runtimeStorageRegistryExportVerified,
+            },
             package_access_handoff_status: 'planned-ready',
             video_maker_verification_status: 'blocked-pending-2B-03B',
             secret_value_recorded: false,
