@@ -1,6 +1,6 @@
 {
   "name": "@zimmonai/z-s-control-plane",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "description": "Private Zimspace Storage control-plane and versioned runtime contract foundation.",
   "repository": {
@@ -46,7 +46,7 @@
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:compile": "node scripts/clean-test.mjs && tsc -p tsconfig.test.json",
-    "test:focused": "npm run test:compile && node --test .test-dist/tests/control-plane.test.js .test-dist/tests/integrity.test.js .test-dist/tests/runtime-service.test.js",
+    "test:focused": "npm run test:compile && node --test .test-dist/tests/control-plane.test.js .test-dist/tests/integrity.test.js .test-dist/tests/runtime-service.test.js .test-dist/tests/runtime-ingest.test.js",
     "test:registry": "npm run test:compile && node --test .test-dist/tests/runtime-storage-registry.integration.test.js",
     "test": "npm run test:compile && node --test .test-dist/tests/*.test.js",
     "lint": "node scripts/lint.mjs",
