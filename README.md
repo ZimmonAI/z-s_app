@@ -2,30 +2,27 @@
 
 This private repository is the canonical implementation home for `z-s_app`, the main application of the Z-s storage brand.
 
-The package provides a server-side, provider-neutral control-plane and bounded generic-ingest foundation for:
+The package provides the server-side control-plane, durable registry, and bounded object-ingest runtime for:
 
-- managed app and environment registration;
-- versioned storage profiles;
-- provider and bucket bindings without credential values;
-- exact prefix classes;
-- dated capability evidence;
-- fail-closed safe profile resolution;
-- deterministic secret-safe fingerprints;
-- capability-aware write integrity verification;
-- the Z-s-owned runtime storage registry and durable duplicate-protection boundary;
-- scoped `object-write-intent` creation;
-- server-streamed single-object upload completion; and
-- cancellation of an uncompleted write intent.
+- versioned storage profiles and exact prefix authority;
+- provider and bucket bindings without exposing credential values;
+- capability-aware integrity verification;
+- durable `object-write-intent` creation and duplicate protection;
+- single-read bounded staging of raw upload bodies;
+- structural PNG and MP4 verification without shelling out to external media tools;
+- independent concurrent hot and canonical provider writes;
+- provider-attempt, provider-copy, storage-object, and intent state persistence; and
+- targeted retry of only a failed provider role.
 
-It does not contain provider credentials, provider endpoints, reusable provider upload authority, caller-selected object keys, browser code, live database state, real R2 or MinIO writes, or deployment configuration.
+It does not contain credential values, reusable upload authority, caller-selected provider destinations, browser code, live database state, deployment configuration, or consumer business logic.
 
 ## Source package identity
 
-The current source identity is `@zimmonai/z-s-control-plane@0.3.0`. Contract `1.0` remains unchanged, Node.js `>=22` remains required, and the existing root, `runtime-contract`, `runtime-service`, and `runtime-storage-registry` package entry points are preserved.
+The current source identity is `@zimmonai/z-s-control-plane@0.4.0`. Contract `1.0` and Node.js `>=22` remain unchanged. The existing root, `runtime-contract`, `runtime-service`, and `runtime-storage-registry` package entry points are preserved; no additional package subpath is introduced.
 
-Version `0.3.0` is a backward-compatible runtime addition within contract `1.x`. This source task does not publish `0.3.0`, create a release tag, change package visibility, or grant consumer access. The immutable `0.2.1` publication lane remains separate and must not be overwritten.
+Version `0.4.0` is a source implementation target only. This task does not publish the package, create a release tag, change package visibility, or grant consumer access.
 
-The package includes the two reviewed 2B-04 migration artifacts as source-controlled schema and rollback inputs. Packaging them does not apply a live database migration or assert a live schema change.
+The only direct runtime dependency is the exact registry package `@aws-sdk/client-s3@3.1088.0`. `package-lock.json` is the canonical npm lock and uses lockfile version 3.
 
 ## Runtime HTTP surface
 
@@ -39,64 +36,98 @@ PUT    /v1/object-write-intents/{objectWriteIntentId}/content
 DELETE /v1/object-write-intents/{objectWriteIntentId}
 ```
 
-`POST /v1/object-write-intents` accepts generic object metadata, resolves the exact active storage profile and server-only write authority, creates one durable object identity and write intent with two pending provider-copy rows, and returns one short-lived upload-completion token.
+`POST /v1/object-write-intents` creates one durable object identity, one write intent, and exactly two pending provider-copy rows under resolved server-side authority.
 
-`PUT /v1/object-write-intents/{objectWriteIntentId}/content` accepts one raw bounded byte stream. It validates caller and token binding, exact MIME type, `Content-Length`, declared SHA-256, computed byte count, and computed SHA-256 before recording generic upload completion. It leaves both provider-copy rows pending and does not claim provider verification.
+`PUT /v1/object-write-intents/{objectWriteIntentId}/content`, when composed with `DualProviderObjectIngestAdapter`, performs this bounded sequence:
 
-`DELETE /v1/object-write-intents/{objectWriteIntentId}` cancels an accepted or uploading intent without deleting the durable storage-object identity or registry rows.
+1. validates the existing caller, token, MIME, declared size, and declared SHA-256 boundaries;
+2. reserves one write attempt for each provider role;
+3. consumes the incoming body exactly once into a restrictive temporary file while computing byte length and SHA-256;
+4. verifies PNG or MP4 structure before provider writes;
+5. opens independent streams from the staged file and writes hot and canonical concurrently;
+6. verifies each write using provider `HEAD` facts and the existing capability-aware integrity policy;
+7. persists both attempt outcomes, both copy states, object state/stage, safe media facts, and terminal intent state; and
+8. removes the temporary file on every exit path.
 
-The upload-completion token is sensitive. It must not be persisted, logged, emitted in diagnostics, or copied into test snapshots.
+A durable duplicate replay returns the recorded result without reading the request body, resolving provider credentials, or invoking providers again.
+
+`DELETE /v1/object-write-intents/{objectWriteIntentId}` retains its existing cancellation semantics.
+
+## Provider and media boundaries
+
+`S3CompatibleProviderObjectWriter` uses the official AWS SDK S3 client with injected credential resolution. Provider endpoint, credential, bucket, and locator authority stays server-side. Public results expose only stable copy state and retryability.
+
+The writer uses `PutObject`, `HeadObject`, and exact-target `DeleteObject` cleanup. A conditional create prevents overwriting an existing target. Integrity verification requires the approved SHA-256 metadata value and applies the resolved size capability policy.
+
+`BoundedMediaVerifier` supports:
+
+- PNG signature, first `IHDR`, positive dimensions, pixel limits, bounded chunk traversal, and exact terminal `IEND`; and
+- MP4 `ftyp`, bounded box traversal, `moov`/`mvhd` timing, positive duration, and optional deterministic video dimensions and codec facts.
+
+Unsupported, malformed, truncated, MIME-mismatched, and over-limit inputs fail before provider writes.
 
 ## State truth
 
-| Condition | Intent state | Storage object state/stage | Provider-copy states |
-|---|---|---|---|
-| intent created | `accepted` | `reserved` / `write-intent-created` | hot `pending`, canonical `pending` |
-| stream accepted | `uploading` | `reserved` / `write-intent-created` | both `pending` |
-| generic ingest recorded | `completed` | `reserved` / `upload-completion-recorded` | both `pending` |
-| expired before completion | `expired` | durable and not active | both `pending` |
-| cancelled before completion | `cancelled` | durable and not active | both `pending` |
-| stream or validation failure | `failed` after bounded cleanup | durable and not active | both `pending` |
+| Provider outcome | Public storage state | Registry state | Object protection stage | Hot copy | Canonical copy |
+|---|---|---|---|---|---|
+| both verified | `ready` | `active` | `canonical-and-hot-verified` | `verified` | `verified` |
+| hot failed, canonical verified | `degraded` | `degraded` | `canonical-verified-hot-repair-required` | `failed` | `verified` |
+| hot verified, canonical failed | `degraded` | `degraded` | `hot-verified-canonical-repair-required` | `verified` | `failed` |
+| both failed | `unavailable` | `reserved` | `provider-write-failed` | `failed` | `failed` |
 
-The 2B-05 implementation does not set `storage_objects.registry_state = active`, does not set `object_protection_stage = protected`, and does not set either provider copy to `verified`.
+Provider failure is contained as durable storage truth rather than leaking raw SDK errors. A targeted retry creates a new attempt for only the selected failed role and never rewrites or deletes the verified peer.
 
 ## Repository validation
 
 ```text
-npm install --ignore-scripts
+npm ci --ignore-scripts --no-audit --no-fund
+npm run test:focused
+npm run test:registry
+npm test
+npm run typecheck
+npm run lint
+npm run build
+npm run pack:check
+npm run package:verify
 npm run validate
 ```
 
-`npm run validate` runs focused tests, the full test suite, TypeScript checks, repository linting, a production build, clean local package installation, migration static validation, seed idempotency validation, secret-pattern enforcement, legacy delivery-identifier enforcement, and local readiness.
+The dedicated GitHub Actions workflow runs Node.js 22 with a disposable PostgreSQL 17 service, verifies that migrations and seeds are unchanged, and executes the complete validation chain with deterministic provider doubles. It does not read provider credentials or connect to governed provider infrastructure.
 
-The focused 2B-05 workflow runs on Node.js 22 with a disposable PostgreSQL 17 service and verifies the ingest tests, registry integration tests, migration no-diff gate, and complete validation chain. It does not connect to the governed live `z-s` database.
+## Governed local provider handoff
 
-To inspect the exact package file list and integrity metadata generated by `npm pack --json`:
+`scripts/verify-2b-06-providers.mjs` is a separate, explicit local handoff for approved R2 and MinIO-compatible targets. It is never executed by CI. It requires both `--confirm-provider-actions` and `ZS_2B06_PROVIDER_ACTIONS_APPROVED=true`, generates exact locators under approved prefixes, never lists a bucket, and deletes plus `HEAD`-verifies absence of every exact target before exit.
 
-```text
-npm run build
-npm pack --json --silent --pack-destination package-output > package-output/pack.json
-node scripts/verify-package-artifact.mjs --pack-json package-output/pack.json --tarball-root package-output
-```
-
-## Local checkout readiness
-
-From the official local checkout at `\apps\z-s_app`, run:
+Supported scenarios are exactly:
 
 ```text
-npm run local:readiness
+both-success-png
+both-success-mp4
+hot-write-failure
+canonical-write-failure
+both-write-failure
+checksum-mismatch
+required-size-mismatch
+hot-targeted-retry
+canonical-targeted-retry
 ```
 
-The preflight verifies only the expected folder name, Git metadata presence, Node.js version, package identity, and required repository artifacts. It does not read an environment file, query a database, modify a provider, start a service, deploy code, or open a browser.
+For each role (`HOT` and `CANONICAL`), provide these environment variables only in the approved local shell: `ZS_2B06_<ROLE>_PROVIDER_ALIAS`, `ZS_2B06_<ROLE>_BUCKET_ALIAS`, `ZS_2B06_<ROLE>_BUCKET`, `ZS_2B06_<ROLE>_PREFIX_PATTERN`, `ZS_2B06_<ROLE>_ENDPOINT`, `ZS_2B06_<ROLE>_REGION`, `ZS_2B06_<ROLE>_FORCE_PATH_STYLE`, `ZS_2B06_<ROLE>_ACCESS_KEY_ID`, `ZS_2B06_<ROLE>_SECRET_ACCESS_KEY`, and optional `ZS_2B06_<ROLE>_SESSION_TOKEN`. Prefix patterns must end in `*` and must already be approved for disposable 2B-06 objects.
 
-## Artifacts
+After source review and separate provider-action approval, run one scenario at a time:
 
-- Control-plane migration: `db/migrations/0001_z_s_control_plane_foundation.sql`
-- Runtime-registry migration: `db/migrations/0002_z_s_runtime_registry.sql`
-- Isolated zero-row rollback: `db/migrations/0002_z_s_runtime_registry.down.sql`
-- Development seed: `db/seeds/0001_video_maker_dev_profiles.sql`
-- Runtime contract: `docs/runtime-contract.md`
-- DB apply handoff notes: `docs/db-handoff.md`
-- Safe example configuration: `config/example.env`
+```text
+ZS_2B06_PROVIDER_ACTIONS_APPROVED=true \
+  npm run verify:2b06:providers -- \
+  --run-id <approved-safe-run-id> \
+  --scenario <allowlisted-scenario> \
+  --confirm-provider-actions
+```
 
-Real dual-provider writes, provider verification, deployment, browser behavior, Video Maker business logic, and Z-X execution remain outside this source task.
+The emitted JSON contains only safe aliases, state and retry outcomes, media facts, write-attempt counts, and cleanup counts. It excludes endpoints, actual bucket names, internal locators, object keys, credential values, credential-reference identifiers, and raw provider responses.
+
+## Safety boundary
+
+Public responses and safe diagnostics exclude provider endpoints, bucket names, internal locators, object keys, credential values, credential-reference identifiers, connection strings, bearer tokens, upload-completion tokens, raw provider responses, and consumer business payloads.
+
+Real deployment, package publication, provider provisioning, schema changes, read delivery, technical deletion, broad reconciliation scheduling, browser behavior, and consumer adoption remain separate governed work.

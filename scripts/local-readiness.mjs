@@ -8,9 +8,14 @@ const requiredFiles = [
   'package.json',
   'src/index.ts',
   'src/runtime-ingest.ts',
+  'src/runtime-dual-provider.ts',
+  'src/runtime-media-verification.ts',
+  'src/runtime-s3-provider.ts',
   'src/runtime-upload-token.ts',
   'tests/runtime-ingest.test.ts',
-  '.github/workflows/2b-05-write-intent-ingest-validation.yml',
+  'tests/runtime-dual-provider.test.ts',
+  'tests/runtime-media-verification.test.ts',
+  '.github/workflows/2b-06-dual-provider-media-validation.yml',
   'db/migrations/0001_z_s_control_plane_foundation.sql',
   'db/migrations/0002_z_s_runtime_registry.sql',
   'db/migrations/0002_z_s_runtime_registry.down.sql',
@@ -37,7 +42,7 @@ const nodeMajor = Number.parseInt(process.versions.node.split('.')[0] ?? '0', 10
 const folderName = path.basename(process.cwd());
 const gitMetadataPresent = await exists('.git');
 const packageIdentityMatches =
-  packageJson.name === '@zimmonai/z-s-control-plane' && packageJson.version === '0.3.0';
+  packageJson.name === '@zimmonai/z-s-control-plane' && packageJson.version === '0.4.0';
 const nodeSupported = nodeMajor >= 22;
 const folderNameMatches = folderName === expectedFolderName;
 const requiredArtifactsPresent = Object.values(artifactChecks).every(Boolean);

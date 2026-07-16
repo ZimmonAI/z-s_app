@@ -21,6 +21,8 @@ import type {
   CreateObjectWriteIntentInput,
   ObjectWriteIntentExecutionContext,
   ObjectWriteIntentState,
+  ProviderCopyExecutionContext,
+  ProviderRole,
 } from './runtime-storage-registry-types.js';
 import type {
   UploadCompletionTokenClaims,
@@ -48,12 +50,16 @@ export interface ObjectIngestInput {
   declaredChecksumSha256: string;
   body: AsyncIterable<Uint8Array>;
   internalLocators: Readonly<{ hot: string; canonical: string }>;
+  intentRowVersion?: number;
+  objectRowVersion?: number;
+  providerCopies?: Readonly<Record<ProviderRole, Readonly<ProviderCopyExecutionContext>>>;
 }
 
 export interface ObjectIngestReceipt {
   state: 'accepted';
   checksumSha256: string;
   byteLength: number;
+  completionResult?: Readonly<ObjectUploadCompletionOperationResult>;
 }
 
 export interface ObjectIngestAdapter {
@@ -498,6 +504,13 @@ export function createObjectIngestRuntime(options: ObjectIngestRuntimeOptions): 
             declaredChecksumSha256: uploading.expectedChecksumSha256,
             body: tracked.body,
             internalLocators: uploading.internalLocators,
+            intentRowVersion: uploading.rowVersion,
+            ...(uploading.objectRowVersion === undefined
+              ? {}
+              : { objectRowVersion: uploading.objectRowVersion }),
+            ...(uploading.providerCopies === undefined
+              ? {}
+              : { providerCopies: uploading.providerCopies }),
           }),
         );
         validateReceipt(receipt);
@@ -524,6 +537,24 @@ export function createObjectIngestRuntime(options: ObjectIngestRuntimeOptions): 
           throw new ObjectIngestRuntimeError('internal', 'invalid-ingest-receipt', 500, {
             failObjectWriteIntent: true,
           });
+        }
+        if (receipt.completionResult !== undefined) {
+          const result = receipt.completionResult;
+          if (
+            result.storageObjectId !== uploading.storageObjectId ||
+            result.writeIntentId !== uploading.objectWriteIntentId ||
+            result.state !== 'recorded' ||
+            result.checksumSha256 !== observed.checksumSha256 ||
+            result.byteLength !== observed.byteLength ||
+            result.storageState === undefined ||
+            result.verifiedMedia === undefined ||
+            result.copies === undefined
+          ) {
+            throw new ObjectIngestRuntimeError('internal', 'invalid-dual-provider-result', 500, {
+              failObjectWriteIntent: true,
+            });
+          }
+          return result;
         }
         const completed = await options.registry.completeObjectUpload({
           objectWriteIntentId: uploading.objectWriteIntentId,
