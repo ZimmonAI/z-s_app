@@ -144,6 +144,65 @@ jobs:
       - name: Validate secret and legacy identifier boundaries
         run: npm run validate:secrets && npm run validate:legacy-id
 
+      - name: Run deterministic fake-provider harness matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          common=(
+            --mode fake
+            --run-id ci-${{ github.run_id }}
+            --profile-alias video-maker-dev-default
+            --hot-provider-alias r2_video_maker_dev_01
+            --hot-bucket-alias video-maker-hot
+            --canonical-provider-alias minio_zimspace_local_pc_01
+            --canonical-bucket-alias zs-dev-app-video-maker-canon
+            --prefix-pattern 'video-maker/user-resources/*'
+          )
+          scenarios=(
+            png-both-success
+            mp4-both-success
+            hot-failure
+            canonical-failure
+            both-failure
+            checksum-mismatch
+            required-size-mismatch
+            hot-retry
+            canonical-retry
+          )
+          for scenario in "${scenarios[@]}"; do
+            node scripts/verify-2b-06-providers.mjs "${common[@]}" --scenario "$scenario"
+          done
+          if node scripts/verify-2b-06-providers.mjs "${common[@]}" --scenario refused; then
+            echo "refused scenario unexpectedly succeeded" >&2
+            exit 1
+          fi
+          if node scripts/verify-2b-06-providers.mjs \
+            --mode fake \
+            --scenario png-both-success \
+            --run-id ../unsafe \
+            --profile-alias video-maker-dev-default \
+            --hot-provider-alias r2_video_maker_dev_01 \
+            --hot-bucket-alias video-maker-hot \
+            --canonical-provider-alias minio_zimspace_local_pc_01 \
+            --canonical-bucket-alias zs-dev-app-video-maker-canon \
+            --prefix-pattern 'video-maker/user-resources/*'; then
+            echo "unsafe run identifier unexpectedly succeeded" >&2
+            exit 1
+          fi
+          if node scripts/verify-2b-06-providers.mjs \
+            --mode fake \
+            --scenario png-both-success \
+            --run-id ci-${{ github.run_id }} \
+            --profile-alias video-maker-dev-default \
+            --hot-provider-alias r2_video_maker_dev_01 \
+            --hot-bucket-alias video-maker-hot \
+            --canonical-provider-alias minio_zimspace_local_pc_01 \
+            --canonical-bucket-alias zs-dev-app-video-maker-canon \
+            --prefix-pattern '../unsafe/*'; then
+            echo "unsafe prefix unexpectedly succeeded" >&2
+            exit 1
+          fi
+
       - name: Local readiness
         run: npm run local:readiness
 

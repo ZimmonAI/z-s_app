@@ -92,39 +92,48 @@ npm run package:verify
 npm run validate
 ```
 
-The dedicated GitHub Actions workflow runs Node.js 22 with a disposable PostgreSQL 17 service, verifies that migrations and seeds are unchanged, and executes the complete validation chain with deterministic provider doubles. It does not read provider credentials or connect to governed provider infrastructure.
+The dedicated GitHub Actions workflow runs Node.js 22 with a disposable PostgreSQL 17 service, verifies that migrations and seeds are unchanged, executes the complete validation chain, and runs all nine frozen scenarios with process-local provider doubles. It also proves scenario, run-ID, and prefix refusal without reading provider credentials or connecting to governed provider infrastructure.
 
 ## Governed local provider handoff
 
-`scripts/verify-2b-06-providers.mjs` is a separate, explicit local handoff for approved R2 and MinIO-compatible targets. It is never executed by CI. It requires both `--confirm-provider-actions` and `ZS_2B06_PROVIDER_ACTIONS_APPROVED=true`, generates exact locators under approved prefixes, never lists a bucket, and deletes plus `HEAD`-verifies absence of every exact target before exit.
+`scripts/verify-2b-06-providers.mjs` has two explicit modes. `fake` is the CI-only deterministic provider-double mode. `live` is reserved for the separately approved R2 and MinIO-compatible handoff; it requires `--confirm-provider-actions` and `ZS_2B06_PROVIDER_ACTIONS_APPROVED=true`, reads only already-populated environment bindings, never lists a bucket, and deletes plus `HEAD`-verifies every exact task-owned target before exit.
 
-Supported scenarios are exactly:
+Supported scenario names are exactly:
 
 ```text
-both-success-png
-both-success-mp4
-hot-write-failure
-canonical-write-failure
-both-write-failure
+png-both-success
+mp4-both-success
+hot-failure
+canonical-failure
+both-failure
 checksum-mismatch
 required-size-mismatch
-hot-targeted-retry
-canonical-targeted-retry
+hot-retry
+canonical-retry
 ```
 
-For each role (`HOT` and `CANONICAL`), provide these environment variables only in the approved local shell: `ZS_2B06_<ROLE>_PROVIDER_ALIAS`, `ZS_2B06_<ROLE>_BUCKET_ALIAS`, `ZS_2B06_<ROLE>_BUCKET`, `ZS_2B06_<ROLE>_PREFIX_PATTERN`, `ZS_2B06_<ROLE>_ENDPOINT`, `ZS_2B06_<ROLE>_REGION`, `ZS_2B06_<ROLE>_FORCE_PATH_STYLE`, `ZS_2B06_<ROLE>_ACCESS_KEY_ID`, `ZS_2B06_<ROLE>_SECRET_ACCESS_KEY`, and optional `ZS_2B06_<ROLE>_SESSION_TOKEN`. Prefix patterns must end in `*` and must already be approved for disposable 2B-06 objects.
+Every invocation requires the approved non-secret profile, provider, and bucket aliases, the exact `video-maker/user-resources/*` prefix, and a safe caller-supplied run ID. Locator IDs use `2b-06-<run-id>-<scenario>-<nonce>` under that approved prefix.
 
-After source review and separate provider-action approval, run one scenario at a time:
+For live mode only, provide `ZS_2B06_<ROLE>_BUCKET`, `ZS_2B06_<ROLE>_ENDPOINT`, `ZS_2B06_<ROLE>_REGION`, `ZS_2B06_<ROLE>_FORCE_PATH_STYLE`, `ZS_2B06_<ROLE>_ACCESS_KEY_ID`, `ZS_2B06_<ROLE>_SECRET_ACCESS_KEY`, and optional `ZS_2B06_<ROLE>_SESSION_TOKEN` in the approved local shell.
+
+After source review and separate provider-action approval, run one live scenario at a time:
 
 ```text
 ZS_2B06_PROVIDER_ACTIONS_APPROVED=true \
   npm run verify:2b06:providers -- \
+  --mode live \
   --run-id <approved-safe-run-id> \
   --scenario <allowlisted-scenario> \
+  --profile-alias video-maker-dev-default \
+  --hot-provider-alias r2_video_maker_dev_01 \
+  --hot-bucket-alias video-maker-hot \
+  --canonical-provider-alias minio_zimspace_local_pc_01 \
+  --canonical-bucket-alias zs-dev-app-video-maker-canon \
+  --prefix-pattern 'video-maker/user-resources/*' \
   --confirm-provider-actions
 ```
 
-The emitted JSON contains only safe aliases, state and retry outcomes, media facts, write-attempt counts, and cleanup counts. It excludes endpoints, actual bucket names, internal locators, object keys, credential values, credential-reference identifiers, and raw provider responses.
+The harness emits exactly one compact safe JSON line containing the run ID, scenario, final role states, checksum and size dispositions, safe media facts, retry disposition, cleanup counts, and bounded safety flags. It refuses to emit aliases, endpoints, actual bucket names, prefixes, internal locators, raw object keys, credential values, credential-reference identifiers, ETags, signed URLs, or provider bodies.
 
 ## Safety boundary
 
