@@ -5,7 +5,7 @@ export type { ProviderCapabilityPolicy } from './domain.js';
 export type { IntegrityVerificationResult } from './integrity.js';
 
 export const SERVICE_ID = 'z-s' as const;
-export const PACKAGE_VERSION = '0.2.0' as const;
+export const PACKAGE_VERSION = '0.2.1' as const;
 export const CONTRACT_VERSION = '1.0' as const;
 export const SUPPORTED_CONTRACT_VERSIONS = [CONTRACT_VERSION] as const;
 
