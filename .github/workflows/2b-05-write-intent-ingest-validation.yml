@@ -1,0 +1,76 @@
+name: 2B-05 write intent and generic ingest validation
+
+on:
+  pull_request:
+    paths:
+      - package.json
+      - README.md
+      - docs/runtime-contract.md
+      - src/index.ts
+      - src/runtime-contract.ts
+      - src/runtime-service.ts
+      - src/runtime-storage-registry.ts
+      - src/runtime-storage-registry-object.ts
+      - src/runtime-storage-registry-types.ts
+      - src/runtime-ingest.ts
+      - src/runtime-upload-token.ts
+      - tests/runtime-service.test.ts
+      - tests/runtime-storage-registry.integration.test.ts
+      - tests/runtime-ingest.test.ts
+      - scripts/install-smoke.mjs
+      - scripts/local-readiness.mjs
+      - .github/workflows/2b-05-write-intent-ingest-validation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: z_s_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d z_s_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify migrations are unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" -- db/migrations
+
+      - name: Run focused ingest tests
+        run: npm run test:focused
+
+      - name: Run PostgreSQL registry tests
+        run: npm run test:registry
+
+      - name: Run full validation
+        run: npm run validate
