@@ -3,6 +3,8 @@ import { PostgresRuntimeStorageRegistryObjectCore } from './runtime-storage-regi
 import {
   RuntimeStorageRegistryError,
   type DurableDuplicateResultCodec,
+  type DurableDuplicateResultReference,
+  type PostgresQueryable,
   type ProviderAttemptInput,
   type ProviderAttemptRow,
   type ReconciliationIssueInput,
@@ -24,7 +26,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function createRuntimeStorageDuplicateResultCodec(): DurableDuplicateResultCodec {
   return Object.freeze({
-    async encode(value, _client) {
+    async encode(value: unknown, _client: PostgresQueryable) {
       if (!isRecord(value)) {
         throw new RuntimeStorageRegistryError('internal', 'invalid-idempotency-result', 500);
       }
@@ -50,7 +52,7 @@ export function createRuntimeStorageDuplicateResultCodec(): DurableDuplicateResu
       });
     },
 
-    async decode(reference, client) {
+    async decode(reference: DurableDuplicateResultReference, client: PostgresQueryable) {
       const writeIntentId = requireUuid(
         reference.resultReferenceId,
         'duplicate-result-reference',

@@ -449,7 +449,7 @@ function uploadRequest(input: {
         'content-type': input.mediaType ?? 'image/png',
         'content-length': String(input.byteLength),
       },
-      body: input.bytes,
+      body: Uint8Array.from(input.bytes).buffer,
     },
   );
 }
@@ -542,21 +542,27 @@ test('upload completion tokens are deterministic, purpose-bound, caller-bound an
   assert.equal(first, second);
   assert.deepEqual(await service.verify(first, claims), claims);
   await assert.rejects(
-    service.verify(first, { ...claims, objectWriteIntentId: nextUuid() }),
+    async () => service.verify(first, { ...claims, objectWriteIntentId: nextUuid() }),
     /invalid-upload-completion-token/,
   );
   await assert.rejects(
-    service.verify(first, { ...claims, storageObjectId: nextUuid() }),
+    async () => service.verify(first, { ...claims, storageObjectId: nextUuid() }),
     /invalid-upload-completion-token/,
   );
   await assert.rejects(
-    service.verify(first, { ...claims, callerAppId: 'z-x_app' }),
+    async () => service.verify(first, { ...claims, callerAppId: 'z-x_app' }),
     /invalid-upload-completion-token/,
   );
   const tampered = `${first.slice(0, -1)}${first.endsWith('a') ? 'b' : 'a'}`;
-  await assert.rejects(service.verify(tampered, claims), /invalid-upload-completion-token/);
+  await assert.rejects(
+    async () => service.verify(tampered, claims),
+    /invalid-upload-completion-token/,
+  );
   clock = new Date('2026-07-16T10:15:00.000Z');
-  await assert.rejects(service.verify(first, claims), /upload-completion-token-expired/);
+  await assert.rejects(
+    async () => service.verify(first, claims),
+    /upload-completion-token-expired/,
+  );
 });
 
 test('create supports standalone, production-step and Z-X-shaped forms without authority leakage', async () => {
