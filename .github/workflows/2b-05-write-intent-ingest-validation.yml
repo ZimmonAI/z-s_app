@@ -29,13 +29,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
       - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
+      - name: Fetch pull request head quietly
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth=1 origin "${{ github.event.pull_request.head.sha }}"
+          git checkout -q --detach FETCH_HEAD
+
       - name: Run secret scan only
-        run: npm run validate:secrets
+        run: node scripts/scan-secrets.mjs
