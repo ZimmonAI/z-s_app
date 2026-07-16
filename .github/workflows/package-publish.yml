@@ -1,0 +1,146 @@
+name: Publish immutable Z-s package
+
+on:
+  push:
+    tags:
+      - 'z-s-control-plane-v0.2.1'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gate exact immutable release source
+        run: |
+          test "$GITHUB_REF_NAME" = 'z-s-control-plane-v0.2.1'
+          git fetch origin main --no-tags
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@zimmonai'
+      - run: npm install --ignore-scripts
+      - name: Gate package identity
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import manifest from './package.json' with { type: 'json' };
+          assert.equal(manifest.name, '@zimmonai/z-s-control-plane');
+          assert.equal(manifest.version, '0.2.1');
+          assert.equal(manifest.publishConfig.registry, 'https://npm.pkg.github.com');
+          assert.equal(manifest.publishConfig.access, 'restricted');
+          assert.deepEqual(Object.keys(manifest.exports), [
+            '.',
+            './runtime-contract',
+            './runtime-service',
+            './runtime-storage-registry',
+          ]);
+          NODE
+      - run: npm run validate
+      - name: Pack and verify exact artifact
+        id: artifact
+        run: |
+          mkdir -p package-output evidence
+          npm pack --json --silent --pack-destination package-output > package-output/pack.json
+          node scripts/verify-package-artifact.mjs \
+            --pack-json package-output/pack.json \
+            --tarball-root package-output \
+            --output evidence/package-artifact.json
+          echo "tarball=package-output/$(node -p \"require('./evidence/package-artifact.json').tarballFilename\")" >> "$GITHUB_OUTPUT"
+      - name: Refuse an existing immutable version
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          output="$(npm view '@zimmonai/z-s-control-plane@0.2.1' version --registry='https://npm.pkg.github.com' 2>&1)"
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo 'Refusing to overwrite existing @zimmonai/z-s-control-plane@0.2.1.'
+            exit 1
+          fi
+          if ! printf '%s' "$output" | grep -Eq 'E404|404 Not Found'; then
+            echo 'Unable to prove that the target package version is absent.'
+            exit 1
+          fi
+      - name: Publish exact package once
+        id: publish
+        continue-on-error: true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish "${{ steps.artifact.outputs.tarball }}" --registry='https://npm.pkg.github.com' --access=restricted
+      - name: Clean exact-version post-publish install
+        id: post_install
+        if: steps.publish.outcome == 'success'
+        continue-on-error: true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/install-smoke.mjs \
+            --spec '@zimmonai/z-s-control-plane@0.2.1' \
+            --registry 'https://npm.pkg.github.com' \
+            --evidence evidence/registry-install.json
+      - name: Write retained release report
+        if: always()
+        env:
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          INSTALL_OUTCOME: ${{ steps.post_install.outcome }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          const artifact = JSON.parse(await readFile('evidence/package-artifact.json', 'utf8'));
+          let install = null;
+          try { install = JSON.parse(await readFile('evidence/registry-install.json', 'utf8')); } catch {}
+          const report = {
+            status: process.env.PUBLISH_OUTCOME === 'success' && process.env.INSTALL_OUTCOME === 'success' ? 'completed' : 'blocked',
+            source_repository: 'ZimmonAI/z-s_app',
+            source_baseline: 'abd710088ca1640eb6d5f864bc65a563b3481d82',
+            source_head: process.env.GITHUB_SHA,
+            source_merge_commit: process.env.GITHUB_SHA,
+            package_name: '@zimmonai/z-s-control-plane',
+            package_version: '0.2.1',
+            contract_version: '1.0',
+            package_owner_namespace: 'ZimmonAI/@zimmonai',
+            registry_or_artifact_authority: 'https://npm.pkg.github.com',
+            package_url: 'https://github.com/orgs/ZimmonAI/packages/npm/package/z-s-control-plane',
+            release_tag: process.env.GITHUB_REF_NAME,
+            workflow_run: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            artifact_filename: artifact.tarballFilename,
+            tarball_sha256: artifact.tarballSha256,
+            package_manager_integrity: install?.packageManagerIntegrity ?? artifact.npmIntegrity,
+            published_once: process.env.PUBLISH_OUTCOME === 'success',
+            z_s_clean_install: process.env.INSTALL_OUTCOME === 'success' ? 'passed' : 'failed',
+            package_access_handoff_status: 'planned-ready',
+            video_maker_verification_status: 'blocked-pending',
+            live_actions_performed: 'none',
+            provider_actions_performed: 'none',
+            deployment_actions_performed: 'none',
+          };
+          const baseName = 'evidence/02b-03a-report-z-s-immutable-package-distribution';
+          await writeFile(`${baseName}.json`, `${JSON.stringify(report, null, 2)}\n`);
+          await writeFile(`${baseName}.md`, `# 2B-03A report: Z-s immutable package distribution\n\n\`\`\`yaml\n${Object.entries(report).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join('\n')}\n\`\`\`\n`);
+          NODE
+          if grep -R -E 'git\+ssh|ssh://|_authToken|npm_[A-Za-z0-9]{20,}|(^|[^[:alnum:]_])file:|workspace:|https?://[^/@[:space:]]+:[^/@[:space:]]+@' evidence; then
+            echo 'Prohibited source or credential-shaped value found in retained evidence.'
+            exit 1
+          fi
+      - name: Retain immutable package publication evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: z-s-control-plane-0.2.1-publication-evidence
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce publication and self-consumer success
+        if: always()
+        run: |
+          test '${{ steps.publish.outcome }}' = 'success'
+          test '${{ steps.post_install.outcome }}' = 'success'
