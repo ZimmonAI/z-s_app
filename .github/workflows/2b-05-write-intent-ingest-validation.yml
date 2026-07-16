@@ -22,60 +22,54 @@ on:
       - .github/workflows/2b-05-write-intent-ingest-validation.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: z_s_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d z_s_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
     steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Fetch pull request head quietly
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          git init -q .
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git fetch -q --depth=1 origin "${{ github.event.pull_request.head.sha }}"
-          git checkout -q --detach FETCH_HEAD
+      - name: Install dependencies
+        run: npm install --ignore-scripts
 
-      - name: Fix secret scan test literals
+      - name: Verify migrations are unchanged
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import re
-          from pathlib import Path
+          git diff --exit-code "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" -- db/migrations
 
-          path = Path('tests/runtime-ingest.test.ts')
-          text = path.read_text(encoding='utf-8')
-          updated, count = re.subn(
-              r"authToken: ('[^'\n]+')",
-              r"authToken: String(\1)",
-              text,
-          )
-          if count == 0:
-              raise SystemExit('no auth token literal fixtures found')
-          path.write_text(updated, encoding='utf-8')
-          print(f'updated {count} auth token fixture(s)')
-          PY
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tests/runtime-ingest.test.ts
-          git commit -m "Avoid secret-pattern test literals"
-          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
-
-      - name: Install dependencies quietly
-        run: npm install --ignore-scripts --silent
-
-      - name: Run focused tests
+      - name: Run focused ingest tests
         run: npm run test:focused
 
-      - name: Run secret scan
-        run: npm run validate:secrets
+      - name: Run PostgreSQL registry tests
+        run: npm run test:registry
+
+      - name: Run full validation
+        run: npm run validate
