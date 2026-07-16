@@ -6,6 +6,9 @@ on:
       - agent/02b-06-clean-candidate
     paths:
       - .github/workflows/2b-06-dual-provider-media-validation.yml
+  pull_request:
+    paths:
+      - .github/workflows/2b-06-dual-provider-media-validation.yml
   workflow_dispatch:
 
 permissions:
