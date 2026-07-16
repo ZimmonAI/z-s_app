@@ -1,0 +1,100 @@
+      internalLocator: this.targets[role].internalLocator,
+      providerAttemptId: '60000000-0000-4000-8000-000000000009',
+      storageObjectCopyId: role === 'hot'
+        ? '60000000-0000-4000-8000-000000000005'
+        : '60000000-0000-4000-8000-000000000007',
+      expectedPendingCopyVersion: input.expectedFailedCopyVersion + 1,
+      expectedObjectRowVersion: 2,
+      checksumSha256: this.expectedChecksum,
+      byteLength: this.expectedByteLength,
+    });
+  }
+
+  async completeTargetedProviderRetry(input) {
+    const peer = input.reservation.providerRole === 'hot' ? 'canonical' : 'hot';
+    const states = {
+      [input.reservation.providerRole]: input.outcome,
+      [peer]: this.lastOutcomes?.[peer],
+    };
+    if (states.hot === undefined || states.canonical === undefined) {
+      throw new Error('harness-retry-state-missing');
+    }
+    const [storageState, objectProtectionStage] = storageMapping(states);
+    return Object.freeze({
+      storageObjectId: input.reservation.storageObjectId,
+      storageState,
+      objectProtectionStage,
+      copies: Object.freeze({
+        hot: Object.freeze({ state: states.hot.state, retryable: states.hot.retryable }),
+        canonical: Object.freeze({ state: states.canonical.state, retryable: states.canonical.retryable }),
+      }),
+    });
+  }
+}
+
+class FakeProviderWriter {
+  constructor() {
+    this.objects = new Map();
+    this.cleanupRoles = [];
+  }
+
+  async write(input) {
+    const chunks = [];
+    for await (const chunk of input.source) chunks.push(new Uint8Array(chunk));
+    const bytes = join(...chunks);
+    assert.equal(checksum(bytes), input.checksumSha256);
+    assert.equal(bytes.byteLength, input.byteLength);
+    this.objects.set(input.target.providerRole, bytes);
+    return Object.freeze({
+      providerRole: input.target.providerRole,
+      observed: Object.freeze({
+        checksumSha256: input.checksumSha256,
+        byteLength: input.byteLength,
+      }),
+      integrityVerification: Object.freeze({
+        verified: true,
+        checksumVerified: true,
+        sizeVerified: true,
+        sizeVerificationDisposition: 'matched',
+      }),
+    });
+  }
+
+  async cleanup(input) {
+    this.cleanupRoles.push(input.target.providerRole);
+    this.objects.delete(input.target.providerRole);
+    return Object.freeze({ deleted: true });
+  }
+
+  async verifyAbsent(target) {
+    return !this.objects.has(target.providerRole);
+  }
+}
+
+function requireEnvironment(name) {
+  const value = process.env[name];
+  if (value === undefined || value.length === 0) throw new Error('harness-live-binding-missing');
+  return value;
+}
+
+function liveCredentialResolver() {
+  const binding = (role) => Object.freeze({
+    endpoint: requireEnvironment(`Z_S_2B06_${role.toUpperCase()}_ENDPOINT`),
+    region: requireEnvironment(`Z_S_2B06_${role.toUpperCase()}_REGION`),
+    forcePathStyle: requireEnvironment(`Z_S_2B06_${role.toUpperCase()}_FORCE_PATH_STYLE`) === 'true',
+    accessKeyId: requireEnvironment(`Z_S_2B06_${role.toUpperCase()}_ACCESS_KEY_ID`),
+    secretAccessKey: requireEnvironment(`Z_S_2B06_${role.toUpperCase()}_SECRET_ACCESS_KEY`),
+    ...(process.env[`Z_S_2B06_${role.toUpperCase()}_SESSION_TOKEN`] === undefined
+      ? {}
+      : { sessionToken: process.env[`Z_S_2B06_${role.toUpperCase()}_SESSION_TOKEN`] }),
+  });
+  return Object.freeze({ resolve: (role) => binding(role) });
+}
+
+class LiveProviderWriter {
+  constructor(resolver) {
+    this.resolver = resolver;
+    this.writer = new S3CompatibleProviderObjectWriter({ credentialResolver: resolver });
+    this.cleanupRoles = [];
+  }
+
