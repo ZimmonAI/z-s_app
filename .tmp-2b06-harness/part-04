@@ -1,0 +1,100 @@
+  write(input) {
+    return this.writer.write(input);
+  }
+
+  async cleanup(input) {
+    this.cleanupRoles.push(input.target.providerRole);
+    return this.writer.cleanup(input);
+  }
+
+  async verifyAbsent(target) {
+    const binding = await this.resolver.resolve(target.credentialSecretReferenceId);
+    const client = new S3Client({
+      endpoint: binding.endpoint,
+      region: binding.region,
+      forcePathStyle: binding.forcePathStyle,
+      credentials: {
+        accessKeyId: binding.accessKeyId,
+        secretAccessKey: binding.secretAccessKey,
+        ...(binding.sessionToken === undefined ? {} : { sessionToken: binding.sessionToken }),
+      },
+    });
+    try {
+      await client.send(new HeadObjectCommand({ Bucket: target.bucketLabel, Key: target.internalLocator }));
+      return false;
+    } catch (error) {
+      const status = error && typeof error === 'object' ? error.$metadata?.httpStatusCode : undefined;
+      return status === 404 || error?.name === 'NotFound' || error?.name === 'NoSuchKey';
+    } finally {
+      client.destroy();
+    }
+  }
+}
+
+class FailureInjectingWriter {
+  constructor(delegate, failures) {
+    this.delegate = delegate;
+    this.failures = new Map(Object.entries(failures));
+  }
+
+  async write(input) {
+    const receipt = await this.delegate.write(input);
+    const code = this.failures.get(input.target.providerRole);
+    if (code !== undefined) {
+      this.failures.delete(input.target.providerRole);
+      throw new ProviderExecutionError('dependency-unavailable', code, true, {
+        cleanupRequired: true,
+      });
+    }
+    return receipt;
+  }
+
+  cleanup(input) {
+    return this.delegate.cleanup(input);
+  }
+}
+
+function inputFor(definition, targets) {
+  const expectedChecksum = checksum(definition.bytes);
+  return Object.freeze({
+    objectWriteIntentId: '60000000-0000-4000-8000-000000000003',
+    storageObjectId: '60000000-0000-4000-8000-000000000004',
+    mediaType: definition.mediaType,
+    declaredByteLength: definition.bytes.byteLength,
+    declaredChecksumSha256: expectedChecksum,
+    body: Readable.from([definition.bytes]),
+    internalLocators: Object.freeze({
+      hot: targets.hot.internalLocator,
+      canonical: targets.canonical.internalLocator,
+    }),
+    intentRowVersion: 2,
+    objectRowVersion: 1,
+    providerCopies: Object.freeze({
+      hot: Object.freeze({
+        storageObjectCopyId: '60000000-0000-4000-8000-000000000005',
+        providerBindingId: '60000000-0000-4000-8000-000000000006',
+        providerRole: 'hot',
+        state: 'pending',
+        rowVersion: 1,
+        internalLocator: targets.hot.internalLocator,
+      }),
+      canonical: Object.freeze({
+        storageObjectCopyId: '60000000-0000-4000-8000-000000000007',
+        providerBindingId: '60000000-0000-4000-8000-000000000008',
+        providerRole: 'canonical',
+        state: 'pending',
+        rowVersion: 1,
+        internalLocator: targets.canonical.internalLocator,
+      }),
+    }),
+  });
+}
+
+function safeMedia(metadata) {
+  if (metadata.mediaFamily === 'image') {
+    return Object.freeze({
+      mediaType: metadata.mediaType,
+      mediaFamily: metadata.mediaFamily,
+      width: metadata.image?.width,
+      height: metadata.image?.height,
+    });
