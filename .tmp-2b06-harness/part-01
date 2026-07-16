@@ -1,0 +1,100 @@
+    if (value === undefined || value.startsWith('--')) throw new Error('harness-argument-missing');
+    if (values.has(flag)) throw new Error('harness-argument-duplicate');
+    values.set(flag, value);
+    index += 1;
+  }
+  const value = (flag, environmentName) => values.get(flag) ?? process.env[environmentName];
+  return Object.freeze({
+    mode: value('--mode', 'Z_S_2B06_MODE'),
+    scenario: value('--scenario', 'Z_S_2B06_SCENARIO'),
+    runId: value('--run-id', 'Z_S_2B06_RUN_ID'),
+    profileAlias: value('--profile-alias', 'Z_S_2B06_PROFILE_ALIAS'),
+    hotProviderAlias: value('--hot-provider-alias', 'Z_S_2B06_HOT_PROVIDER_ALIAS'),
+    hotBucketAlias: value('--hot-bucket-alias', 'Z_S_2B06_HOT_BUCKET_ALIAS'),
+    canonicalProviderAlias: value('--canonical-provider-alias', 'Z_S_2B06_CANONICAL_PROVIDER_ALIAS'),
+    canonicalBucketAlias: value('--canonical-bucket-alias', 'Z_S_2B06_CANONICAL_BUCKET_ALIAS'),
+  });
+}
+
+function validateConfiguration(config) {
+  if (config.mode !== 'fake' && config.mode !== 'live') throw new Error('harness-mode-invalid');
+  if (!ALLOWED_SCENARIOS.includes(config.scenario)) throw new Error('harness-scenario-refused');
+  if (typeof config.runId !== 'string' || !SAFE_RUN_ID.test(config.runId)) {
+    throw new Error('harness-run-id-refused');
+  }
+  const received = {
+    profile: config.profileAlias,
+    hotProvider: config.hotProviderAlias,
+    hotBucket: config.hotBucketAlias,
+    canonicalProvider: config.canonicalProviderAlias,
+    canonicalBucket: config.canonicalBucketAlias,
+  };
+  for (const [key, expected] of Object.entries(APPROVED_ALIASES)) {
+    if (received[key] !== expected) throw new Error('harness-alias-refused');
+  }
+}
+
+function scenarioDefinition(name) {
+  switch (name) {
+    case 'png-both-success':
+      return { mediaType: 'image/png', bytes: png(), failures: {} };
+    case 'mp4-both-success':
+      return { mediaType: 'video/mp4', bytes: mp4(), failures: {} };
+    case 'hot-failure':
+      return { mediaType: 'image/png', bytes: png(), failures: { hot: 'provider-write-failed' } };
+    case 'canonical-failure':
+      return { mediaType: 'image/png', bytes: png(), failures: { canonical: 'provider-write-failed' } };
+    case 'both-failure':
+      return {
+        mediaType: 'image/png',
+        bytes: png(),
+        failures: { hot: 'provider-write-failed', canonical: 'provider-write-failed' },
+      };
+    case 'checksum-mismatch':
+      return { mediaType: 'image/png', bytes: png(), failures: { hot: 'provider-checksum-mismatch' } };
+    case 'required-size-mismatch':
+      return { mediaType: 'image/png', bytes: png(), failures: { canonical: 'provider-size-mismatch' } };
+    case 'hot-retry':
+      return { mediaType: 'image/png', bytes: png(), failures: { hot: 'provider-write-failed' }, retry: 'hot' };
+    case 'canonical-retry':
+      return {
+        mediaType: 'image/png',
+        bytes: png(),
+        failures: { canonical: 'provider-write-failed' },
+        retry: 'canonical',
+      };
+    default:
+      throw new Error('harness-scenario-refused');
+  }
+}
+
+function safeNonce(runId, scenario) {
+  const nonce = createHash('sha256').update(`${runId}:${scenario}`).digest('hex').slice(0, 12);
+  assert.match(nonce, SAFE_NONCE);
+  return nonce;
+}
+
+function createTargets(config) {
+  const locator = `2b-06-${config.runId}-${config.scenario}-${safeNonce(config.runId, config.scenario)}`;
+  if (!locator.startsWith(`2b-06-${config.runId}-${config.scenario}-`)) {
+    throw new Error('harness-prefix-refused');
+  }
+  return Object.freeze({
+    hot: Object.freeze({
+      providerRole: 'hot',
+      providerId: config.hotProviderAlias,
+      bucketLabel: config.hotBucketAlias,
+      internalLocator: locator,
+      normalizedPrefixPattern: '2b-06-*',
+      capabilityPolicy: Object.freeze({
+        checksumVerification: 'required',
+        sizeVerification: 'required-when-supported',
+        headContentLength: 'optional-with-checksum',
+        rangeRead: 'optional',
+      }),
+      credentialSecretReferenceId: 'hot',
+    }),
+    canonical: Object.freeze({
+      providerRole: 'canonical',
+      providerId: config.canonicalProviderAlias,
+      bucketLabel: config.canonicalBucketAlias,
