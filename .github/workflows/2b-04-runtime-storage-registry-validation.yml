@@ -50,5 +50,29 @@ jobs:
         with:
           node-version: 22
       - run: npm install --ignore-scripts
-      - run: npm run validate
-      - run: npm run test:registry
+      - name: Focused tests
+        run: npm run test:focused
+      - name: Full tests
+        run: npm test
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build
+      - name: Package install smoke
+        run: npm run pack:check
+      - name: Migration static validation
+        run: npm run validate:migration
+      - name: Seed validation
+        run: npm run validate:seed
+      - name: Secret scan
+        run: npm run validate:secrets
+      - name: Legacy identifier validation
+        run: npm run validate:legacy-id
+      - name: Local readiness
+        run: npm run local:readiness
+      - name: Complete validation chain
+        run: npm run validate
+      - name: PostgreSQL runtime registry integration
+        run: npm run test:registry
