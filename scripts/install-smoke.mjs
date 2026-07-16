@@ -67,9 +67,11 @@ try {
       "import * as root from '@zimspace/z-s-control-plane';",
       "import * as contract from '@zimspace/z-s-control-plane/runtime-contract';",
       "import * as runtime from '@zimspace/z-s-control-plane/runtime-service';",
+      "import * as registry from '@zimspace/z-s-control-plane/runtime-storage-registry';",
       "if (root.SERVICE_ID !== 'z-s') throw new Error('root contract export missing');",
       "if (contract.CONTRACT_VERSION !== '1.0') throw new Error('contract identity mismatch');",
       "if (runtime.createHttpStorageRuntime === undefined) throw new Error('runtime export missing');",
+      "if (registry.PostgresRuntimeStorageRegistry === undefined) throw new Error('registry export missing');",
       "if (root.CAPABILITY_POLICY_VERSION !== '1') throw new Error('control-plane export missing');",
     ].join('\n'),
   );
