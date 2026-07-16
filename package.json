@@ -21,12 +21,18 @@
     "./runtime-service": {
       "types": "./dist/runtime-service.d.ts",
       "import": "./dist/runtime-service.js"
+    },
+    "./runtime-storage-registry": {
+      "types": "./dist/runtime-storage-registry.d.ts",
+      "import": "./dist/runtime-storage-registry.js"
     }
   },
   "files": [
     "dist",
     "README.md",
-    "docs/runtime-contract.md"
+    "docs/runtime-contract.md",
+    "db/migrations/0002_z_s_runtime_registry.sql",
+    "db/migrations/0002_z_s_runtime_registry.down.sql"
   ],
   "scripts": {
     "clean": "node scripts/clean.mjs",
@@ -34,6 +40,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:compile": "node scripts/clean-test.mjs && tsc -p tsconfig.test.json",
     "test:focused": "npm run test:compile && node --test .test-dist/tests/control-plane.test.js .test-dist/tests/integrity.test.js .test-dist/tests/runtime-service.test.js",
+    "test:registry": "npm run test:compile && node --test .test-dist/tests/runtime-storage-registry.integration.test.js",
     "test": "npm run test:compile && node --test .test-dist/tests/*.test.js",
     "lint": "node scripts/lint.mjs",
     "local:readiness": "node scripts/local-readiness.mjs",
@@ -47,6 +54,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "@types/pg": "^8.15.5",
+    "pg": "^8.16.3",
     "typescript": "^5.8.3"
   }
 }
