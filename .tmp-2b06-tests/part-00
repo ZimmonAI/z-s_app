@@ -1,0 +1,100 @@
+test('provider writes start concurrently and settle independently', async () => {
+  class BarrierWriter extends FakeWriter {
+    readonly started = new Set<'hot' | 'canonical'>();
+    readonly bothStarted: Promise<void>;
+    #resolveBothStarted!: () => void;
+    #release!: () => void;
+    readonly released: Promise<void>;
+
+    constructor() {
+      super();
+      this.bothStarted = new Promise((resolve) => {
+        this.#resolveBothStarted = resolve;
+      });
+      this.released = new Promise((resolve) => {
+        this.#release = resolve;
+      });
+    }
+
+    release(): void {
+      this.#release();
+    }
+
+    override async write(input: Readonly<ProviderWriteInput>): Promise<Readonly<ProviderWriteReceipt>> {
+      this.started.add(input.target.providerRole);
+      if (this.started.size === 2) this.#resolveBothStarted();
+      await this.released;
+      return super.write(input);
+    }
+  }
+
+  const registry = new FakeRegistry();
+  const writer = new BarrierWriter();
+  const reads = { count: 0 };
+  const operation = adapter(registry, writer).ingest(ingestInput(png(), reads));
+  await writer.bothStarted;
+  assert.deepEqual([...writer.started].sort(), ['canonical', 'hot']);
+  writer.release();
+  const receipt = await operation;
+  assert.equal(receipt.completionResult?.storageState, 'ready');
+});
+
+test('temporary staging directories are removed on success and media error', async () => {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'z-s-2b06-test-'));
+  try {
+    const makeAdapter = (registry: FakeRegistry, writer: FakeWriter) =>
+      new DualProviderObjectIngestAdapter({
+        registry,
+        writer,
+        mediaVerifier: new BoundedMediaVerifier({ maximumByteLength: 1_024 }),
+        resolveTarget: { resolve: ({ providerRole }) => target(providerRole) },
+        temporaryRoot,
+        createTemporaryId: () => 'cleanup',
+      });
+
+    await makeAdapter(new FakeRegistry(), new FakeWriter()).ingest(
+      ingestInput(png(), { count: 0 }),
+    );
+    assert.deepEqual(await readdir(temporaryRoot), []);
+
+    const invalid = new TextEncoder().encode('not-media');
+    await assert.rejects(
+      makeAdapter(new FakeRegistry(), new FakeWriter()).ingest(
+        ingestInput(invalid, { count: 0 }),
+      ),
+    );
+    assert.deepEqual(await readdir(temporaryRoot), []);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('targeted retry supports canonical repair without rewriting the verified hot peer', async () => {
+  const registry = new FakeRegistry();
+  const writer = new FakeWriter();
+  const coordinator = new TargetedProviderRetryCoordinator({
+    registry,
+    writer,
+    resolveTarget: { resolve: ({ providerRole }) => target(providerRole) },
+  });
+  const result = await coordinator.retry({
+    storageObjectId: STORAGE_OBJECT_ID,
+    providerRole: 'canonical',
+    expectedFailedCopyVersion: 2,
+    verifiedSource: { open: () => Readable.from([png()]) },
+  });
+  assert.deepEqual(writer.writes.map((entry) => entry.role), ['canonical']);
+  assert.equal(result.storageObjectId, STORAGE_OBJECT_ID);
+  assert.equal(result.storageState, 'ready');
+  assert.equal(result.copies.hot.state, 'verified');
+  assert.equal(result.copies.canonical.state, 'verified');
+});
+
+test('S3-compatible writer accepts optional size only with verified checksum capability', async () => {
+  const bytes = png();
+  const expectedChecksum = sha256(bytes);
+  const writer = new S3CompatibleProviderObjectWriter({
+    credentialResolver: {
+      resolve: () => Object.freeze({
+        endpoint: 'https://provider.internal',
+        region: 'auto',
