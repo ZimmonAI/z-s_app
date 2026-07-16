@@ -62,25 +62,25 @@ jobs:
           path = Path('tests/runtime-ingest.test.ts')
           text = path.read_text(encoding='utf-8')
           old = """    createRequest({
-              bytes: input.bytes,
-              sourceReference: input.sourceReference,
-              correlation: input.correlation,
-              authToken: input.authToken,
-              callerApp: input.callerApp,
-              idempotencyKey: input.idempotencyKey,
-            }),"""
+                bytes: input.bytes,
+                sourceReference: input.sourceReference,
+                correlation: input.correlation,
+                authToken: input.authToken,
+                callerApp: input.callerApp,
+                idempotencyKey: input.idempotencyKey,
+              }),"""
           new = """    createRequest({
-              bytes: input.bytes,
-              ...(input.sourceReference === undefined
-                ? {}
-                : { sourceReference: input.sourceReference }),
-              ...(input.correlation === undefined ? {} : { correlation: input.correlation }),
-              ...(input.authToken === undefined ? {} : { authToken: input.authToken }),
-              ...(input.callerApp === undefined ? {} : { callerApp: input.callerApp }),
-              ...(input.idempotencyKey === undefined
-                ? {}
-                : { idempotencyKey: input.idempotencyKey }),
-            }),"""
+                bytes: input.bytes,
+                ...(input.sourceReference === undefined
+                  ? {}
+                  : { sourceReference: input.sourceReference }),
+                ...(input.correlation === undefined ? {} : { correlation: input.correlation }),
+                ...(input.authToken === undefined ? {} : { authToken: input.authToken }),
+                ...(input.callerApp === undefined ? {} : { callerApp: input.callerApp }),
+                ...(input.idempotencyKey === undefined
+                  ? {}
+                  : { idempotencyKey: input.idempotencyKey }),
+              }),"""
           if old not in text:
               raise SystemExit('expected exact optional fixture block not found')
           path.write_text(text.replace(old, new, 1), encoding='utf-8')
