@@ -3,9 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { Pool, type PoolClient } from 'pg';
+import type { ObjectUploadCompletionOperationResult } from '../src/runtime-contract.js';
 import {
   PostgresRuntimeStorageRegistry,
   RuntimeStorageRegistryError,
+  createRuntimeStorageDuplicateResultCodec,
   type DurableDuplicateResultCodec,
   type PostgresClientLike,
   type PostgresPoolLike,
@@ -364,6 +366,144 @@ integrationTest('copy truth stays independent and provider/issue leases are excl
       registry.claimReconciliationIssues({ owner: 'worker-b', limit: 1, leaseDurationMs: 60_000 }),
     ]);
     assert.equal(issueWorkerA.length + issueWorkerB.length, 1);
+  } finally {
+    await pool.end();
+  }
+});
+
+
+integrationTest('dual-provider completion persists exact replay truth across targeted repair', async () => {
+  const pool = new Pool({ connectionString: databaseUrl, max: 8 });
+  try {
+    await resetDatabase(pool);
+    await applyRuntimeMigration(pool);
+    await seedControlPlane(pool);
+    const registry = new PostgresRuntimeStorageRegistry({
+      pool: adaptPool(pool),
+      duplicateResultCodec: createRuntimeStorageDuplicateResultCodec(),
+      now: () => new Date('2026-07-16T00:10:00.000Z'),
+    });
+    const created = await registry.createObjectWriteIntent(createIntentInput());
+    const context = await registry.beginObjectUpload({
+      objectWriteIntentId: created.intent.objectWriteIntentId,
+      expectedRowVersion: created.intent.rowVersion,
+    });
+    assert.ok(context.objectRowVersion !== undefined && context.providerCopies !== undefined);
+
+    const completion = await registry.execute({
+      scope: 'video-maker_app:api:object-upload-completion',
+      key: 'completion-01',
+      fingerprint: 'e'.repeat(64),
+      operation: async () => {
+        const reservation = await registry.beginDualProviderWrite({
+          objectWriteIntentId: context.objectWriteIntentId,
+          storageObjectId: context.storageObjectId,
+          expectedIntentRowVersion: context.rowVersion,
+          expectedObjectRowVersion: context.objectRowVersion!,
+          expectedChecksumSha256: context.expectedChecksumSha256,
+          expectedByteLength: context.expectedByteLength,
+          copies: context.providerCopies!,
+        });
+        return registry.completeDualProviderWrite({
+          reservation,
+          checksumSha256: context.expectedChecksumSha256,
+          byteLength: context.expectedByteLength,
+          verifiedMedia: Object.freeze({
+            mediaType: 'image/png',
+            mediaFamily: 'image' as const,
+            image: Object.freeze({ width: 16, height: 16 }),
+          }),
+          outcomes: Object.freeze({
+            hot: Object.freeze({
+              state: 'failed' as const,
+              retryable: false,
+              diagnostic: Object.freeze({
+                category: 'dependency-unavailable' as const,
+                code: 'hot-provider-write-failed',
+                retryable: false,
+              }),
+            }),
+            canonical: Object.freeze({
+              state: 'verified' as const,
+              retryable: false,
+              observedChecksumSha256: context.expectedChecksumSha256,
+              observedByteLength: context.expectedByteLength,
+            }),
+          }),
+        });
+      },
+    });
+    assert.equal(completion.replayed, false);
+    assert.equal(completion.value.storageState, 'degraded');
+    assert.deepEqual(completion.value.copies?.hot, { state: 'failed', retryable: false });
+
+    const degraded = await registry.getStorageObject(context.storageObjectId);
+    assert.equal(degraded?.registryState, 'degraded');
+    assert.equal(degraded?.copies.hot.state, 'failed');
+    assert.equal(degraded?.copies.canonical.state, 'verified');
+    assert.equal(degraded?.safeTechnicalMetadata.completion !== undefined, true);
+
+    const retry = await registry.reserveTargetedProviderRetry({
+      storageObjectId: context.storageObjectId,
+      providerRole: 'hot',
+      expectedFailedCopyVersion: 2,
+    });
+    const repaired = await registry.completeTargetedProviderRetry({
+      reservation: retry,
+      outcome: Object.freeze({
+        state: 'verified' as const,
+        retryable: false,
+        observedChecksumSha256: context.expectedChecksumSha256,
+        observedByteLength: context.expectedByteLength,
+      }),
+    });
+    assert.equal(repaired.storageObjectId, context.storageObjectId);
+    assert.equal(repaired.storageState, 'ready');
+    assert.equal(repaired.copies.hot.state, 'verified');
+    assert.equal(repaired.copies.canonical.state, 'verified');
+
+    const replay = await registry.execute<ObjectUploadCompletionOperationResult>({
+      scope: 'video-maker_app:api:object-upload-completion',
+      key: 'completion-01',
+      fingerprint: 'e'.repeat(64),
+      operation: async () => {
+        throw new Error('duplicate replay must not invoke provider orchestration');
+      },
+    });
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.value.storageState, 'degraded');
+    assert.deepEqual(replay.value.copies?.hot, { state: 'failed', retryable: false });
+    assert.deepEqual(replay.value.copies?.canonical, { state: 'verified', retryable: false });
+
+    const attempts = await pool.query<{
+      provider_role: string;
+      attempt_number: number;
+      state: string;
+    }>(
+      `SELECT copy.provider_role, attempt.attempt_number, attempt.state
+         FROM public.storage_provider_attempts AS attempt
+         JOIN public.storage_object_copies AS copy
+           ON copy.storage_object_copy_id = attempt.storage_object_copy_id
+        WHERE attempt.storage_object_id = $1
+        ORDER BY copy.provider_role, attempt.attempt_number`,
+      [context.storageObjectId],
+    );
+    assert.deepEqual(attempts.rows, [
+      { provider_role: 'canonical', attempt_number: 1, state: 'succeeded' },
+      { provider_role: 'hot', attempt_number: 1, state: 'failed' },
+      { provider_role: 'hot', attempt_number: 2, state: 'succeeded' },
+    ]);
+
+    await assert.rejects(
+      registry.reserveTargetedProviderRetry({
+        storageObjectId: context.storageObjectId,
+        providerRole: 'hot',
+        expectedFailedCopyVersion: 2,
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeStorageRegistryError &&
+        error.code === 'targeted-retry-copy-conflict',
+    );
   } finally {
     await pool.end();
   }

@@ -473,8 +473,15 @@ export class PostgresRuntimeStorageRegistryObjectCore extends PostgresRuntimeSto
               intent.expected_byte_length, intent.expected_checksum_sha256, intent.state,
               intent.expires_at, intent.terminal_at, intent.row_version,
               intent.created_at, intent.updated_at, object_record.registry_state,
-              object_record.object_protection_stage,
+              object_record.object_protection_stage, object_record.row_version AS object_row_version,
+              hot_copy.storage_object_copy_id AS hot_storage_object_copy_id,
+              hot_copy.storage_profile_provider_binding_id AS hot_provider_binding_id,
+              hot_copy.copy_state AS hot_copy_state, hot_copy.row_version AS hot_copy_row_version,
               hot_copy.internal_locator AS hot_internal_locator,
+              canonical_copy.storage_object_copy_id AS canonical_storage_object_copy_id,
+              canonical_copy.storage_profile_provider_binding_id AS canonical_provider_binding_id,
+              canonical_copy.copy_state AS canonical_copy_state,
+              canonical_copy.row_version AS canonical_copy_row_version,
               canonical_copy.internal_locator AS canonical_internal_locator
          FROM public.object_write_intents AS intent
          JOIN public.managed_apps AS managed_app ON managed_app.id = intent.managed_app_id
@@ -515,11 +522,30 @@ export class PostgresRuntimeStorageRegistryObjectCore extends PostgresRuntimeSto
       state: row.state,
       expiresAt: asIso(row.expires_at),
       rowVersion: row.row_version,
+      objectRowVersion: row.object_row_version,
       registryState: row.registry_state,
       objectProtectionStage: row.object_protection_stage,
       internalLocators: Object.freeze({
         hot: row.hot_internal_locator,
         canonical: row.canonical_internal_locator,
+      }),
+      providerCopies: Object.freeze({
+        hot: Object.freeze({
+          storageObjectCopyId: row.hot_storage_object_copy_id,
+          providerBindingId: row.hot_provider_binding_id,
+          providerRole: 'hot' as const,
+          state: row.hot_copy_state,
+          rowVersion: row.hot_copy_row_version,
+          internalLocator: row.hot_internal_locator,
+        }),
+        canonical: Object.freeze({
+          storageObjectCopyId: row.canonical_storage_object_copy_id,
+          providerBindingId: row.canonical_provider_binding_id,
+          providerRole: 'canonical' as const,
+          state: row.canonical_copy_state,
+          rowVersion: row.canonical_copy_row_version,
+          internalLocator: row.canonical_internal_locator,
+        }),
       }),
     };
     if (row.caller_service_id !== null) context.callerServiceId = row.caller_service_id;
@@ -533,7 +559,7 @@ export class PostgresRuntimeStorageRegistryObjectCore extends PostgresRuntimeSto
     const objectResult = await client.query<StorageObjectRow>(
       `SELECT storage_object_id, registry_state, object_protection_stage,
               expected_checksum_sha256, expected_byte_length, expected_content_type,
-              verified_checksum_sha256, verified_byte_length, row_version,
+              verified_checksum_sha256, verified_byte_length, safe_technical_metadata, row_version,
               created_at, updated_at
          FROM public.storage_objects
         WHERE storage_object_id = $1`,
@@ -571,6 +597,7 @@ export class PostgresRuntimeStorageRegistryObjectCore extends PostgresRuntimeSto
       ...(objectRow.verified_byte_length === null
         ? {}
         : { verifiedByteLength: asNumber(objectRow.verified_byte_length) }),
+      safeTechnicalMetadata: Object.freeze({ ...objectRow.safe_technical_metadata }),
       rowVersion: objectRow.row_version,
       createdAt: asIso(objectRow.created_at),
       updatedAt: asIso(objectRow.updated_at),

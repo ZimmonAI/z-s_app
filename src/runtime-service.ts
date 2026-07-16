@@ -1095,3 +1095,36 @@ export {
   type UploadCompletionTokenExpectation,
   type UploadCompletionTokenService,
 } from './runtime-upload-token.js';
+
+export {
+  DualProviderObjectIngestAdapter,
+  TargetedProviderRetryCoordinator,
+  type DualProviderAttemptReservation,
+  type DualProviderObjectIngestAdapterOptions,
+  type DualProviderStorageTruth,
+  type DualProviderWriteOutcome,
+  type DualProviderWriteRegistry,
+  type ProviderWriteTargetResolver,
+  type TargetedProviderRetryReservation,
+  type VerifiedProviderWriteSource,
+} from './runtime-dual-provider.js';
+export {
+  BoundedMediaVerifier,
+  MediaVerificationError,
+  type BoundedMediaVerifierOptions,
+  type MediaVerificationAdapter,
+  type MediaVerificationInput,
+  type MediaVerificationSource,
+} from './runtime-media-verification.js';
+export {
+  ProviderExecutionError,
+  S3CompatibleProviderObjectWriter,
+  type ProviderCleanupResult,
+  type ProviderCredentialResolver,
+  type ProviderObjectWriter,
+  type ProviderObservedMetadata,
+  type ProviderWriteReceipt,
+  type ResolvedProviderWriteTarget,
+  type ResolvedS3CredentialBinding,
+  type S3CompatibleProviderObjectWriterOptions,
+} from './runtime-s3-provider.js';

@@ -1,6 +1,6 @@
 {
   "name": "@zimmonai/z-s-control-plane",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Private Zimspace Storage control-plane and versioned runtime contract foundation.",
   "repository": {
@@ -46,7 +46,7 @@
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:compile": "node scripts/clean-test.mjs && tsc -p tsconfig.test.json",
-    "test:focused": "npm run test:compile && node --test .test-dist/tests/control-plane.test.js .test-dist/tests/integrity.test.js .test-dist/tests/runtime-service.test.js .test-dist/tests/runtime-ingest.test.js",
+    "test:focused": "npm run test:compile && node --test .test-dist/tests/control-plane.test.js .test-dist/tests/integrity.test.js .test-dist/tests/runtime-service.test.js .test-dist/tests/runtime-ingest.test.js .test-dist/tests/runtime-dual-provider.test.js .test-dist/tests/runtime-media-verification.test.js",
     "test:registry": "npm run test:compile && node --test .test-dist/tests/runtime-storage-registry.integration.test.js",
     "test": "npm run test:compile && node --test .test-dist/tests/*.test.js",
     "lint": "node scripts/lint.mjs",
@@ -57,8 +57,12 @@
     "validate:legacy-id": "node scripts/validate-no-legacy-delivery-id.mjs",
     "pack:check": "npm run build && node scripts/install-smoke.mjs",
     "package:verify": "node scripts/verify-package-artifact.mjs",
+    "verify:2b06:providers": "npm run build && node scripts/verify-2b-06-providers.mjs",
     "validate": "npm run test:focused && npm test && npm run typecheck && npm run lint && npm run build && npm run pack:check && npm run validate:migration && npm run validate:seed && npm run validate:secrets && npm run validate:legacy-id && npm run local:readiness",
     "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1088.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
