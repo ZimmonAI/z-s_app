@@ -1,0 +1,50 @@
+name: Package distribution validation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/package-distribution-validation.yml'
+      - '.github/workflows/package-publish.yml'
+      - '.npmrc'
+      - 'package.json'
+      - 'src/runtime-contract.ts'
+      - 'src/runtime-storage-registry*.ts'
+      - 'scripts/install-smoke.mjs'
+      - 'scripts/local-readiness.mjs'
+      - 'scripts/verify-package-artifact.mjs'
+      - 'README.md'
+      - 'docs/runtime-contract.md'
+      - 'docs/runtime-storage-registry.md'
+      - 'db/migrations/0002_z_s_runtime_registry.sql'
+      - 'db/migrations/0002_z_s_runtime_registry.down.sql'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --ignore-scripts
+      - run: npm run validate
+      - name: Build exact package artifact evidence
+        run: |
+          mkdir -p package-output evidence
+          npm pack --json --silent --pack-destination package-output > package-output/pack.json
+          node scripts/verify-package-artifact.mjs \
+            --pack-json package-output/pack.json \
+            --tarball-root package-output \
+            --output evidence/package-artifact.json
+          node scripts/install-smoke.mjs --evidence evidence/local-install.json
+      - name: Retain non-secret package evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: z-s-package-distribution-validation
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30
