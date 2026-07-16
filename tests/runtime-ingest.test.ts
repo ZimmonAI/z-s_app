@@ -510,11 +510,15 @@ async function createAcceptedIntent(input: {
   const response = await input.runtime.handle(
     createRequest({
       bytes: input.bytes,
-      sourceReference: input.sourceReference,
-      correlation: input.correlation,
-      authToken: input.authToken,
-      callerApp: input.callerApp,
-      idempotencyKey: input.idempotencyKey,
+      ...(input.sourceReference === undefined
+        ? {}
+        : { sourceReference: input.sourceReference }),
+      ...(input.correlation === undefined ? {} : { correlation: input.correlation }),
+      ...(input.authToken === undefined ? {} : { authToken: input.authToken }),
+      ...(input.callerApp === undefined ? {} : { callerApp: input.callerApp }),
+      ...(input.idempotencyKey === undefined
+        ? {}
+        : { idempotencyKey: input.idempotencyKey }),
     }),
   );
   assert.equal(response.status, 200);
