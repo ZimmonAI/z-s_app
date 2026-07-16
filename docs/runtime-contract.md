@@ -2,16 +2,16 @@
 
 ## Exact identity
 
-- Source package: `@zimmonai/z-s-control-plane@0.3.0`
-- Registry: private GitHub Packages npm registry
-- Package owner/scope: `ZimmonAI/@zimmonai`
+- Source package: `@zimmonai/z-s-control-plane@0.4.0`
+- Registry authority: npm/GitHub Packages; no Git, workspace, link, or local source authority
+- Direct runtime dependency: `@aws-sdk/client-s3@3.1088.0`
+- Lock authority: tracked `package-lock.json`, lockfile version 3
 - Contract: `1.0`
 - Runtime: Node.js 22 or newer
-- Transport: authenticated server-to-server HTTP with JSON control requests and one raw streamed upload body
-- Publication in 2B-05: none
-- Release tag in 2B-05: none
+- Publication in 2B-06: none
+- Release tag in 2B-06: none
 
-Version `0.3.0` is a backward-compatible addition within contract `1.x`. It preserves the root, `runtime-contract`, `runtime-service`, and `runtime-storage-registry` package entry points. It does not overwrite or republish `0.2.1`, configure package visibility, or grant consumer access.
+Version `0.4.0` preserves the existing root, `runtime-contract`, `runtime-service`, and `runtime-storage-registry` package entry points. It adds no public HTTP route and no package subpath.
 
 ## Imports
 
@@ -19,54 +19,32 @@ Version `0.3.0` is a backward-compatible addition within contract `1.x`. It pres
 import {
   CONTRACT_VERSION,
   PACKAGE_VERSION,
-  type ObjectWriteIntentRequest,
-  type ObjectWriteIntentResult,
-  type ObjectUploadCompletionRequestMetadata,
   type ObjectUploadCompletionResult,
-  type ObjectWriteIntentCancellationResult,
-  type ResolvedObjectWritePolicy,
+  type ProviderCopyResultState,
+  type SafeProviderCopyResult,
+  type StorageObjectResultState,
+  type VerifiedImageMetadata,
+  type VerifiedMediaMetadata,
+  type VerifiedVideoMetadata,
 } from '@zimmonai/z-s-control-plane/runtime-contract';
 
 import {
+  BoundedMediaVerifier,
+  DualProviderObjectIngestAdapter,
+  S3CompatibleProviderObjectWriter,
+  TargetedProviderRetryCoordinator,
   createObjectIngestRuntime,
-  createDeterministicUploadCompletionTokenService,
-  type ObjectIngestAdapter,
-  type ResolvedObjectWriteAuthority,
+  type ProviderCredentialResolver,
+  type ProviderWriteTargetResolver,
+  type ResolvedProviderWriteTarget,
 } from '@zimmonai/z-s-control-plane/runtime-service';
 
 import {
   PostgresRuntimeStorageRegistry,
-  type PostgresQueryable,
 } from '@zimmonai/z-s-control-plane/runtime-storage-registry';
 ```
 
-The deterministic upload-completion token service is an injected testing utility. Production signer and secret binding are deliberately not configured by 2B-05.
-
-## Runtime composition boundary
-
-`createObjectIngestRuntime` composes:
-
-- bearer-token authentication;
-- caller authorization;
-- exact active storage-profile resolution;
-- server-only write-authority resolution;
-- durable registry and duplicate protection;
-- an injected upload-completion token service;
-- an injected bounded `ObjectIngestAdapter`; and
-- separate control-plane and data-plane readiness probes.
-
-The server-only `ResolvedObjectWriteAuthority` contains internal profile, prefix, and provider-binding identifiers plus this exact write policy shape:
-
-```ts
-interface ResolvedObjectWritePolicy {
-  uploadMode: 'server-streamed-single-object';
-  allowedMediaTypes: readonly string[];
-  maxByteLength: number;
-  intentTtlSeconds: 900;
-}
-```
-
-Internal identifiers, provider bindings, bucket data, and generated locators are never part of public result DTOs.
+Provider targets, credential bindings, endpoints, buckets, internal locators, and credential references are server-only values. They are not public result DTOs.
 
 ## Exact HTTP surface
 
@@ -80,170 +58,108 @@ DELETE /v1/object-write-intents/{objectWriteIntentId}
 
 No multipart, resumable, provider-presigned, browser-direct, caller-selected bucket, caller-selected provider, or caller-selected object-key route is implemented.
 
-## Create an object-write-intent
+## Dual-provider upload completion
 
-### Request
+The existing upload-completion route retains its caller, correlation, token, MIME, byte-length, SHA-256, and durable duplicate-protection checks. The dual-provider adapter then:
 
-```http
-POST /v1/object-write-intents
-Authorization: Bearer <runtime-token>
-X-ZS-Contract-Version: 1.0
-X-ZS-Caller-App: video-maker_app
-X-App-Correlation-Reference: upload-example-001
-Idempotency-Key: create-example-001
-Content-Type: application/json
+1. creates exactly two provider-attempt rows with operation reference `object-upload-completion:<intentId>` and attempt number `1`;
+2. stages the body once with restrictive file permissions and independently computes exact byte length and SHA-256;
+3. verifies media structure before any provider write;
+4. opens two independent streams from the staged file;
+5. starts hot and canonical writes concurrently and waits for both with settled semantics;
+6. verifies each provider result through `verifyProviderWrite`;
+7. records each attempt and copy outcome independently;
+8. derives object state only after both outcomes are known;
+9. completes the write intent durably; and
+10. removes temporary state in `finally`.
 
+A provider failure does not erase a verified peer. Cleanup is limited to the exact conditional-create target associated with the failed task.
+
+## Media verification
+
+`VerifiedMediaMetadata` contains only deterministic technical facts:
+
+```ts
+interface VerifiedMediaMetadata {
+  mediaType: string;
+  mediaFamily: 'image' | 'video';
+  image?: { width: number; height: number };
+  video?: {
+    width?: number;
+    height?: number;
+    durationMs: number;
+    container: 'mp4' | (string & {});
+    codec?: string;
+  };
+}
+```
+
+PNG validation checks signature, first `IHDR`, positive dimensions, pixel bounds, bounded chunks, and exact terminal `IEND`. MP4 validation checks a supported `ftyp`, bounded box structure, `moov`/`mvhd` timing, and positive duration. Unsupported, malformed, truncated, MIME-mismatched, and over-limit input is rejected before provider execution.
+
+No prompt, title, user, project, scene, provider, endpoint, bucket, locator, object-key, credential, or raw SDK metadata is stored in verified media facts.
+
+## Safe upload-completion result
+
+The existing result identity and `state: "recorded"` remain. A dual-provider completion adds storage truth, verified media, and safe copy outcomes:
+
+```json
 {
-  "storageProfile": {
-    "profileId": "video-maker-dev-default",
-    "profileVersion": 1,
-    "environment": "dev"
-  },
-  "mediaType": "image/png",
+  "storageObjectId": "<uuid>",
+  "writeIntentId": "<uuid>",
+  "state": "recorded",
+  "checksumSha256": "<computed-lowercase-64-hex>",
   "byteLength": 1234,
-  "checksumSha256": "<lowercase-64-hex>",
-  "sourceReference": "opaque-consumer-reference"
-}
-```
-
-The runtime rejects unsupported contract versions before operation execution, requires `X-ZS-Caller-App` to match the authenticated caller, authorizes `object-write-intent`, resolves the exact active profile and ready capability evidence, validates MIME and size from the resolved write policy, and creates one storage object, one write intent, and two pending provider-copy rows under durable duplicate protection.
-
-### Safe result
-
-```json
-{
-  "contractVersion": "1.0",
-  "result": {
-    "writeIntentId": "<uuid>",
-    "storageObjectId": "<uuid>",
-    "state": "accepted",
-    "uploadCompletionToken": "<short-lived-sensitive-token>",
-    "expiresAt": "<iso-8601-not-more-than-900-seconds>",
-    "objectProtectionStage": "write-intent-created",
-    "duplicateProtection": {
-      "key": "create-example-001",
-      "replayed": false
-    }
+  "integrityVerification": {
+    "verified": true,
+    "checksumVerified": true,
+    "sizeVerified": true,
+    "sizeVerificationDisposition": "matched"
+  },
+  "storageState": "ready",
+  "verifiedMedia": {
+    "mediaType": "image/png",
+    "mediaFamily": "image",
+    "image": { "width": 1920, "height": 1080 }
+  },
+  "copies": {
+    "hot": { "state": "verified", "retryable": false },
+    "canonical": { "state": "verified", "retryable": false }
+  },
+  "objectProtectionStage": "canonical-and-hot-verified",
+  "duplicateProtection": {
+    "key": "complete-example-001",
+    "replayed": false
   }
 }
 ```
 
-The upload-completion token is sensitive. It must never be persisted, logged, emitted in diagnostics, included in screenshots, or stored in snapshots.
+For degraded or unavailable outcomes, `safeDiagnostic` may contain only a bounded category, stable code, retryability, and correlation added by the HTTP runtime. It never contains raw provider messages or authority values.
 
-## Stream object content
+## Exact outcome matrix
 
-### Request
+| Hot | Canonical | `storageState` | Registry state | `objectProtectionStage` |
+|---|---|---|---|---|
+| verified | verified | `ready` | `active` | `canonical-and-hot-verified` |
+| failed | verified | `degraded` | `degraded` | `canonical-verified-hot-repair-required` |
+| verified | failed | `degraded` | `degraded` | `hot-verified-canonical-repair-required` |
+| failed | failed | `unavailable` | `reserved` | `provider-write-failed` |
 
-```http
-PUT /v1/object-write-intents/<objectWriteIntentId>/content
-Authorization: Bearer <same-runtime-token>
-X-ZS-Contract-Version: 1.0
-X-ZS-Caller-App: video-maker_app
-X-App-Correlation-Reference: upload-example-001
-Idempotency-Key: complete-example-001
-X-ZS-Upload-Completion-Token: <token-returned-by-create>
-X-Content-SHA256: <lowercase-64-hex>
-Content-Type: image/png
-Content-Length: 1234
+The intent becomes `completed` after the durable outcome is recorded, including the both-failed `unavailable` case. Request/media validation errors fail the intent instead and do not invoke providers.
 
-<exactly 1234 raw object bytes>
-```
+## Durable replay
 
-The body is a raw byte stream. JSON and multipart bodies are not accepted.
+The duplicate-result codec stores only the durable write-intent and storage-object references. Replay reconstructs checksum, byte length, object stage, storage state, verified media, and both safe copy outcomes from registry rows. It does not reread the request body or invoke provider or credential adapters.
 
-Before full body consumption, the runtime validates the UUID route parameter, contract version, caller, correlation, idempotency key, completion token, durable intent context, exact MIME type, exact `Content-Length`, and exact declared SHA-256. It atomically transitions `accepted -> uploading`, invokes the injected adapter once, independently computes byte count and SHA-256 while streaming, cleans task-created partial state on abort or mismatch, and records `uploading -> completed` only after bounded validation succeeds.
+## Targeted retry
 
-### Safe result
+`TargetedProviderRetryCoordinator` requires an expected failed-copy row version and a verified source. The registry appends the next provider attempt, changes only the selected copy through compare-and-set semantics, writes only that role, and re-derives object truth while leaving the verified peer untouched.
 
-```json
-{
-  "contractVersion": "1.0",
-  "result": {
-    "storageObjectId": "<uuid>",
-    "writeIntentId": "<uuid>",
-    "state": "recorded",
-    "checksumSha256": "<computed-lowercase-64-hex>",
-    "byteLength": 1234,
-    "integrityVerification": {
-      "checksum": "passed",
-      "size": "passed"
-    },
-    "objectProtectionStage": "upload-completion-recorded",
-    "duplicateProtection": {
-      "key": "complete-example-001",
-      "replayed": false
-    }
-  }
-}
-```
-
-An exact durable replay returns the same stable result without consuming the stream or invoking the adapter again. Reusing the same idempotency key with a different fingerprint returns a deterministic duplicate conflict.
-
-Generic completion does not mean provider verification. The storage object remains reserved, and both hot and canonical copy rows remain pending.
-
-## Cancel an uncompleted intent
-
-### Request
-
-```http
-DELETE /v1/object-write-intents/<objectWriteIntentId>
-Authorization: Bearer <same-runtime-token>
-X-ZS-Contract-Version: 1.0
-X-ZS-Caller-App: video-maker_app
-X-App-Correlation-Reference: upload-example-001
-Idempotency-Key: cancel-example-001
-```
-
-The runtime uses durable `object-write-intent-cancel` duplicate protection and compare-and-set state checks. Only `accepted` or `uploading` may become `cancelled`. Completed, expired, failed, or already cancelled intents return deterministic safe behavior. Durable storage-object and registry rows are not deleted.
-
-### Safe result
-
-```json
-{
-  "contractVersion": "1.0",
-  "result": {
-    "storageObjectId": "<uuid>",
-    "writeIntentId": "<uuid>",
-    "state": "cancelled",
-    "duplicateProtection": {
-      "key": "cancel-example-001",
-      "replayed": false
-    }
-  }
-}
-```
-
-## Durable duplicate-protection scopes
-
-```text
-object-write-intent
-object-upload-completion
-object-write-intent-cancel
-```
-
-The durable identity is caller app, optional caller service, operation scope, and idempotency key. Request fingerprints exclude bearer tokens and upload-completion tokens.
-
-## State truth
-
-| Condition | Intent | Storage object | Provider copies |
-|---|---|---|---|
-| intent created | `accepted` | `reserved` / `write-intent-created` | both `pending` |
-| stream accepted | `uploading` | `reserved` / `write-intent-created` | both `pending` |
-| generic ingest recorded | `completed` | `reserved` / `upload-completion-recorded` | both `pending` |
-| expired | `expired` | durable and not active | both `pending` |
-| cancelled | `cancelled` | durable and not active | both `pending` |
-| failed after stream/validation error | `failed` after cleanup | durable and not active | both `pending` |
-
-2B-05 never marks a storage object active or protected and never marks a provider copy verified.
+Retry is an internal primitive. It adds no HTTP route, scheduler, queue consumer, or broad reconciliation loop.
 
 ## Validation and distribution boundary
 
-The dedicated `2B-05 write intent and generic ingest validation` workflow runs on Node.js 22 with a disposable PostgreSQL 17 service. It verifies focused ingest tests, registry integration tests, migration byte identity, and the complete `npm run validate` chain. The package smoke installs a clean local tarball and verifies all four existing package entry points at source version `0.3.0` and contract `1.0`.
+The 2B-06 workflow uses Node.js 22 and disposable PostgreSQL 17. It runs focused provider/media tests with deterministic doubles, registry integration tests, the full suite, typecheck, lint, build, clean package install, package artifact verification, migration/seed no-change validation, secret and legacy-identifier checks, and the complete validation chain.
 
-Including reviewed migration files in the package does not apply them. No live database, R2, MinIO, deployment, browser, Video Maker source, or Z-X source action is performed by packaging, importing, or testing this source.
+The governed local provider handoff is intentionally separate from CI. It supports only the documented scenario allowlist, requires explicit provider-action approval and a safe run identifier, resolves credentials from the local environment, uses exact generated targets under approved prefixes, performs no broad listing, and deletes plus verifies absence of every exact target. Safe JSON output may contain aliases, media facts, state transitions, retryability, attempt counts, and cleanup counts only.
 
-## Safety boundary
-
-Public responses and diagnostics exclude provider endpoints, bucket names, internal locators, credentials, secret references, connection strings, bearer tokens, upload-completion tokens, raw provider responses, and consumer business payloads.
-
-Real independent R2 and MinIO writes plus provider/media verification belong to the separate 2B-06 implementation. Read delivery, technical deletion, repair, reconciliation, eventing, deployment, and consumer adoption remain separate governed work.
+Packaging and automated testing do not apply migrations, publish a package, access live providers, read credentials, deploy services, or modify consumers.

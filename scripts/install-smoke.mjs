@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const root = process.cwd();
 const EXPECTED_NAME = '@zimmonai/z-s-control-plane';
-const EXPECTED_VERSION = '0.3.0';
+const EXPECTED_VERSION = '0.4.0';
 const EXPECTED_REGISTRY = 'https://npm.pkg.github.com';
 
 function parseArguments(argv) {
@@ -86,10 +86,8 @@ try {
     '--no-fund',
     '--save-exact',
     '--package-lock=true',
-    '--cache',
-    cacheDirectory,
   ];
-  if (!options.spec) installArguments.push('--offline');
+  if (options.spec) installArguments.push('--cache', cacheDirectory);
   if (options.registry) installArguments.push('--registry', options.registry);
   installArguments.push(installSpec);
 
@@ -112,6 +110,9 @@ try {
       "if (runtime.createHttpStorageRuntime === undefined) throw new Error('runtime export missing');",
       "if (runtime.createObjectIngestRuntime === undefined) throw new Error('ingest runtime export missing');",
       "if (runtime.createDeterministicUploadCompletionTokenService === undefined) throw new Error('token service export missing');",
+      "if (runtime.DualProviderObjectIngestAdapter === undefined) throw new Error('dual-provider adapter export missing');",
+      "if (runtime.S3CompatibleProviderObjectWriter === undefined) throw new Error('S3 provider writer export missing');",
+      "if (runtime.BoundedMediaVerifier === undefined) throw new Error('media verifier export missing');",
       "if (registry.PostgresRuntimeStorageRegistry === undefined) throw new Error('registry export missing');",
       "if (registry.createRuntimeStorageDuplicateResultCodec === undefined) throw new Error('registry codec export missing');",
       "if (root.CAPABILITY_POLICY_VERSION !== '1') throw new Error('control-plane export missing');",

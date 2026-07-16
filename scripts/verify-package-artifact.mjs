@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const root = process.cwd();
 const EXPECTED_NAME = '@zimmonai/z-s-control-plane';
-const EXPECTED_VERSION = '0.3.0';
+const EXPECTED_VERSION = '0.4.0';
 const EXPECTED_REPOSITORY = 'git+https://github.com/ZimmonAI/z-s_app.git';
 const EXPECTED_REGISTRY = 'https://npm.pkg.github.com';
 const EXPECTED_EXPORTS = [
@@ -35,7 +35,10 @@ const APPROVED_DIST_MODULES = [
   'prefix-authorizer',
   'profile-registry',
   'runtime-contract',
+  'runtime-dual-provider',
   'runtime-ingest',
+  'runtime-media-verification',
+  'runtime-s3-provider',
   'runtime-service',
   'runtime-storage-registry',
   'runtime-storage-registry-duplicate',
@@ -94,8 +97,8 @@ function assertExactManifest(manifest) {
   assert.deepEqual(manifest.files, EXPECTED_PACKAGE_FILES);
   assert.equal(manifest.engines?.node, '>=22');
   assert.equal(manifest.scripts?.prepack, 'npm run build');
+  assert.deepEqual(manifest.dependencies, { '@aws-sdk/client-s3': '3.1088.0' });
   for (const field of [
-    'dependencies',
     'optionalDependencies',
     'peerDependencies',
     'bundledDependencies',
@@ -156,7 +159,7 @@ try {
     registry: EXPECTED_REGISTRY,
     repository: 'https://github.com/ZimmonAI/z-s_app',
     packageUrl: 'https://github.com/orgs/ZimmonAI/packages/npm/package/z-s-control-plane',
-    sourceBaseline: '70055e466557f0039756fc211b7dadbc1880c38d',
+    sourceBaseline: '9aa72e8cf6a6165395c296ca13d1b0b13296f187',
     tarballFilename: artifact.filename,
     tarballSha256: sha256,
     npmIntegrity: artifact.integrity,

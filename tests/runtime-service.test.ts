@@ -133,10 +133,16 @@ function diagnosticCode(body: Record<string, unknown>): string | undefined {
 
 test('runtime contract exposes exact identity and ingest runtime functions', () => {
   assert.equal(SERVICE_ID, 'z-s');
-  assert.equal(PACKAGE_VERSION, '0.3.0');
+  assert.equal(PACKAGE_VERSION, '0.4.0');
   assert.equal(CONTRACT_VERSION, '1.0');
   assert.deepEqual(Object.keys(runtimeServiceModule).sort(), [
+    'BoundedMediaVerifier',
+    'DualProviderObjectIngestAdapter',
+    'MediaVerificationError',
     'ObjectIngestRuntimeError',
+    'ProviderExecutionError',
+    'S3CompatibleProviderObjectWriter',
+    'TargetedProviderRetryCoordinator',
     'UPLOAD_COMPLETION_TOKEN_PURPOSE',
     'UploadCompletionTokenError',
     'createDeterministicUploadCompletionTokenService',
@@ -321,7 +327,7 @@ test('process health remains distinct from dependency readiness', async () => {
   const health = await runtime.handle(new Request('https://z-s.internal/healthz'));
   assert.equal(health.status, 200);
   assert.equal((await responseBody(health)).process, 'healthy');
-  assert.equal((await runtime.health()).packageVersion, '0.3.0');
+  assert.equal((await runtime.health()).packageVersion, '0.4.0');
 
   const readiness = await runtime.handle(new Request('https://z-s.internal/readyz'));
   assert.equal(readiness.status, 503);

@@ -107,7 +107,16 @@ export interface WriteIntentExecutionRow extends WriteIntentRow {
   expected_checksum_sha256: string;
   registry_state: StorageObjectState;
   object_protection_stage: string;
+  object_row_version: number;
+  hot_storage_object_copy_id: string;
+  hot_provider_binding_id: string;
+  hot_copy_state: StorageObjectCopyState;
+  hot_copy_row_version: number;
   hot_internal_locator: string;
+  canonical_storage_object_copy_id: string;
+  canonical_provider_binding_id: string;
+  canonical_copy_state: StorageObjectCopyState;
+  canonical_copy_row_version: number;
   canonical_internal_locator: string;
 }
 
@@ -120,6 +129,7 @@ export interface StorageObjectRow extends Record<string, unknown> {
   expected_content_type: string;
   verified_checksum_sha256: string | null;
   verified_byte_length: string | number | null;
+  safe_technical_metadata: Record<string, unknown>;
   row_version: number;
   created_at: Date | string;
   updated_at: Date | string;
@@ -194,6 +204,15 @@ export interface ObjectWriteIntentSnapshot {
   updatedAt: string;
 }
 
+export interface ProviderCopyExecutionContext {
+  storageObjectCopyId: string;
+  providerBindingId: string;
+  providerRole: ProviderRole;
+  state: StorageObjectCopyState;
+  rowVersion: number;
+  internalLocator: string;
+}
+
 export interface ObjectWriteIntentExecutionContext {
   objectWriteIntentId: string;
   storageObjectId: string;
@@ -212,9 +231,11 @@ export interface ObjectWriteIntentExecutionContext {
   state: ObjectWriteIntentState;
   expiresAt: string;
   rowVersion: number;
+  objectRowVersion?: number;
   registryState: StorageObjectState;
   objectProtectionStage: string;
   internalLocators: Readonly<Record<ProviderRole, string>>;
+  providerCopies?: Readonly<Record<ProviderRole, Readonly<ProviderCopyExecutionContext>>>;
 }
 
 export interface StorageObjectCopySnapshot {
@@ -237,6 +258,7 @@ export interface StorageObjectSnapshot {
   expectedContentType: string;
   verifiedChecksumSha256?: string;
   verifiedByteLength?: number;
+  safeTechnicalMetadata: Readonly<Record<string, unknown>>;
   rowVersion: number;
   createdAt: string;
   updatedAt: string;

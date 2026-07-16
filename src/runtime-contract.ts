@@ -10,7 +10,7 @@ export type { ProviderCapabilityPolicy } from './domain.js';
 export type { IntegrityVerificationResult } from './integrity.js';
 
 export const SERVICE_ID = 'z-s' as const;
-export const PACKAGE_VERSION = '0.3.0' as const;
+export const PACKAGE_VERSION = '0.4.0' as const;
 export const CONTRACT_VERSION = '1.0' as const;
 export const SUPPORTED_CONTRACT_VERSIONS = [CONTRACT_VERSION] as const;
 
@@ -98,6 +98,34 @@ export interface ObjectUploadCompletionRequestMetadata {
   checksumSha256: string;
 }
 
+export type StorageObjectResultState = 'ready' | 'degraded' | 'unavailable';
+export type ProviderCopyResultState = 'verified' | 'failed';
+
+export interface SafeProviderCopyResult {
+  state: ProviderCopyResultState;
+  retryable: boolean;
+}
+
+export interface VerifiedImageMetadata {
+  width: number;
+  height: number;
+}
+
+export interface VerifiedVideoMetadata {
+  width?: number;
+  height?: number;
+  durationMs: number;
+  container: 'mp4' | (string & {});
+  codec?: string;
+}
+
+export interface VerifiedMediaMetadata {
+  mediaType: string;
+  mediaFamily: 'image' | 'video';
+  image?: Readonly<VerifiedImageMetadata>;
+  video?: Readonly<VerifiedVideoMetadata>;
+}
+
 export interface ObjectUploadCompletionResult {
   storageObjectId: string;
   writeIntentId: string;
@@ -107,6 +135,13 @@ export interface ObjectUploadCompletionResult {
   integrityVerification: IntegrityVerificationResult;
   objectProtectionStage: ObjectProtectionStage;
   duplicateProtection: DuplicateProtectionSummary;
+  storageState?: StorageObjectResultState;
+  verifiedMedia?: Readonly<VerifiedMediaMetadata>;
+  copies?: Readonly<{
+    hot: Readonly<SafeProviderCopyResult>;
+    canonical: Readonly<SafeProviderCopyResult>;
+  }>;
+  safeDiagnostic?: SafeDiagnostic;
 }
 
 export interface ObjectWriteIntentCancellationResult {
