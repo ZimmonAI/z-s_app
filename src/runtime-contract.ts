@@ -1,16 +1,22 @@
 import type { Environment, ProviderCapabilityPolicy } from './domain.js';
 import type { IntegrityVerificationResult } from './integrity.js';
+import type { ResolvedObjectWriteAuthority } from './runtime-ingest.js';
+import type {
+  UploadCompletionTokenClaims,
+  UploadCompletionTokenService,
+} from './runtime-upload-token.js';
 
 export type { ProviderCapabilityPolicy } from './domain.js';
 export type { IntegrityVerificationResult } from './integrity.js';
 
 export const SERVICE_ID = 'z-s' as const;
-export const PACKAGE_VERSION = '0.2.1' as const;
+export const PACKAGE_VERSION = '0.3.0' as const;
 export const CONTRACT_VERSION = '1.0' as const;
 export const SUPPORTED_CONTRACT_VERSIONS = [CONTRACT_VERSION] as const;
 
 export type ContractVersion = (typeof SUPPORTED_CONTRACT_VERSIONS)[number];
 export type CallerAppId = 'video-maker_app' | 'z-x_app' | (string & {});
+export type ServerStreamedUploadMode = 'server-streamed-single-object';
 
 export interface CallerIdentity {
   appId: CallerAppId;
@@ -23,10 +29,18 @@ export interface StorageProfileRequest {
   environment: Environment;
 }
 
+export interface ResolvedObjectWritePolicy {
+  uploadMode: ServerStreamedUploadMode;
+  allowedMediaTypes: readonly string[];
+  maxByteLength: number;
+  intentTtlSeconds: 900;
+}
+
 export interface SafeResolvedStorageProfile {
   profileId: string;
   profileVersion: number;
   environment: Environment;
+  active?: boolean;
   ready: boolean;
   safeFingerprint: string;
   capabilityPolicy: ProviderCapabilityPolicy;
@@ -37,6 +51,7 @@ export interface SafeResolvedStorageProfile {
     objectRepairOperation: boolean;
   };
   protectionStages: readonly ObjectProtectionStage[];
+  writePolicy?: Readonly<ResolvedObjectWritePolicy>;
 }
 
 export type ObjectProtectionStage =
@@ -76,6 +91,13 @@ export interface ObjectWriteIntentResult {
   duplicateProtection: DuplicateProtectionSummary;
 }
 
+export interface ObjectUploadCompletionRequestMetadata {
+  objectWriteIntentId: string;
+  mediaType: string;
+  byteLength: number;
+  checksumSha256: string;
+}
+
 export interface ObjectUploadCompletionResult {
   storageObjectId: string;
   writeIntentId: string;
@@ -84,6 +106,14 @@ export interface ObjectUploadCompletionResult {
   byteLength: number;
   integrityVerification: IntegrityVerificationResult;
   objectProtectionStage: ObjectProtectionStage;
+  duplicateProtection: DuplicateProtectionSummary;
+}
+
+export interface ObjectWriteIntentCancellationResult {
+  storageObjectId: string;
+  writeIntentId: string;
+  state: 'cancelled';
+  duplicateProtection: DuplicateProtectionSummary;
 }
 
 export interface StorageObjectResult {
@@ -244,6 +274,23 @@ export interface DuplicateProtectionStore {
   clear?: () => void;
 }
 
+export type ObjectWriteIntentOperationResult = Omit<
+  ObjectWriteIntentResult,
+  'duplicateProtection' | 'uploadCompletionToken'
+> & {
+  uploadCompletionToken?: string;
+};
+
+export type ObjectUploadCompletionOperationResult = Omit<
+  ObjectUploadCompletionResult,
+  'duplicateProtection'
+>;
+
+export type ObjectWriteIntentCancellationOperationResult = Omit<
+  ObjectWriteIntentCancellationResult,
+  'duplicateProtection'
+>;
+
 export interface StorageRuntimeOptions {
   authenticate: (bearerToken: string) => Promise<CallerIdentity | null> | CallerIdentity | null;
   authorizeCaller: (caller: Readonly<CallerIdentity>) => Promise<boolean> | boolean;
@@ -251,13 +298,36 @@ export interface StorageRuntimeOptions {
     request: Readonly<StorageProfileRequest>,
     context: Readonly<Pick<RuntimeRequestContext, 'caller' | 'appCorrelationReference'>>,
   ) => Promise<SafeResolvedStorageProfile> | SafeResolvedStorageProfile;
+  resolveObjectWriteAuthority?: (
+    request: Readonly<StorageProfileRequest>,
+    context: Readonly<Pick<RuntimeRequestContext, 'caller' | 'appCorrelationReference'>>,
+  ) => Promise<ResolvedObjectWriteAuthority> | ResolvedObjectWriteAuthority;
   createObjectWriteIntent: (input: {
     request: Readonly<ObjectWriteIntentRequest>;
     resolvedProfile: Readonly<SafeResolvedStorageProfile>;
+    writeAuthority?: Readonly<ResolvedObjectWriteAuthority>;
+    context: Readonly<RuntimeRequestContext>;
+  }) => Promise<ObjectWriteIntentOperationResult> | ObjectWriteIntentOperationResult;
+  uploadCompletionTokenService?: UploadCompletionTokenService;
+  completeObjectUpload?: (input: {
+    metadata: Readonly<ObjectUploadCompletionRequestMetadata>;
+    body: ReadableStream<Uint8Array> | null;
+    tokenClaims: Readonly<UploadCompletionTokenClaims>;
     context: Readonly<RuntimeRequestContext>;
   }) =>
-    | Promise<Omit<ObjectWriteIntentResult, 'duplicateProtection'>>
-    | Omit<ObjectWriteIntentResult, 'duplicateProtection'>;
+    | Promise<ObjectUploadCompletionOperationResult>
+    | ObjectUploadCompletionOperationResult;
+  cancelObjectWriteIntent?: (input: {
+    objectWriteIntentId: string;
+    context: Readonly<RuntimeRequestContext>;
+  }) =>
+    | Promise<ObjectWriteIntentCancellationOperationResult>
+    | ObjectWriteIntentCancellationOperationResult;
+  handleObjectUploadFailure?: (input: {
+    objectWriteIntentId: string;
+    context: Readonly<RuntimeRequestContext>;
+    safeCode: string;
+  }) => Promise<void> | void;
   controlPlaneReadiness: () =>
     | Promise<DependencyReadiness | boolean | 'ready'>
     | DependencyReadiness

@@ -7,7 +7,13 @@ const expectedFolderName = 'z-s_app';
 const requiredFiles = [
   'package.json',
   'src/index.ts',
+  'src/runtime-ingest.ts',
+  'src/runtime-upload-token.ts',
+  'tests/runtime-ingest.test.ts',
+  '.github/workflows/2b-05-write-intent-ingest-validation.yml',
   'db/migrations/0001_z_s_control_plane_foundation.sql',
+  'db/migrations/0002_z_s_runtime_registry.sql',
+  'db/migrations/0002_z_s_runtime_registry.down.sql',
   'db/seeds/0001_video_maker_dev_profiles.sql',
   'docs/db-handoff.md',
   'config/example.env'
@@ -30,7 +36,8 @@ const artifactChecks = Object.fromEntries(
 const nodeMajor = Number.parseInt(process.versions.node.split('.')[0] ?? '0', 10);
 const folderName = path.basename(process.cwd());
 const gitMetadataPresent = await exists('.git');
-const packageIdentityMatches = packageJson.name === '@zimmonai/z-s-control-plane';
+const packageIdentityMatches =
+  packageJson.name === '@zimmonai/z-s-control-plane' && packageJson.version === '0.3.0';
 const nodeSupported = nodeMajor >= 22;
 const folderNameMatches = folderName === expectedFolderName;
 const requiredArtifactsPresent = Object.values(artifactChecks).every(Boolean);
@@ -49,6 +56,7 @@ const summary = {
   expectedLocalFolder: '\\apps\\z-s_app',
   observedFolderName: folderName,
   nodeVersion: process.versions.node,
+  packageVersion: packageJson.version,
   checks: {
     gitMetadataPresent,
     packageIdentityMatches,

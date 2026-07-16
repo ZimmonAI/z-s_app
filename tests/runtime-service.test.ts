@@ -7,6 +7,7 @@ import {
   SAFE_DIAGNOSTIC_CATEGORIES,
   SERVICE_ID,
   compatibilityPolicy,
+  createDeterministicUploadCompletionTokenService,
   createHttpStorageRuntime,
   createSafeDiagnostic,
   serializeSafeDiagnostic,
@@ -30,8 +31,8 @@ const INTEGRITY_RESULT: IntegrityVerificationResult = {
   sizeVerificationDisposition: 'matched',
 };
 
-const OPAQUE_COMPLETION_VALUE = ['opaque', 'completion', 'value'].join('-');
-
+const WRITE_INTENT_ID = '10000000-0000-4000-8000-000000000001';
+const STORAGE_OBJECT_ID = '10000000-0000-4000-8000-000000000002';
 const VALID_PAYLOAD: ObjectWriteIntentRequest = {
   storageProfile: {
     profileId: 'video-maker-dev-default',
@@ -47,12 +48,14 @@ const VALID_PAYLOAD: ObjectWriteIntentRequest = {
 function runtimeOptions(
   overrides: Partial<StorageRuntimeOptions> = {},
 ): StorageRuntimeOptions {
+  const now = () => new Date('2026-07-15T16:00:00.000Z');
   const base: StorageRuntimeOptions = {
     authenticate: (token) =>
       token === 'valid-token' ? { appId: 'video-maker_app', serviceId: 'api' } : null,
     authorizeCaller: ({ appId }) => appId === 'video-maker_app' || appId === 'z-x_app',
     resolveStorageProfile: (request) => ({
       ...request,
+      active: true,
       ready: true,
       safeFingerprint: 'profile-fingerprint-v1',
       capabilityPolicy: CAPABILITY_POLICY,
@@ -63,19 +66,28 @@ function runtimeOptions(
         objectRepairOperation: false,
       },
       protectionStages: ['write-intent-created'],
+      writePolicy: {
+        uploadMode: 'server-streamed-single-object',
+        allowedMediaTypes: ['image/png'],
+        maxByteLength: 4 * 1024 * 1024,
+        intentTtlSeconds: 900,
+      },
     }),
-    createObjectWriteIntent: ({ context }) => ({
-      writeIntentId: `wi_${context.requestId}`,
-      storageObjectId: `so_${context.requestId}`,
+    createObjectWriteIntent: () => ({
+      writeIntentId: WRITE_INTENT_ID,
+      storageObjectId: STORAGE_OBJECT_ID,
       state: 'accepted',
-      uploadCompletionToken: OPAQUE_COMPLETION_VALUE,
-      expiresAt: '2026-07-15T16:30:00.000Z',
+      expiresAt: '2026-07-15T16:15:00.000Z',
       objectProtectionStage: 'write-intent-created',
+    }),
+    uploadCompletionTokenService: createDeterministicUploadCompletionTokenService({
+      signingKey: 'deterministic-test-signing-key',
+      now,
     }),
     controlPlaneReadiness: () => ({ status: 'ready' }),
     dataPlaneReadiness: () => ({ status: 'not-ready', code: 'provider-adapters-not-configured' }),
-    now: () => new Date('2026-07-15T16:00:00.000Z'),
-    createId: () => 'request-01',
+    now,
+    createId: () => '10000000-0000-4000-8000-000000000003',
   };
   return { ...base, ...overrides };
 }
@@ -119,13 +131,18 @@ function diagnosticCode(body: Record<string, unknown>): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
-test('runtime contract exposes exact identity and runtime functions', () => {
+test('runtime contract exposes exact identity and ingest runtime functions', () => {
   assert.equal(SERVICE_ID, 'z-s');
-  assert.equal(PACKAGE_VERSION, '0.2.1');
+  assert.equal(PACKAGE_VERSION, '0.3.0');
   assert.equal(CONTRACT_VERSION, '1.0');
   assert.deepEqual(Object.keys(runtimeServiceModule).sort(), [
+    'ObjectIngestRuntimeError',
+    'UPLOAD_COMPLETION_TOKEN_PURPOSE',
+    'UploadCompletionTokenError',
+    'createDeterministicUploadCompletionTokenService',
     'createHttpStorageRuntime',
     'createInMemoryDuplicateProtectionStore',
+    'createObjectIngestRuntime',
     'createSafeDiagnostic',
     'serializeSafeDiagnostic',
   ]);
@@ -184,11 +201,12 @@ test('safe diagnostics serialize only bounded categories, codes and correlation'
   });
 });
 
-test('runtime results do not leak provider endpoints, secret references or object keys', async () => {
+test('runtime results do not leak provider endpoints, bindings or object locators', async () => {
   const runtime = createHttpStorageRuntime(
     runtimeOptions({
       resolveStorageProfile: (request) => ({
         ...request,
+        active: true,
         ready: true,
         safeFingerprint: 'profile-fingerprint-v1',
         capabilityPolicy: CAPABILITY_POLICY,
@@ -199,18 +217,23 @@ test('runtime results do not leak provider endpoints, secret references or objec
           objectRepairOperation: false,
         },
         protectionStages: ['write-intent-created'],
+        writePolicy: {
+          uploadMode: 'server-streamed-single-object',
+          allowedMediaTypes: ['image/png'],
+          maxByteLength: 4 * 1024 * 1024,
+          intentTtlSeconds: 900,
+        },
         providerEndpoint: 'https://private-provider.invalid',
         secretReferenceId: 'secret-ref-01',
       }),
-      createObjectWriteIntent: ({ context, resolvedProfile }) => {
+      createObjectWriteIntent: ({ resolvedProfile }) => {
         assert.equal('providerEndpoint' in resolvedProfile, false);
         assert.equal('secretReferenceId' in resolvedProfile, false);
         return {
-          writeIntentId: `wi_${context.requestId}`,
-          storageObjectId: `so_${context.requestId}`,
+          writeIntentId: WRITE_INTENT_ID,
+          storageObjectId: STORAGE_OBJECT_ID,
           state: 'accepted',
-          uploadCompletionToken: OPAQUE_COMPLETION_VALUE,
-          expiresAt: '2026-07-15T16:30:00.000Z',
+          expiresAt: '2026-07-15T16:15:00.000Z',
           objectProtectionStage: 'write-intent-created',
           providerEndpoint: 'https://private-provider.invalid',
           secretReferenceId: 'secret-ref-01',
@@ -233,15 +256,14 @@ test('duplicate protection replays identical requests and rejects conflicting re
   let operationCalls = 0;
   const runtime = createHttpStorageRuntime(
     runtimeOptions({
-      createObjectWriteIntent: async ({ context }) => {
+      createObjectWriteIntent: async () => {
         operationCalls += 1;
         await Promise.resolve();
         return {
-          writeIntentId: `wi_${context.requestId}`,
-          storageObjectId: `so_${context.requestId}`,
+          writeIntentId: WRITE_INTENT_ID,
+          storageObjectId: STORAGE_OBJECT_ID,
           state: 'accepted',
-          uploadCompletionToken: OPAQUE_COMPLETION_VALUE,
-          expiresAt: '2026-07-15T16:30:00.000Z',
+          expiresAt: '2026-07-15T16:15:00.000Z',
           objectProtectionStage: 'write-intent-created',
         };
       },
@@ -255,8 +277,7 @@ test('duplicate protection replays identical requests and rejects conflicting re
   assert.equal(first.status, 200);
   assert.equal(replay.status, 200);
   assert.equal(operationCalls, 1);
-  const replayBody = JSON.stringify(await responseBody(replay));
-  assert.equal(replayBody.includes('"replayed":true'), true);
+  assert.equal(JSON.stringify(await responseBody(replay)).includes('"replayed":true'), true);
 
   const conflict = await runtime.handle(
     writeRequest({
@@ -268,11 +289,39 @@ test('duplicate protection replays identical requests and rejects conflicting re
   assert.equal(diagnosticCode(await responseBody(conflict)), 'idempotency-key-reused');
 });
 
+test('profile active state, media allowlist and profile byte limit fail closed', async () => {
+  const inactive = createHttpStorageRuntime(
+    runtimeOptions({
+      resolveStorageProfile: async (request) => ({
+        ...(await runtimeOptions().resolveStorageProfile(request, {
+          caller: { appId: 'video-maker_app' },
+          appCorrelationReference: 'resource-01',
+        })),
+        active: false,
+      }),
+    }),
+  );
+  assert.equal((await inactive.handle(writeRequest())).status, 503);
+
+  const media = await createHttpStorageRuntime(runtimeOptions()).handle(
+    writeRequest({ payload: { ...VALID_PAYLOAD, mediaType: 'video/mp4' } }),
+  );
+  assert.equal(media.status, 415);
+  assert.equal(diagnosticCode(await responseBody(media)), 'media-type-not-allowed');
+
+  const tooLarge = await createHttpStorageRuntime(runtimeOptions()).handle(
+    writeRequest({ payload: { ...VALID_PAYLOAD, byteLength: 5 * 1024 * 1024 } }),
+  );
+  assert.equal(tooLarge.status, 413);
+  assert.equal(diagnosticCode(await responseBody(tooLarge)), 'byte-length-exceeds-profile-limit');
+});
+
 test('process health remains distinct from dependency readiness', async () => {
   const runtime = createHttpStorageRuntime(runtimeOptions());
   const health = await runtime.handle(new Request('https://z-s.internal/healthz'));
   assert.equal(health.status, 200);
   assert.equal((await responseBody(health)).process, 'healthy');
+  assert.equal((await runtime.health()).packageVersion, '0.3.0');
 
   const readiness = await runtime.handle(new Request('https://z-s.internal/readyz'));
   assert.equal(readiness.status, 503);
@@ -300,4 +349,13 @@ test('synchronous and asynchronous readiness failures are contained safely', asy
   assert.equal(serialized.includes('provider.invalid'), false);
   assert.equal(serialized.includes('control-plane-unavailable'), true);
   assert.equal(serialized.includes('data-plane-unavailable'), true);
+});
+
+test('only the five frozen routes are recognized', async () => {
+  const runtime = createHttpStorageRuntime(runtimeOptions());
+  const extra = await runtime.handle(
+    new Request('https://z-s.internal/v1/object-write-intents/arbitrary/upload', { method: 'POST' }),
+  );
+  assert.equal(extra.status, 404);
+  assert.equal(diagnosticCode(await responseBody(extra)), 'route-not-found');
 });

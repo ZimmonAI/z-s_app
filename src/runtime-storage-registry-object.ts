@@ -2,6 +2,7 @@ import { PostgresRuntimeStorageRegistryDuplicateCore } from './runtime-storage-r
 import {
   RuntimeStorageRegistryError,
   type CreateObjectWriteIntentInput,
+  type ObjectWriteIntentExecutionContext,
   type ObjectWriteIntentSnapshot,
   type ObjectWriteIntentState,
   type PostgresQueryable,
@@ -11,6 +12,7 @@ import {
   type StorageObjectCopySnapshot,
   type StorageObjectRow,
   type StorageObjectSnapshot,
+  type WriteIntentExecutionRow,
   type WriteIntentRow,
 } from './runtime-storage-registry-types.js';
 import {
@@ -178,6 +180,157 @@ export class PostgresRuntimeStorageRegistryObjectCore extends PostgresRuntimeSto
     });
   }
 
+  async getObjectWriteIntentExecutionContext(
+    objectWriteIntentId: string,
+  ): Promise<ObjectWriteIntentExecutionContext | null> {
+    return this.scope.run((client) => this.readExecutionContext(client, objectWriteIntentId, false));
+  }
+
+  async expireObjectWriteIntentIfDue(objectWriteIntentId: string): Promise<boolean> {
+    return this.scope.run(async (client) => {
+      const now = this.now();
+      const result = await client.query(
+        `UPDATE public.object_write_intents
+            SET state = 'expired', terminal_at = $2, updated_at = $2,
+                row_version = row_version + 1
+          WHERE object_write_intent_id = $1
+            AND state IN ('accepted', 'uploading')
+            AND expires_at <= $2`,
+        [objectWriteIntentId, now],
+      );
+      return result.rowCount === 1;
+    });
+  }
+
+  async beginObjectUpload(input: {
+    objectWriteIntentId: string;
+    expectedRowVersion: number;
+  }): Promise<ObjectWriteIntentExecutionContext> {
+    return this.scope.run(async (client) => {
+      const now = this.now();
+      const result = await client.query<WriteIntentRow>(
+        `UPDATE public.object_write_intents
+            SET state = 'uploading', updated_at = $3, row_version = row_version + 1
+          WHERE object_write_intent_id = $1
+            AND state = 'accepted'
+            AND row_version = $2
+            AND expires_at > $3
+          RETURNING object_write_intent_id, storage_object_id, state, expires_at, terminal_at,
+                    row_version, created_at, updated_at`,
+        [input.objectWriteIntentId, input.expectedRowVersion, now],
+      );
+      if (result.rows[0] === undefined) {
+        throw new RuntimeStorageRegistryError(
+          'duplicate-conflict',
+          'object-write-intent-begin-conflict',
+          409,
+        );
+      }
+      const context = await this.readExecutionContext(client, input.objectWriteIntentId, true);
+      if (context === null) {
+        throw new RuntimeStorageRegistryError('internal', 'write-intent-missing', 500);
+      }
+      return context;
+    });
+  }
+
+  async completeObjectUpload(input: {
+    objectWriteIntentId: string;
+    expectedRowVersion: number;
+    checksumSha256: string;
+    byteLength: number;
+  }): Promise<ObjectWriteIntentExecutionContext> {
+    requireSha256(input.checksumSha256, 'upload-checksum-sha256');
+    if (!Number.isSafeInteger(input.byteLength) || input.byteLength <= 0) {
+      throw new RuntimeStorageRegistryError('invalid-request', 'invalid-upload-byte-length', 400);
+    }
+    return this.scope.run(async (client) => {
+      const now = this.now();
+      const intentResult = await client.query<{ storage_object_id: string }>(
+        `UPDATE public.object_write_intents
+            SET state = 'completed', terminal_at = $3, updated_at = $3,
+                row_version = row_version + 1
+          WHERE object_write_intent_id = $1
+            AND state = 'uploading'
+            AND row_version = $2
+          RETURNING storage_object_id`,
+        [input.objectWriteIntentId, input.expectedRowVersion, now],
+      );
+      const intent = intentResult.rows[0];
+      if (intent === undefined) {
+        throw new RuntimeStorageRegistryError(
+          'duplicate-conflict',
+          'object-write-intent-complete-conflict',
+          409,
+        );
+      }
+      const objectResult = await client.query(
+        `UPDATE public.storage_objects
+            SET object_protection_stage = 'upload-completion-recorded',
+                updated_at = $4, row_version = row_version + 1
+          WHERE storage_object_id = $1
+            AND registry_state = 'reserved'
+            AND expected_checksum_sha256 = $2
+            AND expected_byte_length = $3`,
+        [intent.storage_object_id, input.checksumSha256, input.byteLength, now],
+      );
+      if (objectResult.rowCount !== 1) {
+        throw new RuntimeStorageRegistryError('duplicate-conflict', 'storage-object-complete-conflict', 409);
+      }
+      const context = await this.readExecutionContext(client, input.objectWriteIntentId, true);
+      if (context === null) {
+        throw new RuntimeStorageRegistryError('internal', 'write-intent-missing', 500);
+      }
+      return context;
+    });
+  }
+
+  async cancelObjectWriteIntent(input: {
+    objectWriteIntentId: string;
+    expectedState: 'accepted' | 'uploading';
+    expectedRowVersion: number;
+  }): Promise<ObjectWriteIntentExecutionContext> {
+    return this.scope.run(async (client) => {
+      const now = this.now();
+      const result = await client.query(
+        `UPDATE public.object_write_intents
+            SET state = 'cancelled', terminal_at = $4, updated_at = $4,
+                row_version = row_version + 1
+          WHERE object_write_intent_id = $1
+            AND state = $2
+            AND row_version = $3`,
+        [input.objectWriteIntentId, input.expectedState, input.expectedRowVersion, now],
+      );
+      if (result.rowCount !== 1) {
+        throw new RuntimeStorageRegistryError(
+          'duplicate-conflict',
+          'object-write-intent-cancel-conflict',
+          409,
+        );
+      }
+      const context = await this.readExecutionContext(client, input.objectWriteIntentId, true);
+      if (context === null) {
+        throw new RuntimeStorageRegistryError('internal', 'write-intent-missing', 500);
+      }
+      return context;
+    });
+  }
+
+  async failObjectUpload(objectWriteIntentId: string): Promise<boolean> {
+    return this.scope.run(async (client) => {
+      const now = this.now();
+      const result = await client.query(
+        `UPDATE public.object_write_intents
+            SET state = 'failed', terminal_at = $2, updated_at = $2,
+                row_version = row_version + 1
+          WHERE object_write_intent_id = $1
+            AND state IN ('accepted', 'uploading')`,
+        [objectWriteIntentId, now],
+      );
+      return result.rowCount === 1;
+    });
+  }
+
   async transitionObjectWriteIntent(input: {
     objectWriteIntentId: string;
     expectedState: ObjectWriteIntentState;
@@ -304,6 +457,73 @@ export class PostgresRuntimeStorageRegistryObjectCore extends PostgresRuntimeSto
       createdAt: asIso(row.created_at),
       updatedAt: asIso(row.updated_at),
     });
+  }
+
+  protected async readExecutionContext(
+    client: PostgresQueryable,
+    id: string,
+    lock: boolean,
+  ): Promise<ObjectWriteIntentExecutionContext | null> {
+    const result = await client.query<WriteIntentExecutionRow>(
+      `SELECT intent.object_write_intent_id, intent.storage_object_id, intent.managed_app_id,
+              managed_app.app_id AS caller_app_id, intent.caller_service_id,
+              intent.storage_profile_id, profile.version AS storage_profile_version,
+              intent.storage_profile_fingerprint, intent.storage_prefix_class_id,
+              intent.app_correlation_ref, intent.source_reference, intent.expected_content_type,
+              intent.expected_byte_length, intent.expected_checksum_sha256, intent.state,
+              intent.expires_at, intent.terminal_at, intent.row_version,
+              intent.created_at, intent.updated_at, object_record.registry_state,
+              object_record.object_protection_stage,
+              hot_copy.internal_locator AS hot_internal_locator,
+              canonical_copy.internal_locator AS canonical_internal_locator
+         FROM public.object_write_intents AS intent
+         JOIN public.managed_apps AS managed_app ON managed_app.id = intent.managed_app_id
+         JOIN public.storage_profiles AS profile ON profile.id = intent.storage_profile_id
+         JOIN public.storage_objects AS object_record
+           ON object_record.storage_object_id = intent.storage_object_id
+         JOIN public.storage_object_copies AS hot_copy
+           ON hot_copy.storage_object_id = intent.storage_object_id
+          AND hot_copy.provider_role = 'hot'
+         JOIN public.storage_object_copies AS canonical_copy
+           ON canonical_copy.storage_object_id = intent.storage_object_id
+          AND canonical_copy.provider_role = 'canonical'
+        WHERE intent.object_write_intent_id = $1
+        ${lock ? 'FOR UPDATE OF intent, object_record' : ''}`,
+      [id],
+    );
+    const row = result.rows[0];
+    return row === undefined ? null : this.mapExecutionContext(row);
+  }
+
+  protected mapExecutionContext(
+    row: WriteIntentExecutionRow,
+  ): ObjectWriteIntentExecutionContext {
+    const context: ObjectWriteIntentExecutionContext = {
+      objectWriteIntentId: row.object_write_intent_id,
+      storageObjectId: row.storage_object_id,
+      managedAppId: row.managed_app_id,
+      callerAppId: row.caller_app_id,
+      storageProfileId: row.storage_profile_id,
+      storageProfileVersion: row.storage_profile_version,
+      storageProfileFingerprint: row.storage_profile_fingerprint,
+      storagePrefixClassId: row.storage_prefix_class_id,
+      appCorrelationReference: row.app_correlation_ref,
+      sourceReference: row.source_reference,
+      expectedContentType: row.expected_content_type,
+      expectedByteLength: asNumber(row.expected_byte_length),
+      expectedChecksumSha256: row.expected_checksum_sha256,
+      state: row.state,
+      expiresAt: asIso(row.expires_at),
+      rowVersion: row.row_version,
+      registryState: row.registry_state,
+      objectProtectionStage: row.object_protection_stage,
+      internalLocators: Object.freeze({
+        hot: row.hot_internal_locator,
+        canonical: row.canonical_internal_locator,
+      }),
+    };
+    if (row.caller_service_id !== null) context.callerServiceId = row.caller_service_id;
+    return Object.freeze(context);
   }
 
   protected async readObject(

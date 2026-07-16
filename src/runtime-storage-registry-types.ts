@@ -92,6 +92,25 @@ export interface WriteIntentRow extends Record<string, unknown> {
   updated_at: Date | string;
 }
 
+export interface WriteIntentExecutionRow extends WriteIntentRow {
+  managed_app_id: string;
+  caller_app_id: string;
+  caller_service_id: string | null;
+  storage_profile_id: string;
+  storage_profile_version: number;
+  storage_profile_fingerprint: string;
+  storage_prefix_class_id: string;
+  app_correlation_ref: string;
+  source_reference: string;
+  expected_content_type: string;
+  expected_byte_length: string | number;
+  expected_checksum_sha256: string;
+  registry_state: StorageObjectState;
+  object_protection_stage: string;
+  hot_internal_locator: string;
+  canonical_internal_locator: string;
+}
+
 export interface StorageObjectRow extends Record<string, unknown> {
   storage_object_id: string;
   registry_state: StorageObjectState;
@@ -173,6 +192,29 @@ export interface ObjectWriteIntentSnapshot {
   rowVersion: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ObjectWriteIntentExecutionContext {
+  objectWriteIntentId: string;
+  storageObjectId: string;
+  managedAppId: string;
+  callerAppId: string;
+  callerServiceId?: string;
+  storageProfileId: string;
+  storageProfileVersion: number;
+  storageProfileFingerprint: string;
+  storagePrefixClassId: string;
+  appCorrelationReference: string;
+  sourceReference: string;
+  expectedContentType: string;
+  expectedByteLength: number;
+  expectedChecksumSha256: string;
+  state: ObjectWriteIntentState;
+  expiresAt: string;
+  rowVersion: number;
+  registryState: StorageObjectState;
+  objectProtectionStage: string;
+  internalLocators: Readonly<Record<ProviderRole, string>>;
 }
 
 export interface StorageObjectCopySnapshot {

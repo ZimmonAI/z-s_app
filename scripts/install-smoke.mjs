@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const root = process.cwd();
 const EXPECTED_NAME = '@zimmonai/z-s-control-plane';
-const EXPECTED_VERSION = '0.2.1';
+const EXPECTED_VERSION = '0.3.0';
 const EXPECTED_REGISTRY = 'https://npm.pkg.github.com';
 
 function parseArguments(argv) {
@@ -110,7 +110,10 @@ try {
       `if (contract.PACKAGE_VERSION !== '${EXPECTED_VERSION}') throw new Error('contract package identity mismatch');`,
       "if (contract.CONTRACT_VERSION !== '1.0') throw new Error('contract identity mismatch');",
       "if (runtime.createHttpStorageRuntime === undefined) throw new Error('runtime export missing');",
+      "if (runtime.createObjectIngestRuntime === undefined) throw new Error('ingest runtime export missing');",
+      "if (runtime.createDeterministicUploadCompletionTokenService === undefined) throw new Error('token service export missing');",
       "if (registry.PostgresRuntimeStorageRegistry === undefined) throw new Error('registry export missing');",
+      "if (registry.createRuntimeStorageDuplicateResultCodec === undefined) throw new Error('registry codec export missing');",
       "if (root.CAPABILITY_POLICY_VERSION !== '1') throw new Error('control-plane export missing');",
     ].join('\n'),
     'utf8',
@@ -169,6 +172,8 @@ try {
     runtimeContractExportVerified: true,
     runtimeServiceExportVerified: true,
     runtimeStorageRegistryExportVerified: true,
+    genericIngestExportVerified: true,
+    uploadCompletionTokenExportVerified: true,
     prohibitedSourceDetected: false,
   };
 
