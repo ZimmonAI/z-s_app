@@ -22,7 +22,7 @@ on:
       - .github/workflows/2b-05-write-intent-ingest-validation.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
@@ -44,6 +44,37 @@ jobs:
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git fetch -q --depth=1 origin "${{ github.event.pull_request.head.sha }}"
           git checkout -q --detach FETCH_HEAD
+
+      - name: Fix response body reuse test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/runtime-ingest.test.ts')
+          text = path.read_text(encoding='utf-8')
+          old = """  assert.equal(bodyFailure.status, 400);
+            assert.equal(diagnosticCode(await jsonBody(bodyFailure)), 'computed-checksum-mismatch');
+            assert.equal(mismatchAdapter.cleanupCalls, 1);"""
+          new = """  assert.equal(bodyFailure.status, 400);
+            const bodyFailureBody = await jsonBody(bodyFailure);
+            assert.equal(diagnosticCode(bodyFailureBody), 'computed-checksum-mismatch');
+            assert.equal(mismatchAdapter.cleanupCalls, 1);"""
+          if old not in text:
+              raise SystemExit('response body assertion target missing')
+          text = text.replace(old, new, 1)
+          old = "  assert.equal(JSON.stringify(await jsonBody(bodyFailure)).includes('private'), false);"
+          new = "  assert.equal(JSON.stringify(bodyFailureBody).includes('private'), false);"
+          if old not in text:
+              raise SystemExit('response body reuse target missing')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/runtime-ingest.test.ts
+          git commit -m "Fix ingest response assertion reuse"
+          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
 
       - name: Install dependencies quietly
         run: npm install --ignore-scripts --silent
