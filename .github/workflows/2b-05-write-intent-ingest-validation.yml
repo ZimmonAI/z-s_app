@@ -48,5 +48,8 @@ jobs:
       - name: Install dependencies quietly
         run: npm install --ignore-scripts --silent
 
-      - name: Run focused ingest tests
-        run: npm run test:focused
+      - name: Compile tests
+        run: npm run test:compile --silent
+
+      - name: Run runtime ingest tests only
+        run: node --test .test-dist/tests/runtime-ingest.test.js
