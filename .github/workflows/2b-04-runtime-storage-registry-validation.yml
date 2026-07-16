@@ -42,8 +42,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    env:
-      TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/z_s_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -75,4 +73,6 @@ jobs:
       - name: Complete validation chain
         run: npm run validate
       - name: PostgreSQL runtime registry integration
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/z_s_test
         run: npm run test:registry
