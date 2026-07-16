@@ -109,7 +109,7 @@ npm run validate
 Real PostgreSQL registry validation:
 
 ```bash
-TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/z_s_test npm run test:registry
+$TEST_DATABASE_URL npm run test:registry
 ```
 
 The GitHub workflow supplies an isolated PostgreSQL service and runs both commands. Coverage includes migration up/down/reapply, catalog comments/table count, 20-call concurrency, conflicting duplicate keys, atomic row counts, independent hot/canonical truth, append-only attempts/events, exclusive attempt/issue leases, event safety and dedupe.
