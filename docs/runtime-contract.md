@@ -158,8 +158,8 @@ Retry is an internal primitive. It adds no HTTP route, scheduler, queue consumer
 
 ## Validation and distribution boundary
 
-The 2B-06 workflow uses Node.js 22 and disposable PostgreSQL 17. It runs focused provider/media tests with deterministic doubles, registry integration tests, the full suite, typecheck, lint, build, clean package install, package artifact verification, migration/seed no-change validation, secret and legacy-identifier checks, and the complete validation chain.
+The 2B-06 workflow uses Node.js 22 and disposable PostgreSQL 17. It runs focused provider/media tests with deterministic doubles, registry integration tests, the full suite, typecheck, lint, build, clean package install, package artifact verification, migration/seed no-change validation, secret and legacy-identifier checks, all nine frozen fake-provider scenarios, refusal checks, and the complete validation chain.
 
-The governed local provider handoff is intentionally separate from CI. It supports only the documented scenario allowlist, requires explicit provider-action approval and a safe run identifier, resolves credentials from the local environment, uses exact generated targets under approved prefixes, performs no broad listing, and deletes plus verifies absence of every exact target. Safe JSON output may contain aliases, media facts, state transitions, retryability, attempt counts, and cleanup counts only.
+The governed provider harness has an explicit fake CI mode and a separately approved live mode. Both require the exact frozen scenario list, approved non-secret aliases, exact prefix, and a safe run identifier. Live mode additionally requires explicit provider-action confirmation and reads credentials only from the local environment. The harness uses exact `2b-06-<run-id>-<scenario>-<nonce>` locator IDs under the approved prefix, performs no broad listing, deletes and verifies absence of every exact target, and emits one compact safe JSON line without aliases or provider authority values.
 
 Packaging and automated testing do not apply migrations, publish a package, access live providers, read credentials, deploy services, or modify consumers.
