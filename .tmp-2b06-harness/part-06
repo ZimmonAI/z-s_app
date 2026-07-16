@@ -1,0 +1,22 @@
+    safety: Object.freeze({
+      aliasesEmitted: false,
+      targetAuthorityEmitted: false,
+      credentialsEmitted: false,
+      databaseActionsPerformed: false,
+      deploymentActionsPerformed: false,
+      browserActionsPerformed: false,
+    }),
+  });
+}
+
+try {
+  const summary = await execute();
+  process.stdout.write(`${JSON.stringify(summary)}\n`);
+} catch (error) {
+  process.stdout.write(`${JSON.stringify({
+    schemaVersion: 1,
+    status: 'failed',
+    diagnostic: Object.freeze({ code: safeFailureCode(error), retryable: false }),
+  })}\n`);
+  process.exitCode = 1;
+}
