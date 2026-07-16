@@ -25,9 +25,6 @@ on:
 permissions:
   contents: read
 
-env:
-  TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/z_s_test
-
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -52,12 +49,8 @@ jobs:
           node-version: 22
       - run: npm install --ignore-scripts
       - name: Focused tests
-        env:
-          TEST_DATABASE_URL: ''
         run: npm run test:focused
       - name: Full tests
-        env:
-          TEST_DATABASE_URL: ''
         run: npm test
       - name: Typecheck
         run: npm run typecheck
@@ -78,16 +71,22 @@ jobs:
       - name: Local readiness
         run: npm run local:readiness
       - name: Complete validation chain
-        env:
-          TEST_DATABASE_URL: ''
         run: npm run validate
       - name: Compile PostgreSQL integration tests
         run: npm run test:compile
       - name: PostgreSQL migration integration
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/z_s_test
         run: node --test --test-name-pattern='migrates up' .test-dist/tests/runtime-storage-registry.integration.test.js
       - name: PostgreSQL duplicate-protection integration
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/z_s_test
         run: node --test --test-name-pattern='20 concurrent calls' .test-dist/tests/runtime-storage-registry.integration.test.js
       - name: PostgreSQL copy and lease integration
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/z_s_test
         run: node --test --test-name-pattern='copy truth stays independent' .test-dist/tests/runtime-storage-registry.integration.test.js
       - name: PostgreSQL event integration
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/z_s_test
         run: node --test --test-name-pattern='safe event persistence' .test-dist/tests/runtime-storage-registry.integration.test.js
