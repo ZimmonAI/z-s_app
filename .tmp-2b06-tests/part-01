@@ -1,0 +1,78 @@
+        forcePathStyle: false,
+        accessKeyId: 'private-access-key',
+        secretAccessKey: ['private', 'test', 'key'].join('-'),
+      }),
+    },
+    createClient: () => ({
+      async send(command: unknown) {
+        if (command instanceof HeadObjectCommand) {
+          return { Metadata: { 'z-s-sha256': expectedChecksum } };
+        }
+        return {};
+      },
+    }),
+  });
+  const receipt = await writer.write({
+    target: target('hot'),
+    source: Readable.from([bytes]),
+    checksumSha256: expectedChecksum,
+    byteLength: bytes.byteLength,
+  });
+  assert.equal(receipt.integrityVerification.verified, true);
+  assert.equal(receipt.integrityVerification.sizeVerified, false);
+  assert.equal(
+    receipt.integrityVerification.sizeVerificationDisposition,
+    'unsupported-with-checksum',
+  );
+});
+
+test('S3-compatible writer rejects checksum and required-size mismatches with safe errors', async () => {
+  const bytes = png();
+  const expectedChecksum = sha256(bytes);
+  const makeWriter = (head: Record<string, unknown>) =>
+    new S3CompatibleProviderObjectWriter({
+      credentialResolver: {
+        resolve: () => Object.freeze({
+          endpoint: 'https://provider.internal',
+          region: 'auto',
+          forcePathStyle: true,
+          accessKeyId: 'private-access-key',
+          secretAccessKey: ['private', 'test', 'key'].join('-'),
+        }),
+      },
+      createClient: () => ({
+        async send(command: unknown) {
+          return command instanceof HeadObjectCommand ? head : {};
+        },
+      }),
+    });
+
+  for (const [head, code] of [
+    [
+      { Metadata: { 'z-s-sha256': 'b'.repeat(64) }, ContentLength: bytes.byteLength },
+      'integrity-checksum-mismatch',
+    ],
+    [
+      { Metadata: { 'z-s-sha256': expectedChecksum }, ContentLength: bytes.byteLength + 1 },
+      'integrity-size-mismatch',
+    ],
+  ] as const) {
+    await assert.rejects(
+      makeWriter(head).write({
+        target: target('canonical'),
+        source: Readable.from([bytes]),
+        checksumSha256: expectedChecksum,
+        byteLength: bytes.byteLength,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ProviderExecutionError);
+        assert.equal(error.code, code);
+        assert.equal(error.cleanupRequired, true);
+        const serialized = JSON.stringify(error.toSafeDiagnostic());
+        assert.equal(serialized.includes('provider.internal'), false);
+        assert.equal(serialized.includes('private-access-key'), false);
+        return true;
+      },
+    );
+  }
+});
