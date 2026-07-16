@@ -811,7 +811,8 @@ test('header mismatches fail before adapter work while computed mismatches clean
     }),
   );
   assert.equal(bodyFailure.status, 400);
-  assert.equal(diagnosticCode(await jsonBody(bodyFailure)), 'computed-checksum-mismatch');
+  const bodyFailureBody = await jsonBody(bodyFailure);
+  assert.equal(diagnosticCode(bodyFailureBody), 'computed-checksum-mismatch');
   assert.equal(mismatchAdapter.cleanupCalls, 1);
   assert.equal(mismatchRegistry.failureCalls, 1);
   assert.equal(
@@ -820,7 +821,7 @@ test('header mismatches fail before adapter work while computed mismatches clean
     ))?.state,
     'failed',
   );
-  assert.equal(JSON.stringify(await jsonBody(bodyFailure)).includes('private'), false);
+  assert.equal(JSON.stringify(bodyFailureBody).includes('private'), false);
 });
 
 test('short, oversized, partially consumed and adapter-failed bodies all trigger cleanup', async () => {
