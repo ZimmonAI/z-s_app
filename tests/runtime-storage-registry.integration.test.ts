@@ -189,8 +189,16 @@ integrationTest('0002 migrates up, documents all runtime columns, rejects reappl
     );
     assert.equal(missingComments.rows[0]?.count, '0');
 
-    await assert.rejects(applyRuntimeMigration(pool), /migration already applied/);
-    await pool.query('ROLLBACK');
+    const reapplyClient = await pool.connect();
+    try {
+      await assert.rejects(
+        reapplyClient.query(await readFile('db/migrations/0002_z_s_runtime_registry.sql', 'utf8')),
+        /migration already applied/,
+      );
+      await reapplyClient.query('ROLLBACK');
+    } finally {
+      reapplyClient.release();
+    }
     await pool.query(await readFile('db/migrations/0002_z_s_runtime_registry.down.sql', 'utf8'));
     const afterRollback = await pool.query<{ count: string }>(
       `SELECT count(*)::text AS count
@@ -212,6 +220,7 @@ integrationTest('durable duplicate protection creates one intent/object/copy set
     const registry = new PostgresRuntimeStorageRegistry({
       pool: adaptPool(pool),
       duplicateResultCodec: codec,
+      now: () => new Date('2026-07-16T00:00:00.000Z'),
     });
     let operationCalls = 0;
 
@@ -274,6 +283,7 @@ integrationTest('copy truth stays independent and provider/issue leases are excl
     const registry = new PostgresRuntimeStorageRegistry({
       pool: adaptPool(pool),
       duplicateResultCodec: codec,
+      now: () => new Date('2026-07-16T00:00:00.000Z'),
     });
     const created = await registry.createObjectWriteIntent(createIntentInput());
     const hot = created.object.copies.hot;
@@ -368,6 +378,7 @@ integrationTest('safe event persistence rejects business/private fields and enfo
     const registry = new PostgresRuntimeStorageRegistry({
       pool: adaptPool(pool),
       duplicateResultCodec: codec,
+      now: () => new Date('2026-07-16T00:00:00.000Z'),
     });
     await assert.rejects(
       registry.appendStorageEvent({
