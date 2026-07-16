@@ -1,0 +1,100 @@
+      internalLocator: locator,
+      normalizedPrefixPattern: '2b-06-*',
+      capabilityPolicy: Object.freeze({
+        checksumVerification: 'required',
+        sizeVerification: 'required-when-supported',
+        headContentLength: 'required',
+        rangeRead: 'optional',
+      }),
+      credentialSecretReferenceId: 'canonical',
+    }),
+  });
+}
+
+function storageMapping(outcomes) {
+  if (outcomes.hot.state === 'verified' && outcomes.canonical.state === 'verified') {
+    return ['ready', 'canonical-and-hot-verified'];
+  }
+  if (outcomes.hot.state === 'failed' && outcomes.canonical.state === 'verified') {
+    return ['degraded', 'canonical-verified-hot-repair-required'];
+  }
+  if (outcomes.hot.state === 'verified' && outcomes.canonical.state === 'failed') {
+    return ['degraded', 'hot-verified-canonical-repair-required'];
+  }
+  return ['unavailable', 'provider-write-failed'];
+}
+
+class HarnessRegistry {
+  constructor(targets) {
+    this.targets = targets;
+    this.lastOutcomes = null;
+  }
+
+  async beginDualProviderWrite(input) {
+    return Object.freeze({
+      objectWriteIntentId: input.objectWriteIntentId,
+      storageObjectId: input.storageObjectId,
+      expectedIntentRowVersion: input.expectedIntentRowVersion,
+      expectedObjectRowVersion: input.expectedObjectRowVersion,
+      attempts: Object.freeze({
+        hot: Object.freeze({
+          providerAttemptId: '60000000-0000-4000-8000-000000000001',
+          storageObjectCopyId: input.copies.hot.storageObjectCopyId,
+          expectedCopyRowVersion: input.copies.hot.rowVersion,
+        }),
+        canonical: Object.freeze({
+          providerAttemptId: '60000000-0000-4000-8000-000000000002',
+          storageObjectCopyId: input.copies.canonical.storageObjectCopyId,
+          expectedCopyRowVersion: input.copies.canonical.rowVersion,
+        }),
+      }),
+    });
+  }
+
+  async completeDualProviderWrite(input) {
+    this.lastOutcomes = input.outcomes;
+    const [storageState, objectProtectionStage] = storageMapping(input.outcomes);
+    return Object.freeze({
+      storageObjectId: input.reservation.storageObjectId,
+      writeIntentId: input.reservation.objectWriteIntentId,
+      state: 'recorded',
+      checksumSha256: input.checksumSha256,
+      byteLength: input.byteLength,
+      integrityVerification: Object.freeze({
+        verified: true,
+        checksumVerified: true,
+        sizeVerified: true,
+        sizeVerificationDisposition: 'matched',
+      }),
+      storageState,
+      objectProtectionStage,
+      verifiedMedia: input.verifiedMedia,
+      copies: Object.freeze({
+        hot: Object.freeze({ state: input.outcomes.hot.state, retryable: input.outcomes.hot.retryable }),
+        canonical: Object.freeze({
+          state: input.outcomes.canonical.state,
+          retryable: input.outcomes.canonical.retryable,
+        }),
+      }),
+      ...(storageState === 'ready'
+        ? {}
+        : {
+            safeDiagnostic: Object.freeze({
+              category: 'dependency-unavailable',
+              code: 'provider-write-degraded',
+              retryable: true,
+            }),
+          }),
+    });
+  }
+
+  async abortDualProviderWrite() {}
+
+  async reserveTargetedProviderRetry(input) {
+    const role = input.providerRole;
+    return Object.freeze({
+      storageObjectId: input.storageObjectId,
+      providerRole: role,
+      providerBindingId: role === 'hot'
+        ? '60000000-0000-4000-8000-000000000006'
+        : '60000000-0000-4000-8000-000000000008',
