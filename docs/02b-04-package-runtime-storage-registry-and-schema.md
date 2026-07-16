@@ -45,6 +45,10 @@ Only these paths belong to this coding handoff:
 - `scripts/install-smoke.mjs`
 - `scripts/validate-migration.mjs`
 - `src/index.ts`
+- `src/runtime-storage-registry-duplicate.ts`
+- `src/runtime-storage-registry-object.ts`
+- `src/runtime-storage-registry-support.ts`
+- `src/runtime-storage-registry-types.ts`
 - `src/runtime-storage-registry.ts`
 - `tests/runtime-storage-registry.integration.test.ts`
 
