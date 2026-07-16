@@ -7,5 +7,4 @@ export * from './prefix-authorizer.js';
 export * from './profile-registry.js';
 export * from './runtime-contract.js';
 export * from './runtime-service.js';
-export * from './runtime-storage-registry.js';
 export * from './service.js';
