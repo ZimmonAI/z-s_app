@@ -30,7 +30,7 @@ const artifactChecks = Object.fromEntries(
 const nodeMajor = Number.parseInt(process.versions.node.split('.')[0] ?? '0', 10);
 const folderName = path.basename(process.cwd());
 const gitMetadataPresent = await exists('.git');
-const packageIdentityMatches = packageJson.name === '@zimspace/z-s-control-plane';
+const packageIdentityMatches = packageJson.name === '@zimmonai/z-s-control-plane';
 const nodeSupported = nodeMajor >= 22;
 const folderNameMatches = folderName === expectedFolderName;
 const requiredArtifactsPresent = Object.values(artifactChecks).every(Boolean);
