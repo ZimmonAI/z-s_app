@@ -82,10 +82,17 @@ jobs:
           git checkout --detach "$RELEASE_COMMIT"
           test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
 
-      - run: npm install --ignore-scripts
+      - name: Install release dependencies
+        run: npm install --ignore-scripts --silent
 
       - name: Validate the complete reviewed package
-        run: npm run validate
+        run: |
+          set -euo pipefail
+          if ! npm run validate > /tmp/z-s-release-validation.log 2>&1; then
+            tail -n 160 /tmp/z-s-release-validation.log
+            exit 1
+          fi
+          echo 'Complete package validation passed.'
 
       - name: Pack and verify exact artifact
         id: artifact
@@ -124,10 +131,47 @@ jobs:
           fi
 
       - name: Publish the exact package once
+        id: publish
         if: steps.registry_before.outputs.exists == 'false'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm publish "${{ steps.artifact.outputs.tarball }}" --registry="$REGISTRY_URL" --access=restricted
+        run: |
+          set +e
+          npm publish "${{ steps.artifact.outputs.tarball }}" \
+            --registry="$REGISTRY_URL" \
+            --access=restricted \
+            > /tmp/z-s-npm-publish.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo 'failure_category=none' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          category='npm-unknown'
+          if grep -Eqi 'E403|403 Forbidden' /tmp/z-s-npm-publish.log; then
+            category='npm-E403'
+          elif grep -Eqi 'E401|401 Unauthorized|ENEEDAUTH' /tmp/z-s-npm-publish.log; then
+            category='npm-auth'
+          elif grep -Eqi 'E404|404 Not Found' /tmp/z-s-npm-publish.log; then
+            category='npm-E404'
+          elif grep -Eqi 'E400|400 Bad Request' /tmp/z-s-npm-publish.log; then
+            category='npm-E400'
+          elif grep -Eqi 'EPUBLISHCONFLICT|cannot publish over' /tmp/z-s-npm-publish.log; then
+            category='npm-conflict'
+          elif grep -Eqi 'permission_denied|permission denied' /tmp/z-s-npm-publish.log; then
+            category='permission-denied'
+          elif grep -Eqi 'package creation|create package' /tmp/z-s-npm-publish.log; then
+            category='package-creation'
+          fi
+          echo "failure_category=${category}" >> "$GITHUB_OUTPUT"
+
+          sed -E \
+            -e 's#(//npm\.pkg\.github\.com/:_authToken=)[^[:space:]]+#\1***#g' \
+            -e 's#(Authorization:)[^[:space:]].*#\1 ***#Ig' \
+            -e 's#https?://[^/@[:space:]]+:[^/@[:space:]]+@#https://***@#g' \
+            /tmp/z-s-npm-publish.log >&2
+          exit "$status"
 
       - name: Verify registry identity and artifact integrity
         env:
@@ -248,10 +292,18 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLISH_FAILURE_CATEGORY: ${{ steps.publish.outputs.failure_category }}
         run: |
+          category="${PUBLISH_FAILURE_CATEGORY:-downstream}"
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/statuses/${RELEASE_COMMIT}" \
+            -f state='failure' \
+            -f context="2B-03A publication failure/${category}" \
+            -f description="Immutable package publication failed: ${category}" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" || true
           gh api --method POST \
             "repos/${GITHUB_REPOSITORY}/statuses/${RELEASE_COMMIT}" \
             -f state='failure' \
             -f context='2B-03A immutable package publication' \
-            -f description='Exact-tag publication bootstrap failed; inspect the workflow run' \
+            -f description="Exact-tag publication failed: ${category}" \
             -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" || true
