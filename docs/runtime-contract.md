@@ -2,13 +2,17 @@
 
 ## Exact identity
 
-- Package: `@zimspace/z-s-control-plane@0.2.0`
+- Package: `@zimmonai/z-s-control-plane@0.2.1`
+- Registry: private GitHub Packages npm registry
+- Package owner/scope: `ZimmonAI/@zimmonai`
+- Release tag: `z-s-control-plane-v0.2.1`
+- Canonical distribution baseline: `abd710088ca1640eb6d5f864bc65a563b3481d82`
 - Service: `z-s`
 - Contract: `1.0`
 - Runtime: Node.js 22 or newer
 - Transport: authenticated server-to-server HTTP JSON
 
-The package is private and installable from an exact generated package tarball or an approved immutable private-package release. Consumers must not depend on a floating branch or a permanent local `file:` path.
+This is the explicit registry successor to the unpublished/private source identity `@zimspace/z-s-control-plane@0.2.0`; it is not an overwrite or republication of that identity. Consumers install the exact private registry version after their repository has been granted bounded package read access. Consumers must not depend on Git SSH, a floating branch or tag, a permanent local path, a committed tarball, copied build output, or vendored contract types.
 
 ## Imports
 
@@ -19,20 +23,25 @@ import {
   type ObjectWriteIntentResult,
   type ProviderCapabilityPolicy,
   type IntegrityVerificationResult,
-} from '@zimspace/z-s-control-plane/runtime-contract';
+} from '@zimmonai/z-s-control-plane/runtime-contract';
 
 import {
   createHttpStorageRuntime,
   createInMemoryDuplicateProtectionStore,
-} from '@zimspace/z-s-control-plane/runtime-service';
+} from '@zimmonai/z-s-control-plane/runtime-service';
+
+import {
+  PostgresRuntimeStorageRegistry,
+  type PostgresQueryable,
+} from '@zimmonai/z-s-control-plane/runtime-storage-registry';
 ```
 
-The package root exports both the existing control-plane API and the runtime contract. The subpaths make the consumer boundary explicit.
+The package root exports the existing control-plane API and runtime contract. The `runtime-contract`, `runtime-service`, and merged `runtime-storage-registry` subpaths make the server-side boundaries explicit.
 
 ## Runtime foundation
 
 ```ts
-import { createHttpStorageRuntime } from '@zimspace/z-s-control-plane/runtime-service';
+import { createHttpStorageRuntime } from '@zimmonai/z-s-control-plane/runtime-service';
 
 const completionValue = ['opaque', 'z-s', 'value'].join('-');
 const runtime = createHttpStorageRuntime({
@@ -93,10 +102,18 @@ x-app-correlation-reference: <safe opaque correlation>
 Content-Type: application/json
 ```
 
+## Distribution and integrity boundary
+
+The exact package is built with `prepack` and restricted to the explicitly verified compiled `dist` modules, `README.md`, this runtime contract document, and the reviewed 2B-04 forward/rollback migration artifacts. It is published only from the exact release tag after the full Node.js 22 validation chain passes. The publication workflow retains the tarball SHA-256, npm integrity value, source commit, tag, workflow run, package URL, exact file/export list, and post-publish exact-version install evidence without retaining credentials or workspace paths.
+
+Including the reviewed migration files in the package does not apply them. Live database application and rollback remain separately governed 2B-04 work.
+
+A defective version is never overwritten. It remains recorded and a new reviewed successor version is published. Package visibility, repository Actions access, and any deprecation or restriction action remain separately governed package-administration work.
+
 ## Safety boundary
 
 The runtime serializes only safe contract results and `safe-diagnostic` values. Profile resolvers and operation adapters may hold provider assignments internally, but normal responses do not expose provider endpoints, credentials, secret-reference IDs, buckets, or object keys.
 
-The default in-memory duplicate-protection store is suitable only for deterministic tests and a single-process foundation. Durable duplicate protection belongs to the 2B-04 runtime registry.
+The merged runtime storage registry provides an injectable durable persistence implementation and durable duplicate-protection boundary. It does not establish a live database connection merely by being packaged or imported; live schema application and runtime wiring remain separate governed actions.
 
-No live upload, provider write, read delivery, delete, repair, reconciliation, browser flow, deployment, Video Maker business logic, or Z-X execution logic is implemented by this foundation.
+No live upload, provider write, read delivery, delete, repair, reconciliation worker, browser flow, deployment, Video Maker business logic, or Z-X execution logic is completed by publishing this package.

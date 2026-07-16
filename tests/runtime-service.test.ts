@@ -121,7 +121,7 @@ function diagnosticCode(body: Record<string, unknown>): string | undefined {
 
 test('runtime contract exposes exact identity and runtime functions', () => {
   assert.equal(SERVICE_ID, 'z-s');
-  assert.equal(PACKAGE_VERSION, '0.2.0');
+  assert.equal(PACKAGE_VERSION, '0.2.1');
   assert.equal(CONTRACT_VERSION, '1.0');
   assert.deepEqual(Object.keys(runtimeServiceModule).sort(), [
     'createHttpStorageRuntime',
