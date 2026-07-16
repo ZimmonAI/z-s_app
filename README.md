@@ -2,7 +2,7 @@
 
 This private repository is the canonical implementation home for `z-s_app`, the main application of the Z-s storage brand.
 
-The package provides a server-side, provider-neutral control-plane foundation for:
+The package provides a server-side, provider-neutral control-plane and bounded generic-ingest foundation for:
 
 - managed app and environment registration;
 - versioned storage profiles;
@@ -12,19 +12,53 @@ The package provides a server-side, provider-neutral control-plane foundation fo
 - fail-closed safe profile resolution;
 - deterministic secret-safe fingerprints;
 - capability-aware write integrity verification;
-- the merged Z-s-owned runtime storage registry and durable duplicate-protection boundary.
+- the Z-s-owned runtime storage registry and durable duplicate-protection boundary;
+- scoped `object-write-intent` creation;
+- server-streamed single-object upload completion; and
+- cancellation of an uncompleted write intent.
 
-It does not contain provider credentials, provider endpoints, raw object keys, consumer routes, browser code, or live database state.
+It does not contain provider credentials, provider endpoints, reusable provider upload authority, caller-selected object keys, browser code, live database state, real R2 or MinIO writes, or deployment configuration.
 
-## Immutable private package identity
+## Source package identity
 
-The approved registry identity is `@zimmonai/z-s-control-plane@0.2.1` on the private GitHub Packages npm registry. Contract `1.0` is unchanged. The package preserves the root, `runtime-contract`, `runtime-service`, and merged `runtime-storage-registry` entry points from canonical `main` at `abd710088ca1640eb6d5f864bc65a563b3481d82`.
+The current source identity is `@zimmonai/z-s-control-plane@0.3.0`. Contract `1.0` remains unchanged, Node.js `>=22` remains required, and the existing root, `runtime-contract`, `runtime-service`, and `runtime-storage-registry` package entry points are preserved.
 
-The release workflow publishes only from the exact immutable tag `z-s-control-plane-v0.2.1` when that tag points to a commit contained in `main`. It refuses an existing version, validates the complete repository, verifies the exact tarball allowlist and exports, retains SHA-256 and npm integrity evidence, and performs a cache-free exact-version post-publish install.
+Version `0.3.0` is a backward-compatible runtime addition within contract `1.x`. This source task does not publish `0.3.0`, create a release tag, change package visibility, or grant consumer access. The immutable `0.2.1` publication lane remains separate and must not be overwritten.
 
-The immutable package includes the two reviewed 2B-04 migration artifacts as source-controlled schema/rollback inputs. Packaging them does not apply a live database migration or assert that the live schema has changed.
+The package includes the two reviewed 2B-04 migration artifacts as source-controlled schema and rollback inputs. Packaging them does not apply a live database migration or assert a live schema change.
 
-Package visibility and cross-repository GitHub Actions read access are configured separately. Source and consumer repositories must not embed registry tokens, credential-bearing URLs, Git SSH dependencies, floating refs, local paths, committed tarballs, copied `dist`, or vendored contract types.
+## Runtime HTTP surface
+
+The in-process runtime recognizes exactly:
+
+```text
+GET    /healthz
+GET    /readyz
+POST   /v1/object-write-intents
+PUT    /v1/object-write-intents/{objectWriteIntentId}/content
+DELETE /v1/object-write-intents/{objectWriteIntentId}
+```
+
+`POST /v1/object-write-intents` accepts generic object metadata, resolves the exact active storage profile and server-only write authority, creates one durable object identity and write intent with two pending provider-copy rows, and returns one short-lived upload-completion token.
+
+`PUT /v1/object-write-intents/{objectWriteIntentId}/content` accepts one raw bounded byte stream. It validates caller and token binding, exact MIME type, `Content-Length`, declared SHA-256, computed byte count, and computed SHA-256 before recording generic upload completion. It leaves both provider-copy rows pending and does not claim provider verification.
+
+`DELETE /v1/object-write-intents/{objectWriteIntentId}` cancels an accepted or uploading intent without deleting the durable storage-object identity or registry rows.
+
+The upload-completion token is sensitive. It must not be persisted, logged, emitted in diagnostics, or copied into test snapshots.
+
+## State truth
+
+| Condition | Intent state | Storage object state/stage | Provider-copy states |
+|---|---|---|---|
+| intent created | `accepted` | `reserved` / `write-intent-created` | hot `pending`, canonical `pending` |
+| stream accepted | `uploading` | `reserved` / `write-intent-created` | both `pending` |
+| generic ingest recorded | `completed` | `reserved` / `upload-completion-recorded` | both `pending` |
+| expired before completion | `expired` | durable and not active | both `pending` |
+| cancelled before completion | `cancelled` | durable and not active | both `pending` |
+| stream or validation failure | `failed` after bounded cleanup | durable and not active | both `pending` |
+
+The 2B-05 implementation does not set `storage_objects.registry_state = active`, does not set `object_protection_stage = protected`, and does not set either provider copy to `verified`.
 
 ## Repository validation
 
@@ -34,6 +68,8 @@ npm run validate
 ```
 
 `npm run validate` runs focused tests, the full test suite, TypeScript checks, repository linting, a production build, clean local package installation, migration static validation, seed idempotency validation, secret-pattern enforcement, legacy delivery-identifier enforcement, and local readiness.
+
+The focused 2B-05 workflow runs on Node.js 22 with a disposable PostgreSQL 17 service and verifies the ingest tests, registry integration tests, migration no-diff gate, and complete validation chain. It does not connect to the governed live `z-s` database.
 
 To inspect the exact package file list and integrity metadata generated by `npm pack --json`:
 
@@ -51,7 +87,7 @@ From the official local checkout at `\apps\z-s_app`, run:
 npm run local:readiness
 ```
 
-The preflight verifies only the expected folder name, Git metadata presence, Node.js version, package identity, and required repository artifacts. It does not read secrets, query a database, modify a provider, start a service, or open a browser. Live DB, storage, runtime, and browser actions remain separate governed local handoffs.
+The preflight verifies only the expected folder name, Git metadata presence, Node.js version, package identity, and required repository artifacts. It does not read an environment file, query a database, modify a provider, start a service, deploy code, or open a browser.
 
 ## Artifacts
 
@@ -59,7 +95,8 @@ The preflight verifies only the expected folder name, Git metadata presence, Nod
 - Runtime-registry migration: `db/migrations/0002_z_s_runtime_registry.sql`
 - Isolated zero-row rollback: `db/migrations/0002_z_s_runtime_registry.down.sql`
 - Development seed: `db/seeds/0001_video_maker_dev_profiles.sql`
+- Runtime contract: `docs/runtime-contract.md`
 - DB apply handoff notes: `docs/db-handoff.md`
 - Safe example configuration: `config/example.env`
 
-The migrations and seed are reviewed artifacts only. They are not applied by publishing or installing this package.
+Real dual-provider writes, provider verification, deployment, browser behavior, Video Maker business logic, and Z-X execution remain outside this source task.
