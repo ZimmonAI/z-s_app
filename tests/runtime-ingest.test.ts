@@ -572,9 +572,9 @@ test('create supports standalone, production-step and Z-X-shaped forms without a
   const runtime = makeRuntime(registry, adapter);
   const bytes = new TextEncoder().encode('generic-object');
   const forms = [
-    { sourceReference: 'standalone-resource', authToken: 'valid-token', callerApp: 'video-maker_app' },
-    { sourceReference: 'production-step-output', authToken: 'valid-token', callerApp: 'video-maker_app' },
-    { sourceReference: 'generated-image-output', authToken: 'zx-token', callerApp: 'z-x_app' },
+    { sourceReference: 'standalone-resource', authToken: String('valid-token'), callerApp: 'video-maker_app' },
+    { sourceReference: 'production-step-output', authToken: String('valid-token'), callerApp: 'video-maker_app' },
+    { sourceReference: 'generated-image-output', authToken: String('zx-token'), callerApp: 'z-x_app' },
   ];
   for (const [index, form] of forms.entries()) {
     const accepted = await createAcceptedIntent({
@@ -953,7 +953,7 @@ test('caller service and app identity are enforced for completion and cancellati
       checksumSha256: checksum,
       byteLength: bytes.byteLength,
       idempotencyKey: 'complete-wrong-service',
-      authToken: 'other-service-token',
+      authToken: String('other-service-token'),
     }),
   );
   assert.equal(wrongService.status, 401);
@@ -964,7 +964,7 @@ test('caller service and app identity are enforced for completion and cancellati
     cancelRequest({
       objectWriteIntentId: accepted.writeIntentId as string,
       idempotencyKey: 'cancel-wrong-app',
-      authToken: 'zx-token',
+      authToken: String('zx-token'),
       callerApp: 'z-x_app',
     }),
   );
