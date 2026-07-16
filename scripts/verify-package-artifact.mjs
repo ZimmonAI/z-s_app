@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const root = process.cwd();
 const EXPECTED_NAME = '@zimmonai/z-s-control-plane';
-const EXPECTED_VERSION = '0.2.1';
+const EXPECTED_VERSION = '0.3.0';
 const EXPECTED_REPOSITORY = 'git+https://github.com/ZimmonAI/z-s_app.git';
 const EXPECTED_REGISTRY = 'https://npm.pkg.github.com';
 const EXPECTED_EXPORTS = [
@@ -35,12 +35,14 @@ const APPROVED_DIST_MODULES = [
   'prefix-authorizer',
   'profile-registry',
   'runtime-contract',
+  'runtime-ingest',
   'runtime-service',
   'runtime-storage-registry',
   'runtime-storage-registry-duplicate',
   'runtime-storage-registry-object',
   'runtime-storage-registry-support',
   'runtime-storage-registry-types',
+  'runtime-upload-token',
   'service',
 ];
 
@@ -154,7 +156,7 @@ try {
     registry: EXPECTED_REGISTRY,
     repository: 'https://github.com/ZimmonAI/z-s_app',
     packageUrl: 'https://github.com/orgs/ZimmonAI/packages/npm/package/z-s-control-plane',
-    sourceBaseline: 'abd710088ca1640eb6d5f864bc65a563b3481d82',
+    sourceBaseline: '70055e466557f0039756fc211b7dadbc1880c38d',
     tarballFilename: artifact.filename,
     tarballSha256: sha256,
     npmIntegrity: artifact.integrity,
