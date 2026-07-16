@@ -97,7 +97,8 @@ jobs:
             --pack-json package-output/pack.json \
             --tarball-root package-output \
             --output evidence/package-artifact.json
-          echo "tarball=package-output/$(node -p \"require('./evidence/package-artifact.json').tarballFilename\")" >> "$GITHUB_OUTPUT"
+          tarball_filename="$(node -p "require('./evidence/package-artifact.json').tarballFilename")"
+          echo "tarball=package-output/${tarball_filename}" >> "$GITHUB_OUTPUT"
 
       - name: Determine immutable-version state
         id: registry_before
