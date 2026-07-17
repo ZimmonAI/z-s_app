@@ -140,3 +140,11 @@ The harness emits exactly one compact safe JSON line containing the run ID, scen
 Public responses and safe diagnostics exclude provider endpoints, bucket names, internal locators, object keys, credential values, credential-reference identifiers, connection strings, bearer tokens, upload-completion tokens, raw provider responses, and consumer business payloads.
 
 Real deployment, package publication, provider provisioning, schema changes, read delivery, technical deletion, broad reconciliation scheduling, browser behavior, and consumer adoption remain separate governed work.
+
+## Object read grants and server-mediated delivery
+
+Package 0.5.0 adds short-lived, digest-only read grants and provider-neutral server delivery. The additive routes are `POST /v1/object-read-grants`, `DELETE /v1/object-read-grants/{objectReadGrantId}`, and `GET`/`HEAD /v1/storage-objects/{storageObjectId}/content`. Content delivery requires the existing authenticated caller plus `x-zs-read-grant-token`; the token is never accepted in a URL.
+
+Delivery uses only verified storage truth, prefers the verified hot copy, and falls back to the verified canonical copy after an eligible initial hot read failure. Full GET, bodyless HEAD, and one closed, open-ended, or suffix byte range are supported without buffering a full media object. Responses expose trusted media facts, a SHA-256-derived strong ETag, bounded cache policy, safe content disposition, and only the safe delivery state `hot` or `canonical-fallback`.
+
+Migration `0003_z_s_read_delivery.sql` adds only `public.object_read_grants`. It stores a lowercase SHA-256 token digest and fixed purpose, never the raw token or provider authority. Applying the migration, publishing 0.5.0, using live providers, deployment, and consumer adoption remain separately governed actions.

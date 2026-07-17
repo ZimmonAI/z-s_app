@@ -10,7 +10,7 @@ export type { ProviderCapabilityPolicy } from './domain.js';
 export type { IntegrityVerificationResult } from './integrity.js';
 
 export const SERVICE_ID = 'z-s' as const;
-export const PACKAGE_VERSION = '0.4.0' as const;
+export const PACKAGE_VERSION = '0.5.0' as const;
 export const CONTRACT_VERSION = '1.0' as const;
 export const SUPPORTED_CONTRACT_VERSIONS = [CONTRACT_VERSION] as const;
 
@@ -167,15 +167,31 @@ export interface StorageObjectResult {
 export interface ObjectReadGrantRequest {
   storageObjectId: string;
   purpose: string;
+  allowedMethods: readonly ('HEAD' | 'GET')[];
+  allowRange: boolean;
+  disposition: 'inline' | 'attachment';
+  fileName?: string;
   requestedTtlSeconds: number;
+  businessAuthorizationReference: string;
 }
 
 export interface ObjectReadGrantResult {
+  objectReadGrantId: string;
   storageObjectId: string;
-  readGrantId: string;
-  state: 'granted' | 'denied' | 'not-ready';
-  expiresAt?: string;
+  state: 'active' | 'revoked' | 'expired';
+  expiresAt: string;
+  allowedMethods: readonly ('HEAD' | 'GET')[];
+  allowRange: boolean;
+  disposition: 'inline' | 'attachment';
+  fileName?: string;
+  duplicateProtection: Readonly<DuplicateProtectionSummary>;
+  readGrantToken: string;
+  safeDiagnostic?: Readonly<SafeDiagnostic>;
+  /** @deprecated Use objectReadGrantId. */
+  readGrantId?: string;
+  /** @deprecated Use readGrantToken. */
   deliveryToken?: string;
+  /** @deprecated Use safeDiagnostic. */
   diagnostic?: SafeDiagnostic;
 }
 

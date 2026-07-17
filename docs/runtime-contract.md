@@ -163,3 +163,11 @@ The 2B-06 workflow uses Node.js 22 and disposable PostgreSQL 17. It runs focused
 The governed provider harness has an explicit fake CI mode and a separately approved live mode. Both require the exact frozen scenario list, approved non-secret aliases, exact prefix, and a safe run identifier. Live mode additionally requires explicit provider-action confirmation and reads credentials only from the local environment. The harness uses exact `2b-06-<run-id>-<scenario>-<nonce>` locator IDs under the approved prefix, performs no broad listing, deletes and verifies absence of every exact target, and emits one compact safe JSON line without aliases or provider authority values.
 
 Packaging and automated testing do not apply migrations, publish a package, access live providers, read credentials, deploy services, or modify consumers.
+
+## Object read grants and server-mediated delivery
+
+Package 0.5.0 adds short-lived, digest-only read grants and provider-neutral server delivery. The additive routes are `POST /v1/object-read-grants`, `DELETE /v1/object-read-grants/{objectReadGrantId}`, and `GET`/`HEAD /v1/storage-objects/{storageObjectId}/content`. Content delivery requires the existing authenticated caller plus `x-zs-read-grant-token`; the token is never accepted in a URL.
+
+Delivery uses only verified storage truth, prefers the verified hot copy, and falls back to the verified canonical copy after an eligible initial hot read failure. Full GET, bodyless HEAD, and one closed, open-ended, or suffix byte range are supported without buffering a full media object. Responses expose trusted media facts, a SHA-256-derived strong ETag, bounded cache policy, safe content disposition, and only the safe delivery state `hot` or `canonical-fallback`.
+
+Migration `0003_z_s_read_delivery.sql` adds only `public.object_read_grants`. It stores a lowercase SHA-256 token digest and fixed purpose, never the raw token or provider authority. Applying the migration, publishing 0.5.0, using live providers, deployment, and consumer adoption remain separately governed actions.

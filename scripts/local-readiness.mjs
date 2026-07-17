@@ -12,13 +12,20 @@ const requiredFiles = [
   'src/runtime-media-verification.ts',
   'src/runtime-s3-provider.ts',
   'src/runtime-upload-token.ts',
+  'src/runtime-read-grant.ts',
+  'src/runtime-read-delivery.ts',
   'tests/runtime-ingest.test.ts',
   'tests/runtime-dual-provider.test.ts',
   'tests/runtime-media-verification.test.ts',
+  'tests/runtime-read-grant.test.ts',
+  'tests/runtime-read-delivery.test.ts',
   '.github/workflows/2b-06-dual-provider-media-validation.yml',
+  '.github/workflows/2b-07-read-delivery-validation.yml',
   'db/migrations/0001_z_s_control_plane_foundation.sql',
   'db/migrations/0002_z_s_runtime_registry.sql',
   'db/migrations/0002_z_s_runtime_registry.down.sql',
+  'db/migrations/0003_z_s_read_delivery.sql',
+  'db/migrations/0003_z_s_read_delivery.down.sql',
   'db/seeds/0001_video_maker_dev_profiles.sql',
   'docs/db-handoff.md',
   'config/example.env'
@@ -42,7 +49,7 @@ const nodeMajor = Number.parseInt(process.versions.node.split('.')[0] ?? '0', 10
 const folderName = path.basename(process.cwd());
 const gitMetadataPresent = await exists('.git');
 const packageIdentityMatches =
-  packageJson.name === '@zimmonai/z-s-control-plane' && packageJson.version === '0.4.0';
+  packageJson.name === '@zimmonai/z-s-control-plane' && packageJson.version === '0.5.0';
 const nodeSupported = nodeMajor >= 22;
 const folderNameMatches = folderName === expectedFolderName;
 const requiredArtifactsPresent = Object.values(artifactChecks).every(Boolean);

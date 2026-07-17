@@ -2,78 +2,45 @@ import { readFile } from 'node:fs/promises';
 
 const baselineFile = 'db/migrations/0001_z_s_control_plane_foundation.sql';
 const runtimeFile = 'db/migrations/0002_z_s_runtime_registry.sql';
-const rollbackFile = 'db/migrations/0002_z_s_runtime_registry.down.sql';
+const runtimeRollbackFile = 'db/migrations/0002_z_s_runtime_registry.down.sql';
+const readDeliveryFile = 'db/migrations/0003_z_s_read_delivery.sql';
+const readDeliveryRollbackFile = 'db/migrations/0003_z_s_read_delivery.down.sql';
 const baselineSql = await readFile(baselineFile, 'utf8');
 const runtimeSql = await readFile(runtimeFile, 'utf8');
-const rollbackSql = await readFile(rollbackFile, 'utf8');
+const runtimeRollbackSql = await readFile(runtimeRollbackFile, 'utf8');
+const readDeliverySql = await readFile(readDeliveryFile, 'utf8');
+const readDeliveryRollbackSql = await readFile(readDeliveryRollbackFile, 'utf8');
 const baselineReference =
   'z-kn/08-execution/zimspace-storage-server-dev/tasks/in-progress/storage-platform-development/02a-package-z-s-core-control-plane-and-provider-capability-baseline.md';
 const runtimeReference =
   'z-kn/08-execution/zimspace-storage-server-dev/tasks/in-progress/storage-platform-development/02b-04-package-runtime-storage-registry-and-schema.md';
+const readDeliveryReference =
+  'z-kn/08-execution/zimspace-storage-server-dev/tasks/in-progress/storage-platform-development/02b-07-package-read-grant-delivery-fallback-and-range.md';
 
 const baselineTables = {
   managed_apps: ['id', 'app_id', 'environment', 'status', 'created_at', 'updated_at'],
   storage_providers: [
-    'id',
-    'provider_id',
-    'provider_type',
-    'status',
-    'secret_reference_id',
-    'created_at',
-    'updated_at',
+    'id', 'provider_id', 'provider_type', 'status', 'secret_reference_id', 'created_at', 'updated_at',
   ],
   storage_profiles: [
-    'id',
-    'managed_app_id',
-    'profile_id',
-    'version',
-    'status',
-    'effective_at',
-    'retired_at',
-    'created_at',
-    'updated_at',
+    'id', 'managed_app_id', 'profile_id', 'version', 'status', 'effective_at', 'retired_at',
+    'created_at', 'updated_at',
   ],
   storage_profile_provider_bindings: [
-    'id',
-    'storage_profile_id',
-    'provider_role',
-    'storage_provider_id',
-    'bucket_label',
-    'required',
-    'created_at',
-    'updated_at',
+    'id', 'storage_profile_id', 'provider_role', 'storage_provider_id', 'bucket_label', 'required',
+    'created_at', 'updated_at',
   ],
   storage_prefix_classes: [
-    'id',
-    'storage_profile_id',
-    'prefix_class_id',
-    'operation_class',
-    'normalized_prefix_pattern',
-    'status',
-    'created_at',
-    'updated_at',
+    'id', 'storage_profile_id', 'prefix_class_id', 'operation_class',
+    'normalized_prefix_pattern', 'status', 'created_at', 'updated_at',
   ],
   storage_capability_results: [
-    'id',
-    'capability_run_id',
-    'storage_profile_id',
-    'storage_provider_id',
-    'bucket_label',
-    'prefix_class_id',
-    'capability',
-    'result',
-    'verified_at',
-    'expires_at',
-    'safe_evidence_ref',
+    'id', 'capability_run_id', 'storage_profile_id', 'storage_provider_id', 'bucket_label',
+    'prefix_class_id', 'capability', 'result', 'verified_at', 'expires_at', 'safe_evidence_ref',
     'created_at',
   ],
   storage_profile_audit_events: [
-    'id',
-    'event_type',
-    'profile_id',
-    'profile_version',
-    'actor_role',
-    'safe_change_summary',
+    'id', 'event_type', 'profile_id', 'profile_version', 'actor_role', 'safe_change_summary',
     'created_at',
   ],
 };
@@ -86,6 +53,28 @@ const runtimeTables = [
   'storage_operation_events',
   'storage_reconciliation_issues',
   'storage_idempotency_records',
+];
+
+const readDeliveryColumns = [
+  'object_read_grant_id',
+  'storage_object_id',
+  'managed_app_id',
+  'caller_service_id',
+  'app_correlation_ref',
+  'business_authorization_ref',
+  'purpose',
+  'allowed_methods',
+  'range_allowed',
+  'disposition',
+  'safe_file_name',
+  'read_grant_token_digest',
+  'token_purpose',
+  'state',
+  'expires_at',
+  'revoked_at',
+  'created_at',
+  'updated_at',
+  'row_version',
 ];
 
 const errors = [];
@@ -118,36 +107,23 @@ for (const table of runtimeTables) {
   else if (!tableComment[1]?.includes(runtimeReference)) {
     errors.push(`runtime table comment missing reference ${table}`);
   }
-  if (!new RegExp(`DROP TABLE public\\.${table};`, 'i').test(rollbackSql)) {
+  if (!new RegExp(`DROP TABLE public\\.${table};`, 'i').test(runtimeRollbackSql)) {
     errors.push(`rollback missing runtime table ${table}`);
   }
 }
 
-const prohibitedColumns = [
-  'credential',
-  'endpoint',
-  'account_id',
-  'connection_string',
-  'signed_url',
-  'object_key',
-  'bearer_token',
-  'upload_completion_token',
-  'project_id',
-  'series_id',
-  'video_id',
-  'scene_id',
-  'slot_id',
-  'user_id',
-  'title',
-  'prompt',
+const prohibitedRuntimeColumns = [
+  'credential', 'endpoint', 'account_id', 'connection_string', 'signed_url', 'object_key',
+  'bearer_token', 'upload_completion_token', 'project_id', 'series_id', 'video_id', 'scene_id',
+  'slot_id', 'user_id', 'title', 'prompt',
 ];
-for (const prohibited of prohibitedColumns) {
+for (const prohibited of prohibitedRuntimeColumns) {
   if (new RegExp(`^\\s*${prohibited}\\s+`, 'im').test(runtimeSql)) {
     errors.push(`prohibited runtime column ${prohibited}`);
   }
 }
 
-const requiredPatterns = [
+const runtimeRequiredPatterns = [
   /SET LOCAL lock_timeout = '5s'/i,
   /SET LOCAL statement_timeout = '60s'/i,
   /2B-04 preflight missing baseline table/i,
@@ -166,13 +142,13 @@ const requiredPatterns = [
   /COMMENT ON COLUMN public\.%I\.%I/i,
   /0002_z_s_runtime_registry\.down\.sql|2B-04 rollback blocked/i,
 ];
-for (const pattern of requiredPatterns) {
-  if (!pattern.test(`${runtimeSql}\n${rollbackSql}`)) {
+for (const pattern of runtimeRequiredPatterns) {
+  if (!pattern.test(`${runtimeSql}\n${runtimeRollbackSql}`)) {
     errors.push(`missing runtime migration requirement ${pattern}`);
   }
 }
 
-const requiredIndexes = [
+const runtimeIndexes = [
   'object_write_intents_app_state_expiry_idx',
   'object_write_intents_correlation_created_idx',
   'storage_objects_correlation_created_idx',
@@ -188,20 +164,77 @@ const requiredIndexes = [
   'storage_idempotency_records_lookup_idx',
   'storage_idempotency_records_expiry_idx',
 ];
-for (const index of requiredIndexes) {
+for (const index of runtimeIndexes) {
   if (!new RegExp(`CREATE (?:UNIQUE )?INDEX ${index}`, 'i').test(runtimeSql)) {
     errors.push(`missing runtime index ${index}`);
   }
 }
 
-if (/CREATE EXTENSION/i.test(runtimeSql)) {
-  errors.push('runtime migration must not add PostgreSQL extensions');
+if (!/CREATE TABLE public\.object_read_grants\s*\(/i.test(readDeliverySql)) {
+  errors.push('missing read-delivery table object_read_grants');
 }
-if (/INSERT INTO public\.(?:object_write_intents|storage_objects|storage_object_copies|storage_provider_attempts|storage_operation_events|storage_reconciliation_issues|storage_idempotency_records)/i.test(runtimeSql)) {
-  errors.push('runtime migration must not seed runtime rows');
+const readTableComment = readDeliverySql.match(
+  /COMMENT ON TABLE public\.object_read_grants IS\s*'([^']*)'/i,
+);
+if (!readTableComment) errors.push('missing read-delivery table comment');
+else if (!readTableComment[1]?.includes(readDeliveryReference)) {
+  errors.push('read-delivery table comment missing reference');
 }
-if (!/row_total <> 0/i.test(rollbackSql)) {
-  errors.push('rollback must reject adopted runtime rows');
+for (const column of readDeliveryColumns) {
+  if (!new RegExp(`^\\s*${column}\\s+`, 'im').test(readDeliverySql)) {
+    errors.push(`missing read-delivery column ${column}`);
+  }
+}
+
+const readRequiredPatterns = [
+  /2B-07 preflight missing baseline table/i,
+  /2B-07 migration already applied/i,
+  /migration owner mismatch/i,
+  /storage_object_id uuid NOT NULL REFERENCES public\.storage_objects\(storage_object_id\) ON DELETE RESTRICT/i,
+  /managed_app_id uuid NOT NULL REFERENCES public\.managed_apps\(id\) ON DELETE RESTRICT/i,
+  /allowed_methods text\[\] NOT NULL/i,
+  /allowed_methods <@ ARRAY\['HEAD', 'GET'\]::text\[\]/i,
+  /read_grant_token_digest text NOT NULL CHECK \(read_grant_token_digest ~ '\^\[a-f0-9\]\{64\}\$'\)/i,
+  /token_purpose = 'z-s-object-read-grant-v1'/i,
+  /state IN \('active', 'revoked', 'expired'\)/i,
+  /row_version integer NOT NULL DEFAULT 1 CHECK \(row_version > 0\)/i,
+  /COMMENT ON COLUMN public\.object_read_grants\.%I/i,
+  /2B-07 rollback blocked/i,
+  /DROP TABLE public\.object_read_grants;/i,
+];
+for (const pattern of readRequiredPatterns) {
+  if (!pattern.test(`${readDeliverySql}\n${readDeliveryRollbackSql}`)) {
+    errors.push(`missing read-delivery migration requirement ${pattern}`);
+  }
+}
+
+const readIndexes = [
+  'object_read_grants_object_created_idx',
+  'object_read_grants_caller_state_expiry_idx',
+  'object_read_grants_state_expiry_idx',
+];
+for (const index of readIndexes) {
+  if (!new RegExp(`CREATE INDEX ${index}`, 'i').test(readDeliverySql)) {
+    errors.push(`missing read-delivery index ${index}`);
+  }
+}
+
+for (const prohibited of [
+  'read_grant_token', 'delivery_token', 'provider_id', 'provider_alias', 'bucket', 'endpoint',
+  'internal_locator', 'object_key', 'credential_reference_id', 'signed_url',
+]) {
+  if (new RegExp(`^\\s*${prohibited}\\s+`, 'im').test(readDeliverySql)) {
+    errors.push(`prohibited read-delivery column ${prohibited}`);
+  }
+}
+if (/CREATE EXTENSION/i.test(`${runtimeSql}\n${readDeliverySql}`)) {
+  errors.push('runtime migrations must not add PostgreSQL extensions');
+}
+if (/INSERT INTO public\.object_read_grants/i.test(readDeliverySql)) {
+  errors.push('read-delivery migration must not seed grants');
+}
+if (!/row_total <> 0/i.test(readDeliveryRollbackSql)) {
+  errors.push('read-delivery rollback must reject adopted rows');
 }
 
 if (errors.length > 0) {
