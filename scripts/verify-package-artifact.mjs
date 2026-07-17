@@ -41,6 +41,7 @@ const APPROVED_DIST_MODULES = [
   'runtime-contract',
   'runtime-dual-provider',
   'runtime-ingest',
+  'runtime-local-composition',
   'runtime-media-verification',
   'runtime-read-delivery',
   'runtime-read-grant',
