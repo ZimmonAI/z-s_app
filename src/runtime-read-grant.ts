@@ -744,8 +744,9 @@ export class PostgresObjectReadRegistry
       const nextState: 'expired' | 'revoked' = expired ? 'expired' : 'revoked';
       const update = await client.query(
         `UPDATE public.object_read_grants
-            SET state = $2, revoked_at = CASE WHEN $2 = 'revoked' THEN $3 ELSE NULL END,
-                updated_at = $3, row_version = row_version + 1
+            SET state = $2::text,
+       revoked_at = CASE WHEN $2::text = 'revoked' THEN $3::timestamptz ELSE NULL::timestamptz END,
+       updated_at = $3::timestamptz, row_version = row_version + 1
           WHERE object_read_grant_id = $1 AND state = 'active' AND row_version = $4`,
         [input.objectReadGrantId, nextState, now, current.rowVersion],
       );
