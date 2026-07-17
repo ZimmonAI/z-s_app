@@ -1,0 +1,113 @@
+name: 2B-07 read delivery validation
+
+on:
+  push:
+    branches:
+      - agent/02b-07-read-grant-delivery-range
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+      - README.md
+      - docs/runtime-contract.md
+      - src/index.ts
+      - src/runtime-contract.ts
+      - src/runtime-service.ts
+      - src/runtime-storage-registry.ts
+      - src/runtime-storage-registry-object.ts
+      - src/runtime-storage-registry-types.ts
+      - src/runtime-storage-registry-support.ts
+      - src/runtime-s3-provider.ts
+      - src/runtime-read-grant.ts
+      - src/runtime-read-delivery.ts
+      - db/migrations/0003_z_s_read_delivery.sql
+      - db/migrations/0003_z_s_read_delivery.down.sql
+      - scripts/validate-migration.mjs
+      - scripts/local-readiness.mjs
+      - scripts/install-smoke.mjs
+      - scripts/verify-package-artifact.mjs
+      - tests/runtime-service.test.ts
+      - tests/runtime-storage-registry.integration.test.ts
+      - tests/runtime-read-grant.test.ts
+      - tests/runtime-read-delivery.test.ts
+      - .github/workflows/2b-07-read-delivery-validation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-lock:
+    if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Synchronize the canonical lock root
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          if git diff --quiet -- package-lock.json; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add package-lock.json
+          git commit -m "Synchronize 0.5.0 package lock"
+          git push origin HEAD:${GITHUB_REF_NAME}
+
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: z_s_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d z_s_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Verify frozen baseline ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=d13e74fb428cec20f1706034ed0e00274ee9fce2
+          test "$(git merge-base "$baseline" HEAD)" = "$baseline"
+      - name: Install dependencies cleanly
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Run focused read tests
+        run: npm run test:focused
+      - name: Run PostgreSQL registry tests
+        run: npm run test:registry
+      - name: Run full validation chain
+        run: npm run validate
+      - name: Build and inspect package
+        run: npm run build && npm pack --json
