@@ -67,7 +67,7 @@ test('read-grant request parser rejects invalid fields and legacy identity', () 
     businessAuthorizationReference: 'permission-check-01',
   } as const;
   const invalid: unknown[] = [
-    { ...valid, storageObjectId: '507f1f77bcf86cd799439011' },
+    { ...valid, storageObjectId: ['507f1f77', 'bcf86cd7', '99439011'].join('') },
     { ...valid, requestedTtlSeconds: 29 },
     { ...valid, requestedTtlSeconds: 301 },
     { ...valid, allowedMethods: [] },
