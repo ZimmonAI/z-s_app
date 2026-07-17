@@ -57,7 +57,7 @@ jobs:
             base64 --decode /tmp/zs-changes.b64 > /tmp/zs-changes.tgz
             echo '816ca448952d604df142b247b6517cfe1139903d1af6d5c40f378c3554848543  /tmp/zs-changes.tgz' | sha256sum --check --strict
             tar -xzf /tmp/zs-changes.tgz -C .
-            npm version 0.5.0 --no-git-tag-version --allow-same-version
+            npm pkg set version=0.5.0
             python <<'PY'
           from pathlib import Path
 
