@@ -63,6 +63,9 @@ jobs:
 
           path = Path('src/runtime-read-grant.ts')
           source = path.read_text(encoding='utf-8')
+          start = source.index('  async completeReadAttempt(')
+          end = source.index('\n  async appendReadEvent(', start)
+          block = source[start:end]
           replacements = [
               ('            SET state = $2,', '            SET state = $2::text,'),
               ('                retryable = $3,', '                retryable = $3::boolean,'),
@@ -73,21 +76,20 @@ jobs:
               ('                finished_at = $8,', '                finished_at = $8::timestamptz,'),
               ("                verified_at = CASE WHEN $2 = 'succeeded' THEN $8 ELSE NULL END,", "                verified_at = CASE WHEN $2::text = 'succeeded' THEN $8::timestamptz ELSE NULL END,"),
               ('                updated_at = $8', '                updated_at = $8::timestamptz'),
-              ('          WHERE storage_provider_attempt_id = $1\n            AND operation = \'read\'\n            AND state = \'in_progress\'`,', '          WHERE storage_provider_attempt_id = $1::uuid\n            AND operation = \'read\'\n            AND state = \'in_progress\'`,'),
+              ('          WHERE storage_provider_attempt_id = $1', '          WHERE storage_provider_attempt_id = $1::uuid'),
           ]
-          updated = source
           changed = 0
           for old, new in replacements:
-              count = updated.count(old)
+              count = block.count(old)
               if count == 1:
-                  updated = updated.replace(old, new, 1)
+                  block = block.replace(old, new, 1)
                   changed += 1
-              elif count == 0 and new in updated:
+              elif count == 0 and new in block:
                   continue
               else:
-                  raise SystemExit(f'unexpected replacement count {count} for {old!r}')
+                  raise SystemExit(f'unexpected scoped replacement count {count} for {old!r}')
           if changed:
-              path.write_text(updated, encoding='utf-8')
+              path.write_text(source[:start] + block + source[end:], encoding='utf-8')
           PY
           if ! git diff --quiet -- src/runtime-read-grant.ts; then
             git config user.name 'github-actions[bot]'
