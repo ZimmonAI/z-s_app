@@ -68,19 +68,6 @@ jobs:
           runtime_text = runtime_test.read_text()
           runtime_test.write_text(runtime_text.replace("'0.4.0'", "'0.5.0'"))
 
-          prior_workflow = Path('.github/workflows/2b-06-dual-provider-media-validation.yml')
-          workflow_text = prior_workflow.read_text()
-          workflow_text = workflow_text.replace("manifest.version !== '0.4.0'", "manifest.version !== '0.5.0'")
-          old_scope = 'git diff --exit-code "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" -- db/migrations db/seeds'
-          new_scope = '''git diff --exit-code "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" -- \\
-            db/migrations/0001_z_s_control_plane_foundation.sql \\
-            db/migrations/0001_z_s_control_plane_foundation.down.sql \\
-            db/migrations/0002_z_s_runtime_registry.sql \\
-            db/migrations/0002_z_s_runtime_registry.down.sql \\
-            db/seeds'''
-          workflow_text = workflow_text.replace(old_scope, new_scope)
-          prior_workflow.write_text(workflow_text)
-
           readme = Path('README.md')
           readme_text = readme.read_text()
           if '## Short-lived object read delivery' not in readme_text:
@@ -97,7 +84,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf .github/agent-2b07 .github/workflows/2b-07-read-grant-delivery-validation.yml
+          git checkout -- .github/workflows
+          rm -rf .github/agent-2b07
           npm install --package-lock-only --ignore-scripts --no-audit --no-fund
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
