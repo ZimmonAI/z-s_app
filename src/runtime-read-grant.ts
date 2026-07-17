@@ -595,29 +595,29 @@ async function selectGrant(
   objectReadGrantId: string,
 ): Promise<Readonly<ObjectReadGrantSnapshot> | null> {
   const result = await client.query<GrantRow>(
-    `SELECT grant.object_read_grant_id,
-            grant.storage_object_id,
-            grant.managed_app_id,
+    `SELECT read_grant.object_read_grant_id,
+            read_grant.storage_object_id,
+            read_grant.managed_app_id,
             app.app_id AS caller_app_id,
-            grant.caller_service_id,
-            grant.app_correlation_ref,
-            grant.business_authorization_ref,
-            grant.purpose,
-            grant.allowed_methods,
-            grant.range_allowed,
-            grant.disposition,
-            grant.safe_file_name,
-            grant.read_grant_token_digest,
-            grant.token_purpose,
-            grant.state,
-            grant.expires_at,
-            grant.revoked_at,
-            grant.created_at,
-            grant.updated_at,
-            grant.row_version
-       FROM public.object_read_grants AS grant
-       JOIN public.managed_apps AS app ON app.id = grant.managed_app_id
-      WHERE grant.object_read_grant_id = $1`,
+            read_grant.caller_service_id,
+            read_grant.app_correlation_ref,
+            read_grant.business_authorization_ref,
+            read_grant.purpose,
+            read_grant.allowed_methods,
+            read_grant.range_allowed,
+            read_grant.disposition,
+            read_grant.safe_file_name,
+            read_grant.read_grant_token_digest,
+            read_grant.token_purpose,
+            read_grant.state,
+            read_grant.expires_at,
+            read_grant.revoked_at,
+            read_grant.created_at,
+            read_grant.updated_at,
+            read_grant.row_version
+       FROM public.object_read_grants AS read_grant
+       JOIN public.managed_apps AS app ON app.id = read_grant.managed_app_id
+      WHERE read_grant.object_read_grant_id = $1`,
     [objectReadGrantId],
   );
   const row = result.rows[0];
@@ -890,33 +890,33 @@ export class PostgresObjectReadGrantRegistry implements ObjectReadGrantRegistry 
       }
 
       const locked = await client.query<GrantRow>(
-        `SELECT grant.object_read_grant_id,
-                grant.storage_object_id,
-                grant.managed_app_id,
+        `SELECT read_grant.object_read_grant_id,
+                read_grant.storage_object_id,
+                read_grant.managed_app_id,
                 app.app_id AS caller_app_id,
-                grant.caller_service_id,
-                grant.app_correlation_ref,
-                grant.business_authorization_ref,
-                grant.purpose,
-                grant.allowed_methods,
-                grant.range_allowed,
-                grant.disposition,
-                grant.safe_file_name,
-                grant.read_grant_token_digest,
-                grant.token_purpose,
-                grant.state,
-                grant.expires_at,
-                grant.revoked_at,
-                grant.created_at,
-                grant.updated_at,
-                grant.row_version
-           FROM public.object_read_grants AS grant
+                read_grant.caller_service_id,
+                read_grant.app_correlation_ref,
+                read_grant.business_authorization_ref,
+                read_grant.purpose,
+                read_grant.allowed_methods,
+                read_grant.range_allowed,
+                read_grant.disposition,
+                read_grant.safe_file_name,
+                read_grant.read_grant_token_digest,
+                read_grant.token_purpose,
+                read_grant.state,
+                read_grant.expires_at,
+                read_grant.revoked_at,
+                read_grant.created_at,
+                read_grant.updated_at,
+                read_grant.row_version
+           FROM public.object_read_grants AS read_grant
            JOIN public.managed_apps AS app
-             ON app.id = grant.managed_app_id
+             ON app.id = read_grant.managed_app_id
             AND app.app_id = $2
-          WHERE grant.object_read_grant_id = $1
-            AND COALESCE(grant.caller_service_id, '') = $3
-          FOR UPDATE OF grant`,
+          WHERE read_grant.object_read_grant_id = $1
+            AND COALESCE(read_grant.caller_service_id, '') = $3
+          FOR UPDATE OF read_grant`,
         [input.objectReadGrantId, input.caller.appId, callerServiceId],
       );
       const row = locked.rows[0];
@@ -978,34 +978,34 @@ export class PostgresObjectReadGrantRegistry implements ObjectReadGrantRegistry 
     requireUuid(input.storageObjectId, 'invalid-storage-object-id');
     return transaction(this.#pool, async (client) => {
       const result = await client.query<GrantRow>(
-        `SELECT grant.object_read_grant_id,
-                grant.storage_object_id,
-                grant.managed_app_id,
+        `SELECT read_grant.object_read_grant_id,
+                read_grant.storage_object_id,
+                read_grant.managed_app_id,
                 app.app_id AS caller_app_id,
-                grant.caller_service_id,
-                grant.app_correlation_ref,
-                grant.business_authorization_ref,
-                grant.purpose,
-                grant.allowed_methods,
-                grant.range_allowed,
-                grant.disposition,
-                grant.safe_file_name,
-                grant.read_grant_token_digest,
-                grant.token_purpose,
-                grant.state,
-                grant.expires_at,
-                grant.revoked_at,
-                grant.created_at,
-                grant.updated_at,
-                grant.row_version
-           FROM public.object_read_grants AS grant
+                read_grant.caller_service_id,
+                read_grant.app_correlation_ref,
+                read_grant.business_authorization_ref,
+                read_grant.purpose,
+                read_grant.allowed_methods,
+                read_grant.range_allowed,
+                read_grant.disposition,
+                read_grant.safe_file_name,
+                read_grant.read_grant_token_digest,
+                read_grant.token_purpose,
+                read_grant.state,
+                read_grant.expires_at,
+                read_grant.revoked_at,
+                read_grant.created_at,
+                read_grant.updated_at,
+                read_grant.row_version
+           FROM public.object_read_grants AS read_grant
            JOIN public.managed_apps AS app
-             ON app.id = grant.managed_app_id
+             ON app.id = read_grant.managed_app_id
             AND app.app_id = $3
-          WHERE grant.object_read_grant_id = $1
-            AND grant.storage_object_id = $2
-            AND COALESCE(grant.caller_service_id, '') = $4
-          FOR UPDATE OF grant`,
+          WHERE read_grant.object_read_grant_id = $1
+            AND read_grant.storage_object_id = $2
+            AND COALESCE(read_grant.caller_service_id, '') = $4
+          FOR UPDATE OF read_grant`,
         [input.objectReadGrantId, input.storageObjectId, input.caller.appId, input.caller.serviceId ?? ''],
       );
       const row = result.rows[0];
