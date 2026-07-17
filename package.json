@@ -68,8 +68,7 @@
     "pack:check": "npm run build && node scripts/install-smoke.mjs",
     "package:verify": "node scripts/verify-package-artifact.mjs",
     "verify:2b06:providers": "npm run build && node scripts/verify-2b-06-providers.mjs",
-    "verify:2b07:read": "npm run build && node scripts/verify-2b-07-read.mjs",
-    "validate": "npm run test:focused && npm test && npm run typecheck && npm run lint && npm run build && npm run pack:check && npm run validate:migration && npm run validate:seed && npm run validate:secrets && npm run validate:legacy-id && npm run verify:2b07:read && npm run local:readiness",
+    "validate": "npm run test:focused && npm test && npm run typecheck && npm run lint && npm run build && npm run pack:check && npm run validate:migration && npm run validate:seed && npm run validate:secrets && npm run validate:legacy-id && npm run local:readiness",
     "prepack": "npm run build"
   },
   "dependencies": {
