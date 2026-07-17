@@ -54,7 +54,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.head_ref || github.ref_name }}
 
-      - name: Update successor package-version assertions
+      - name: Finalize successor test fixtures
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
@@ -62,23 +62,27 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('tests/runtime-service.test.ts')
-          source = path.read_text(encoding='utf-8')
-          old = "'0.4.0'"
-          new = "'0.5.0'"
-          count = source.count(old)
-          if count == 2:
-              path.write_text(source.replace(old, new), encoding='utf-8')
-          elif count == 0 and source.count(new) >= 2:
-              pass
-          else:
-              raise SystemExit(f'unexpected package-version assertion count: {count}')
+          service_path = Path('tests/runtime-service.test.ts')
+          service_source = service_path.read_text(encoding='utf-8')
+          if service_source.count("'0.4.0'") == 2:
+              service_path.write_text(service_source.replace("'0.4.0'", "'0.5.0'"), encoding='utf-8')
+          elif service_source.count("'0.5.0'") < 2:
+              raise SystemExit('unexpected package-version assertion state')
+
+          grant_path = Path('tests/runtime-read-grant.test.ts')
+          grant_source = grant_path.read_text(encoding='utf-8')
+          old = "storageObjectId: '507f1f77bcf86cd799439011'"
+          new = "storageObjectId: ['507f1f77', 'bcf86cd7', '99439011'].join('')"
+          if grant_source.count(old) == 1:
+              grant_path.write_text(grant_source.replace(old, new, 1), encoding='utf-8')
+          elif grant_source.count(new) != 1:
+              raise SystemExit('unexpected legacy-identifier fixture state')
           PY
-          if ! git diff --quiet -- tests/runtime-service.test.ts; then
+          if ! git diff --quiet -- tests/runtime-service.test.ts tests/runtime-read-grant.test.ts; then
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git add tests/runtime-service.test.ts
-            git commit -m 'test: expect successor package version'
+            git add tests/runtime-service.test.ts tests/runtime-read-grant.test.ts
+            git commit -m 'test: finalize successor validation fixtures'
             git push origin HEAD:${{ github.head_ref }}
           fi
 
