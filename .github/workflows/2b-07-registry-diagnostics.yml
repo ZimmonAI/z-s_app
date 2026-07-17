@@ -1,0 +1,53 @@
+name: 2B-07 bounded registry diagnostics
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: z_s_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d z_s_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Capture bounded registry failure
+        shell: bash
+        run: |
+          set +e
+          npm run test:registry > registry-test.log 2>&1
+          status=$?
+          echo "$status" > registry-test.status
+          tail -n 240 registry-test.log > registry-test-tail.log
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 2b-07-registry-diagnostics
+          path: |
+            registry-test.status
+            registry-test-tail.log
+          if-no-files-found: error
+          retention-days: 1
