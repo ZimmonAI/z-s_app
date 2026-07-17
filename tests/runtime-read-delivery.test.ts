@@ -206,6 +206,7 @@ test('hot provider failure falls back once to verified canonical copy', async ()
   const coordinator = new ObjectReadDeliveryCoordinator({
     registry: registry.registry,
     providerReader: reader.providerReader,
+    now: () => new Date('2026-07-17T00:01:00.000Z'),
   });
   const result = await coordinator.deliver(deliveryInput({ rangeHeader: 'bytes=2-5' }));
   assert.equal(result.status, 206);
@@ -237,6 +238,7 @@ test('an unverified hot copy is skipped without provider contact', async () => {
   const coordinator = new ObjectReadDeliveryCoordinator({
     registry: registry.registry,
     providerReader: reader.providerReader,
+    now: () => new Date('2026-07-17T00:01:00.000Z'),
   });
   const result = await coordinator.deliver(deliveryInput({ method: 'HEAD' }));
   assert.equal(result.status, 200);
@@ -257,6 +259,7 @@ test('conflicting verified copy metadata fails closed before provider access', a
   const coordinator = new ObjectReadDeliveryCoordinator({
     registry: registry.registry,
     providerReader: reader.providerReader,
+    now: () => new Date('2026-07-17T00:01:00.000Z'),
   });
   await assert.rejects(
     coordinator.deliver(deliveryInput()),
@@ -272,6 +275,7 @@ test('both provider failures return one safe dependency error without authority 
   const coordinator = new ObjectReadDeliveryCoordinator({
     registry: registry.registry,
     providerReader: reader.providerReader,
+    now: () => new Date('2026-07-17T00:01:00.000Z'),
   });
   await assert.rejects(
     coordinator.deliver(deliveryInput()),
@@ -307,6 +311,7 @@ test('consumer cancellation closes the source and records a failed attempt', asy
   const coordinator = new ObjectReadDeliveryCoordinator({
     registry: registry.registry,
     providerReader,
+    now: () => new Date('2026-07-17T00:01:00.000Z'),
   });
   const result = await coordinator.deliver(deliveryInput());
   if (result.body === null) throw new Error('expected-stream-body');
