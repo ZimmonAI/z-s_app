@@ -159,7 +159,7 @@ function requestHeaders(configuration, runId, action, extra = {}) {
     authorization: `Bearer ${configuration.token}`,
     'x-zs-caller-app': CALLER_APP,
     'x-zs-contract-version': CONTRACT_VERSION,
-    'x-app-correlation-reference': `${runId}:${action}`,
+    'x-app-correlation-reference': `p0-s2d-vm-${runId}:${action}`,
     ...extra,
   };
 }
