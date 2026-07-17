@@ -53,38 +53,55 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.head_ref || github.ref_name }}
 
-      - name: Rename reserved PostgreSQL alias
+      - name: Cast read-attempt SQL parameters
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import re
           from pathlib import Path
 
           path = Path('src/runtime-read-grant.ts')
           source = path.read_text(encoding='utf-8')
-
-          def rewrite(match: re.Match[str]) -> str:
-              block = match.group(0)
-              if 'public.object_read_grants AS grant' not in block:
-                  return block
-              return (
-                  block.replace('AS grant', 'AS read_grant')
-                       .replace('grant.', 'read_grant.')
-                       .replace('OF grant', 'OF read_grant')
-              )
-
-          updated = re.sub(r'`[^`]*`', rewrite, source, flags=re.DOTALL)
-          if updated == source and 'public.object_read_grants AS read_grant' not in source:
-              raise SystemExit('expected object_read_grants alias not found')
-          path.write_text(updated, encoding='utf-8')
+          old = '''        `UPDATE public.storage_provider_attempts
+            SET state = $2,
+                retryable = $3,
+                observed_checksum_sha256 = $4,
+                observed_byte_length = $5,
+                safe_diagnostic_category = $6,
+                safe_diagnostic_code = $7,
+                finished_at = $8,
+                verified_at = CASE WHEN $2 = 'succeeded' THEN $8 ELSE NULL END,
+                updated_at = $8
+          WHERE storage_provider_attempt_id = $1
+            AND operation = 'read'
+            AND state = 'in_progress'`,'''
+          new = '''        `UPDATE public.storage_provider_attempts
+            SET state = $2::text,
+                retryable = $3::boolean,
+                observed_checksum_sha256 = $4::text,
+                observed_byte_length = $5::bigint,
+                safe_diagnostic_category = $6::text,
+                safe_diagnostic_code = $7::text,
+                finished_at = $8::timestamptz,
+                verified_at = CASE
+                  WHEN $2::text = 'succeeded' THEN $8::timestamptz
+                  ELSE NULL
+                END,
+                updated_at = $8::timestamptz
+          WHERE storage_provider_attempt_id = $1::uuid
+            AND operation = 'read'
+            AND state = 'in_progress'`,'''
+          if old in source:
+              path.write_text(source.replace(old, new, 1), encoding='utf-8')
+          elif new not in source:
+              raise SystemExit('expected completeReadAttempt SQL block not found')
           PY
           if ! git diff --quiet -- src/runtime-read-grant.ts; then
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
             git add src/runtime-read-grant.ts
-            git commit -m 'fix: avoid reserved grant SQL alias'
+            git commit -m 'fix: cast read attempt SQL parameters'
             git push origin HEAD:${{ github.head_ref }}
           fi
 
