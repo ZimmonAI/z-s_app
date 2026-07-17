@@ -145,11 +145,8 @@ Public responses and safe diagnostics exclude provider endpoints, bucket names, 
 
 Real deployment, package publication, provider provisioning, future schema changes, technical deletion, broad reconciliation scheduling, browser behavior, and consumer adoption remain separate governed work.
 
-
 ## Short-lived object read delivery
 
-Package 0.5.0 adds caller-bound, short-lived object read grants and server-streamed delivery without exposing provider authority. Callers create grants with `POST /v1/object-read-grants`, revoke them with `DELETE /v1/object-read-grants/{readGrantId}`, and use `GET` or `HEAD /v1/storage-objects/{storageObjectId}/content` with `x-zs-read-grant-token`.
+Package 0.5.0 adds caller-bound, short-lived object read grants and server-streamed delivery without exposing provider authority. Callers create grants with `POST /v1/object-read-grants`, revoke them with `DELETE /v1/object-read-grants/{objectReadGrantId}`, and use `GET` or `HEAD /v1/storage-objects/{storageObjectId}/content` with `x-zs-read-grant-token`.
 
 Delivery accepts one closed, open-ended, or suffix byte range. It returns safe `206` or `416` metadata, tries a verified hot R2-compatible copy first, and falls back to a verified canonical MinIO-compatible copy only when the registry snapshot proves matching checksum, byte length, and media type. Conflicting verified metadata fails closed. Raw object keys, buckets, endpoints, credentials, signed URLs, and provider bodies never enter the public contract, token claims, diagnostics, attempts, or events.
-
-Run `npm run verify:2b07:read` for the deterministic no-provider-action handoff check.
