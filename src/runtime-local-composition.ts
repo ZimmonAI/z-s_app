@@ -138,10 +138,7 @@ function createRuntimePool(configuration: Readonly<RuntimeEnvironmentConfigurati
   };
 }
 
-async function withClient<T>(
-  pool: PostgresPoolLike,
-  operation: (client: PostgresQueryable) => Promise<T>,
-): Promise<T> {
+async function withClient<T>(pool: PostgresPoolLike, operation: (client: PostgresQueryable) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   try {
     return await operation(client);
@@ -617,7 +614,11 @@ export function createRuntimeLocalComposition(
   const writer = new S3CompatibleProviderObjectWriter({ credentialResolver });
   const reader = new S3CompatibleProviderObjectReader({ credentialResolver });
   const targetResolver: ProviderWriteTargetResolver = Object.freeze({
-    resolve: (input) => authorityResolver.resolveProviderTarget(input),
+    resolve: (input: {
+      providerRole: 'hot' | 'canonical';
+      providerBindingId: string;
+      internalLocator: string;
+    }) => authorityResolver.resolveProviderTarget(input),
   });
   const adapter = new DualProviderObjectIngestAdapter({
     registry,
@@ -725,7 +726,10 @@ export function createRuntimeLocalComposition(
     dataPlaneReadiness,
     now,
     createId,
-    authorizeObjectReadGrant: async (input) => {
+    authorizeObjectReadGrant: async (input: {
+      caller: Readonly<CallerIdentity>;
+      request: Readonly<ObjectReadGrantRequest>;
+    }) => {
       if (
         input.caller.appId !== EXPECTED_AUTHORITY.callerAppId ||
         input.caller.serviceId !== EXPECTED_AUTHORITY.callerServiceId ||
