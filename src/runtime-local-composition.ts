@@ -278,6 +278,13 @@ function authorizeCaller(caller: Readonly<CallerIdentity>): boolean {
   );
 }
 
+export function isObjectReadGrantCallerAllowed(caller: Readonly<CallerIdentity>): boolean {
+  return (
+    (caller.appId === VIDEO_MAKER_APP || caller.appId === Z_X_APP) &&
+    caller.serviceId === CALLER_SERVICE
+  );
+}
+
 class UnavailablePostgresPool implements RuntimePostgresPool {
   async connect(): Promise<PostgresClientLike> {
     throw new RuntimeCompositionError(
@@ -948,11 +955,9 @@ export function createVideoMakerRuntimeComposition(
     controlPlaneReadiness,
     dataPlaneReadiness,
     authorizeObjectReadGrant: async (input) => {
-      if (input.caller.appId !== VIDEO_MAKER_APP || input.caller.serviceId !== CALLER_SERVICE) {
-        return false;
-      }
+      if (!isObjectReadGrantCallerAllowed(input.caller)) return false;
       try {
-        const snapshot = await authority.resolve(EXACT_PROFILE_REQUEST, input.caller);
+        const snapshot = await authority.resolve(EXACT_PROFILE_REQUEST, VIDEO_MAKER_CALLER);
         return (
           snapshot.profile.capabilities.objectReadGrant &&
           input.request.allowedMethods.every((method) => method === 'HEAD' || method === 'GET')
