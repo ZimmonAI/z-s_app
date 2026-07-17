@@ -1,0 +1,138 @@
+name: 2B-07 read grant and delivery validation
+
+on:
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+      - README.md
+      - docs/runtime-contract.md
+      - src/index.ts
+      - src/runtime-contract.ts
+      - src/runtime-read-grant.ts
+      - src/runtime-read-delivery.ts
+      - tests/runtime-read-grant.test.ts
+      - tests/runtime-read-delivery.test.ts
+      - db/migrations/0003_z_s_read_delivery.sql
+      - db/migrations/0003_z_s_read_delivery.down.sql
+      - scripts/install-smoke.mjs
+      - scripts/local-readiness.mjs
+      - scripts/validate-migration.mjs
+      - scripts/verify-package-artifact.mjs
+      - .github/workflows/2b-07-read-delivery-validation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: z_s_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d z_s_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify frozen source baseline ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=d13e74fb428cec20f1706034ed0e00274ee9fce2
+          test "$(git merge-base "$baseline" HEAD)" = "$baseline"
+
+      - name: Verify package and lock authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const manifest = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          const expected = { '@aws-sdk/client-s3': '3.1088.0' };
+          if (manifest.name !== '@zimmonai/z-s-control-plane' || manifest.version !== '0.5.0') {
+            throw new Error('unexpected-package-identity');
+          }
+          if (JSON.stringify(manifest.dependencies) !== JSON.stringify(expected)) {
+            throw new Error('unexpected-direct-runtime-dependencies');
+          }
+          if (lock.lockfileVersion !== 3) throw new Error('unexpected-lockfile-version');
+          const root = lock.packages?.[''];
+          if (root?.name !== manifest.name || root?.version !== manifest.version) {
+            throw new Error('unexpected-lock-root');
+          }
+          if (JSON.stringify(root.dependencies) !== JSON.stringify(expected)) {
+            throw new Error('unexpected-lock-root-dependencies');
+          }
+          const serialized = JSON.stringify(lock);
+          if (/_authToken|file:|workspace:|link:|git\+|github\.com.*#/i.test(serialized)) {
+            throw new Error('prohibited-lock-source');
+          }
+          NODE
+
+      - name: Install dependencies cleanly
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify inherited schema and seeds are unchanged
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          git diff --exit-code "$base...$head" -- \
+            db/migrations/0001_z_s_control_plane_foundation.sql \
+            db/migrations/0001_z_s_control_plane_foundation.down.sql \
+            db/migrations/0002_z_s_runtime_registry.sql \
+            db/migrations/0002_z_s_runtime_registry.down.sql \
+            db/seeds
+
+      - name: Validate reviewed 0003 artifacts
+        run: npm run validate:migration
+
+      - name: Run focused read-grant and delivery tests
+        run: npm run test:read
+
+      - name: Run PostgreSQL registry tests
+        run: npm run test:registry
+
+      - name: Run full validation chain
+        run: npm run validate
+
+      - name: Build and create package metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+          npm pack --json --silent > /tmp/z-s-pack.json
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const packed = JSON.parse(fs.readFileSync('/tmp/z-s-pack.json', 'utf8'));
+          if (!Array.isArray(packed) || packed.length !== 1 || packed[0]?.version !== '0.5.0') {
+            throw new Error('unexpected-package-artifact');
+          }
+          NODE
