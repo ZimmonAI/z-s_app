@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
@@ -51,6 +51,42 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - name: Rename reserved PostgreSQL alias
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          path = Path('src/runtime-read-grant.ts')
+          source = path.read_text(encoding='utf-8')
+
+          def rewrite(match: re.Match[str]) -> str:
+              block = match.group(0)
+              if 'public.object_read_grants AS grant' not in block:
+                  return block
+              return (
+                  block.replace('AS grant', 'AS read_grant')
+                       .replace('grant.', 'read_grant.')
+                       .replace('OF grant', 'OF read_grant')
+              )
+
+          updated = re.sub(r'`[^`]*`', rewrite, source, flags=re.DOTALL)
+          if updated == source and 'public.object_read_grants AS read_grant' not in source:
+              raise SystemExit('expected object_read_grants alias not found')
+          path.write_text(updated, encoding='utf-8')
+          PY
+          if ! git diff --quiet -- src/runtime-read-grant.ts; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add src/runtime-read-grant.ts
+            git commit -m 'fix: avoid reserved grant SQL alias'
+            git push origin HEAD:${{ github.head_ref }}
+          fi
 
       - name: Use Node.js 22
         uses: actions/setup-node@v4
@@ -115,7 +151,23 @@ jobs:
         run: npm run validate:migration
 
       - name: Run focused read-grant and delivery tests
-        run: npm run test:read
+        id: focused_read_tests
+        continue-on-error: true
+        shell: bash
+        run: npm run test:read > /tmp/2b07-read-tests.log 2>&1
+
+      - name: Upload focused-test diagnostics
+        if: steps.focused_read_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: 2b07-read-tests-${{ github.run_id }}
+          path: /tmp/2b07-read-tests.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Enforce focused-test result
+        if: steps.focused_read_tests.outcome == 'failure'
+        run: exit 1
 
       - name: Run PostgreSQL registry tests
         run: npm run test:registry
