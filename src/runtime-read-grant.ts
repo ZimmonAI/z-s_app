@@ -1186,16 +1186,16 @@ export class PostgresObjectReadGrantRegistry implements ObjectReadGrantRegistry 
     await transaction(this.#pool, async (client) => {
       const result = await client.query(
         `UPDATE public.storage_provider_attempts
-            SET state = $2,
-                retryable = $3,
-                observed_checksum_sha256 = $4,
-                observed_byte_length = $5,
-                safe_diagnostic_category = $6,
-                safe_diagnostic_code = $7,
-                finished_at = $8,
-                verified_at = CASE WHEN $2 = 'succeeded' THEN $8 ELSE NULL END,
-                updated_at = $8
-          WHERE storage_provider_attempt_id = $1
+            SET state = $2::text,
+                retryable = $3::boolean,
+                observed_checksum_sha256 = $4::text,
+                observed_byte_length = $5::bigint,
+                safe_diagnostic_category = $6::text,
+                safe_diagnostic_code = $7::text,
+                finished_at = $8::timestamptz,
+                verified_at = CASE WHEN $2::text = 'succeeded' THEN $8::timestamptz ELSE NULL END,
+                updated_at = $8::timestamptz
+          WHERE storage_provider_attempt_id = $1::uuid
             AND operation = 'read'
             AND state = 'in_progress'`,
         [
