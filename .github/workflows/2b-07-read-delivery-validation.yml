@@ -27,75 +27,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-reserved-alias:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.ref }}
-      - name: Replace reserved PostgreSQL alias
-        shell: bash
-        run: |
-          set -euo pipefail
-          python <<'PY'
-          from pathlib import Path
-
-          path = Path('src/runtime-read-grant.ts')
-          text = path.read_text()
-          old_block = """const GRANT_SELECT = `SELECT grant.object_read_grant_id, grant.storage_object_id,
-       grant.managed_app_id, managed_app.app_id AS caller_app_id, grant.caller_service_id,
-       grant.app_correlation_ref, grant.business_authorization_ref, grant.purpose,
-       grant.allowed_methods, grant.range_allowed, grant.disposition, grant.safe_file_name,
-       grant.read_grant_token_digest, grant.token_purpose, grant.state, grant.expires_at,
-       grant.revoked_at, grant.created_at, grant.updated_at, grant.row_version
-  FROM public.object_read_grants AS grant
-  JOIN public.managed_apps AS managed_app ON managed_app.id = grant.managed_app_id`;"""
-          new_block = """const GRANT_SELECT = `SELECT read_grant.object_read_grant_id, read_grant.storage_object_id,
-       read_grant.managed_app_id, managed_app.app_id AS caller_app_id, read_grant.caller_service_id,
-       read_grant.app_correlation_ref, read_grant.business_authorization_ref, read_grant.purpose,
-       read_grant.allowed_methods, read_grant.range_allowed, read_grant.disposition,
-       read_grant.safe_file_name, read_grant.read_grant_token_digest,
-       read_grant.token_purpose, read_grant.state, read_grant.expires_at,
-       read_grant.revoked_at, read_grant.created_at, read_grant.updated_at,
-       read_grant.row_version
-  FROM public.object_read_grants AS read_grant
-  JOIN public.managed_apps AS managed_app ON managed_app.id = read_grant.managed_app_id`;"""
-          if text.count(old_block) != 1:
-              raise SystemExit('unexpected-grant-select-block')
-          text = text.replace(old_block, new_block)
-          replacements = {
-              'WHERE grant.object_read_grant_id': 'WHERE read_grant.object_read_grant_id',
-              'AND grant.storage_object_id': 'AND read_grant.storage_object_id',
-              'COALESCE(grant.caller_service_id': 'COALESCE(read_grant.caller_service_id',
-              'AND grant.read_grant_token_digest': 'AND read_grant.read_grant_token_digest',
-              'FOR UPDATE OF grant': 'FOR UPDATE OF read_grant',
-          }
-          expected_counts = {
-              'WHERE grant.object_read_grant_id': 4,
-              'AND grant.storage_object_id': 2,
-              'COALESCE(grant.caller_service_id': 1,
-              'AND grant.read_grant_token_digest': 1,
-              'FOR UPDATE OF grant': 1,
-          }
-          for old, new in replacements.items():
-              observed = text.count(old)
-              if observed != expected_counts[old]:
-                  raise SystemExit(f'unexpected-count:{old}:{observed}')
-              text = text.replace(old, new)
-          path.write_text(text)
-          PY
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/runtime-read-grant.ts
-          git commit -m 'Use a non-reserved read grant SQL alias'
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
-
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -121,34 +55,29 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-
       - name: Verify frozen baseline ancestry
         shell: bash
         run: |
           set -euo pipefail
           baseline=d13e74fb428cec20f1706034ed0e00274ee9fce2
           test "$(git merge-base "$baseline" HEAD)" = "$baseline"
-
       - name: Verify source scope
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
           allowed='^(package\.json|package-lock\.json|README\.md|docs/runtime-contract\.md|src/(index|runtime-contract|runtime-read-delivery|runtime-read-grant)\.ts|tests/(runtime-service|runtime-read-delivery|runtime-read-grant|runtime-read-grant\.integration)\.test\.ts|scripts/(install-smoke|local-readiness|validate-migration|verify-package-artifact)\.mjs|db/migrations/0003_z_s_read_delivery(\.down)?\.sql|\.github/workflows/(2b-05-write-intent-ingest-validation|2b-06-dual-provider-media-validation|2b-07-read-delivery-validation)\.yml)$'
-          git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
-            | while IFS= read -r file; do
-                if [[ ! "$file" =~ $allowed ]]; then
-                  echo "out-of-scope path: $file" >&2
-                  exit 1
-                fi
-              done
-
+          git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" | while IFS= read -r file; do
+            if [[ ! "$file" =~ $allowed ]]; then
+              echo "out-of-scope path: $file" >&2
+              exit 1
+            fi
+          done
       - name: Verify prior migrations and seeds are unchanged
         if: github.event_name == 'pull_request'
         shell: bash
@@ -160,7 +89,6 @@ jobs:
             db/migrations/0002_z_s_runtime_registry.sql \
             db/migrations/0002_z_s_runtime_registry.down.sql \
             db/seeds
-
       - name: Verify canonical npm lock authority
         shell: bash
         run: |
@@ -170,61 +98,38 @@ jobs:
           const manifest = JSON.parse(fs.readFileSync('package.json', 'utf8'));
           const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
           const expected = { '@aws-sdk/client-s3': '3.1088.0' };
-          if (manifest.name !== '@zimmonai/z-s-control-plane' || manifest.version !== '0.5.0') {
-            throw new Error('unexpected-package-identity');
-          }
-          if (JSON.stringify(manifest.dependencies) !== JSON.stringify(expected)) {
-            throw new Error('unexpected-direct-runtime-dependencies');
-          }
+          if (manifest.name !== '@zimmonai/z-s-control-plane' || manifest.version !== '0.5.0') throw new Error('unexpected-package-identity');
+          if (JSON.stringify(manifest.dependencies) !== JSON.stringify(expected)) throw new Error('unexpected-direct-runtime-dependencies');
           if (lock.lockfileVersion !== 3) throw new Error('unexpected-lockfile-version');
           const root = lock.packages?.[''];
-          if (root?.name !== manifest.name || root?.version !== manifest.version) {
-            throw new Error('unexpected-lock-root');
-          }
-          if (JSON.stringify(root.dependencies) !== JSON.stringify(expected)) {
-            throw new Error('unexpected-lock-root-dependencies');
-          }
+          if (root?.name !== manifest.name || root?.version !== manifest.version) throw new Error('unexpected-lock-root');
+          if (JSON.stringify(root.dependencies) !== JSON.stringify(expected)) throw new Error('unexpected-lock-root-dependencies');
           const serialized = JSON.stringify(lock);
-          if (/_authToken|file:|workspace:|link:|git\+|github\.com.*#/i.test(serialized)) {
-            throw new Error('prohibited-lock-source');
-          }
+          if (/_authToken|file:|workspace:|link:|git\+|github\.com.*#/i.test(serialized)) throw new Error('prohibited-lock-source');
           NODE
-
       - name: Install dependencies cleanly
         run: npm ci --ignore-scripts --no-audit --no-fund
-
       - name: Run focused tests
         run: npm run test:focused
-
       - name: Run PostgreSQL registry tests
         run: npm run test:registry
-
       - name: Run full tests
         run: npm test
-
       - name: Typecheck
         run: npm run typecheck
-
       - name: Lint
         run: npm run lint
-
       - name: Build
         run: npm run build
-
       - name: Package smoke
         run: npm run pack:check
-
       - name: Verify package artifact
         run: npm run package:verify
-
       - name: Validate migrations and seed
         run: npm run validate:migration && npm run validate:seed
-
       - name: Validate secret and legacy identifier boundaries
         run: npm run validate:secrets && npm run validate:legacy-id
-
       - name: Local readiness
         run: npm run local:readiness
-
       - name: Full validation chain
         run: npm run validate
