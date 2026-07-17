@@ -2,16 +2,16 @@
 
 ## Exact identity
 
-- Source package: `@zimmonai/z-s-control-plane@0.4.0`
+- Source package: `@zimmonai/z-s-control-plane@0.5.0`
 - Registry authority: npm/GitHub Packages; no Git, workspace, link, or local source authority
 - Direct runtime dependency: `@aws-sdk/client-s3@3.1088.0`
 - Lock authority: tracked `package-lock.json`, lockfile version 3
 - Contract: `1.0`
 - Runtime: Node.js 22 or newer
-- Publication in 2B-06: none
-- Release tag in 2B-06: none
+- Publication in 2B-07: none
+- Release tag in 2B-07: none
 
-Version `0.4.0` preserves the existing root, `runtime-contract`, `runtime-service`, and `runtime-storage-registry` package entry points. It adds no public HTTP route and no package subpath.
+Version `0.5.0` preserves the existing root, `runtime-contract`, `runtime-service`, and `runtime-storage-registry` package entry points. It adds the `runtime-read-grant` and `runtime-read-delivery` package subpaths and the governed read-grant HTTP routes.
 
 ## Imports
 
@@ -42,6 +42,16 @@ import {
 import {
   PostgresRuntimeStorageRegistry,
 } from '@zimmonai/z-s-control-plane/runtime-storage-registry';
+
+import {
+  ObjectReadDeliveryCoordinator,
+  S3CompatibleProviderObjectReader,
+} from '@zimmonai/z-s-control-plane/runtime-read-delivery';
+
+import {
+  PostgresObjectReadRegistry,
+  createReadEnabledHttpStorageRuntime,
+} from '@zimmonai/z-s-control-plane/runtime-read-grant';
 ```
 
 Provider targets, credential bindings, endpoints, buckets, internal locators, and credential references are server-only values. They are not public result DTOs.
@@ -54,6 +64,10 @@ GET    /readyz
 POST   /v1/object-write-intents
 PUT    /v1/object-write-intents/{objectWriteIntentId}/content
 DELETE /v1/object-write-intents/{objectWriteIntentId}
+POST   /v1/object-read-grants
+DELETE /v1/object-read-grants/{objectReadGrantId}
+GET    /v1/storage-objects/{storageObjectId}/content
+HEAD   /v1/storage-objects/{storageObjectId}/content
 ```
 
 No multipart, resumable, provider-presigned, browser-direct, caller-selected bucket, caller-selected provider, or caller-selected object-key route is implemented.
@@ -158,16 +172,15 @@ Retry is an internal primitive. It adds no HTTP route, scheduler, queue consumer
 
 ## Validation and distribution boundary
 
-The 2B-06 workflow uses Node.js 22 and disposable PostgreSQL 17. It runs focused provider/media tests with deterministic doubles, registry integration tests, the full suite, typecheck, lint, build, clean package install, package artifact verification, migration/seed no-change validation, secret and legacy-identifier checks, all nine frozen fake-provider scenarios, refusal checks, and the complete validation chain.
+The 2B-07 workflow uses Node.js 22 and disposable PostgreSQL 17. It runs focused read-grant, delivery, provider/media, and registry tests with deterministic doubles, the full suite, typecheck, lint, build, clean package install, package artifact verification, migration/seed validation, secret and legacy-identifier checks, and the complete validation chain.
 
-The governed provider harness has an explicit fake CI mode and a separately approved live mode. Both require the exact frozen scenario list, approved non-secret aliases, exact prefix, and a safe run identifier. Live mode additionally requires explicit provider-action confirmation and reads credentials only from the local environment. The harness uses exact `2b-06-<run-id>-<scenario>-<nonce>` locator IDs under the approved prefix, performs no broad listing, deletes and verifies absence of every exact target, and emits one compact safe JSON line without aliases or provider authority values.
+The governed 2B-06 provider harness retains its explicit fake CI mode and separately approved live mode. Live mode requires explicit provider-action confirmation and reads credentials only from the local environment. The 2B-07 source task does not invoke that live mode.
 
-Packaging and automated testing do not apply migrations, publish a package, access live providers, read credentials, deploy services, or modify consumers.
-
+Packaging and automated testing do not apply migrations to a live database, publish a package, access live providers, read credentials, deploy services, or modify consumers.
 
 ## 2B-07 short-lived read grants and delivery
 
-The 1.0 contract adds three routes: `POST /v1/object-read-grants`, `DELETE /v1/object-read-grants/{readGrantId}`, and `GET|HEAD /v1/storage-objects/{storageObjectId}/content`. Grant creation requires the normal bearer caller identity, contract version, app correlation reference, and duplicate-protection key. The body binds `storageObjectId`, a business `purpose`, `requestedTtlSeconds`, allowed delivery methods, and whether a single byte range is permitted. Business-purpose authorization is an explicit service callback and is evaluated before issuance.
+The 1.0 contract adds four routes: `POST /v1/object-read-grants`, `DELETE /v1/object-read-grants/{objectReadGrantId}`, and `GET` plus `HEAD /v1/storage-objects/{storageObjectId}/content`. Grant creation requires the normal bearer caller identity, contract version, app correlation reference, and duplicate-protection key. The body binds `storageObjectId`, a business `purpose`, `requestedTtlSeconds`, allowed delivery methods, and whether a single byte range is permitted. Business-purpose authorization is an explicit service callback and is evaluated before issuance.
 
 The returned opaque delivery token is HMAC authenticated and bound to the grant, object, caller app/service, purpose, allowed methods, range policy, contract version, and expiry. PostgreSQL stores only a SHA-256 token digest. Revocation and expiry are durable and checked again at delivery time. Idempotent retries replay the same grant result; a reused key with a different fingerprint is rejected.
 
