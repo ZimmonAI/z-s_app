@@ -1,23 +1,24 @@
 name: 2B-07 source bundle bootstrap
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/02b-07-read-grant-delivery-range
+      - main
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: github.actor != 'github-actions[bot]'
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check out source
+      - name: Check out pull-request branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
 
       - name: Verify and apply complete governed source bundle
         shell: bash
@@ -33,4 +34,4 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           git commit -m 'Apply complete 2B-07 source bundle'
-          git push origin HEAD
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
