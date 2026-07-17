@@ -18,6 +18,7 @@ const CANONICAL_COPY_ID = '10000000-0000-4000-8000-000000000003';
 const GRANT_ID = '10000000-0000-4000-8000-000000000004';
 const CHECKSUM = 'a'.repeat(64);
 const CONTENT = new TextEncoder().encode('0123456789');
+const TEST_NOW = new Date('2026-07-17T00:01:00.000Z');
 
 function copy(
   role: 'hot' | 'canonical',
@@ -143,6 +144,18 @@ function deliveryInput(overrides: Partial<Parameters<ObjectReadDeliveryCoordinat
   };
 }
 
+function coordinator(
+  registry: ObjectReadDeliveryRegistry,
+  providerReader: ProviderObjectReader,
+): ObjectReadDeliveryCoordinator {
+  return new ObjectReadDeliveryCoordinator({
+    registry,
+    providerReader,
+    now: () => new Date(TEST_NOW),
+    createId: () => '10000000-0000-4000-8000-000000000090',
+  });
+}
+
 test('single Range parsing supports closed, open-ended and suffix forms', () => {
   assert.deepEqual(parseSingleByteRange('bytes=2-5', 10), {
     start: 2,
@@ -182,13 +195,7 @@ test('malformed, multiple and unsatisfiable ranges fail with safe 416 metadata',
 test('verified hot copy is used first and canonical is untouched', async () => {
   const registry = registryHarness();
   const reader = readerHarness();
-  const coordinator = new ObjectReadDeliveryCoordinator({
-    registry: registry.registry,
-    providerReader: reader.providerReader,
-    now: () => new Date('2026-07-17T00:01:00.000Z'),
-    createId: () => '10000000-0000-4000-8000-000000000090',
-  });
-  const result = await coordinator.deliver(deliveryInput());
+  const result = await coordinator(registry.registry, reader.providerReader).deliver(deliveryInput());
   assert.equal(result.status, 200);
   assert.equal(result.deliveryState, 'hot');
   assert.equal(result.headers['content-type'], 'video/mp4');
@@ -203,12 +210,9 @@ test('verified hot copy is used first and canonical is untouched', async () => {
 test('hot provider failure falls back once to verified canonical copy', async () => {
   const registry = registryHarness();
   const reader = readerHarness({ hot: 'fail' });
-  const coordinator = new ObjectReadDeliveryCoordinator({
-    registry: registry.registry,
-    providerReader: reader.providerReader,
-    now: () => new Date('2026-07-17T00:01:00.000Z'),
-  });
-  const result = await coordinator.deliver(deliveryInput({ rangeHeader: 'bytes=2-5' }));
+  const result = await coordinator(registry.registry, reader.providerReader).deliver(
+    deliveryInput({ rangeHeader: 'bytes=2-5' }),
+  );
   assert.equal(result.status, 206);
   assert.equal(result.deliveryState, 'canonical-fallback');
   assert.equal(result.headers['content-range'], 'bytes 2-5/10');
@@ -235,12 +239,9 @@ test('an unverified hot copy is skipped without provider contact', async () => {
   });
   const registry = registryHarness(value);
   const reader = readerHarness();
-  const coordinator = new ObjectReadDeliveryCoordinator({
-    registry: registry.registry,
-    providerReader: reader.providerReader,
-    now: () => new Date('2026-07-17T00:01:00.000Z'),
-  });
-  const result = await coordinator.deliver(deliveryInput({ method: 'HEAD' }));
+  const result = await coordinator(registry.registry, reader.providerReader).deliver(
+    deliveryInput({ method: 'HEAD' }),
+  );
   assert.equal(result.status, 200);
   assert.equal(result.body, null);
   assert.equal(result.deliveryState, 'canonical-fallback');
@@ -256,13 +257,8 @@ test('conflicting verified copy metadata fails closed before provider access', a
   });
   const registry = registryHarness(value);
   const reader = readerHarness();
-  const coordinator = new ObjectReadDeliveryCoordinator({
-    registry: registry.registry,
-    providerReader: reader.providerReader,
-    now: () => new Date('2026-07-17T00:01:00.000Z'),
-  });
   await assert.rejects(
-    coordinator.deliver(deliveryInput()),
+    coordinator(registry.registry, reader.providerReader).deliver(deliveryInput()),
     (error: unknown) =>
       error instanceof ObjectReadDeliveryError && error.code === 'storage-object-copy-state-conflict',
   );
@@ -272,13 +268,8 @@ test('conflicting verified copy metadata fails closed before provider access', a
 test('both provider failures return one safe dependency error without authority leakage', async () => {
   const registry = registryHarness();
   const reader = readerHarness({ hot: 'fail', canonical: 'fail' });
-  const coordinator = new ObjectReadDeliveryCoordinator({
-    registry: registry.registry,
-    providerReader: reader.providerReader,
-    now: () => new Date('2026-07-17T00:01:00.000Z'),
-  });
   await assert.rejects(
-    coordinator.deliver(deliveryInput()),
+    coordinator(registry.registry, reader.providerReader).deliver(deliveryInput()),
     (error: unknown) => {
       if (!(error instanceof ObjectReadDeliveryError)) return false;
       assert.equal(error.status, 503);
@@ -308,12 +299,7 @@ test('consumer cancellation closes the source and records a failed attempt', asy
       },
     }),
   };
-  const coordinator = new ObjectReadDeliveryCoordinator({
-    registry: registry.registry,
-    providerReader,
-    now: () => new Date('2026-07-17T00:01:00.000Z'),
-  });
-  const result = await coordinator.deliver(deliveryInput());
+  const result = await coordinator(registry.registry, providerReader).deliver(deliveryInput());
   if (result.body === null) throw new Error('expected-stream-body');
   const reader = result.body.getReader();
   const first = await reader.read();
