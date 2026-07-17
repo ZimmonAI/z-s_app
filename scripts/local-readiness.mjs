@@ -20,7 +20,7 @@ const requiredFiles = [
   'tests/runtime-read-delivery.test.ts',
   'tests/runtime-read-grant.test.ts',
   'tests/runtime-read-grant.integration.test.ts',
-  '.github/workflows/2b-07-read-grant-delivery-validation.yml',
+  '.github/workflows/2b-07-read-delivery-validation.yml',
   'db/migrations/0001_z_s_control_plane_foundation.sql',
   'db/migrations/0002_z_s_runtime_registry.sql',
   'db/migrations/0002_z_s_runtime_registry.down.sql',
