@@ -1,6 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { Pool, type PoolConfig } from 'pg';
-import { InMemoryStorageProfileRegistry } from './profile-registry.js';
 import type {
   ControlPlaneDataSet,
   Environment,
@@ -8,11 +7,12 @@ import type {
   ProviderType,
   StorageCapabilityResult,
 } from './domain.js';
+import { InMemoryStorageProfileRegistry } from './profile-registry.js';
 import type {
   CallerIdentity,
   DependencyReadiness,
   HttpStorageRuntime,
-  ObjectReadGrantRequest,
+  SafeDiagnostic,
   SafeResolvedStorageProfile,
   StorageProfileRequest,
   StorageRuntimeOptions,
@@ -65,9 +65,6 @@ const CANONICAL_PROVIDER_ALIAS = 'minio_zimspace_local_pc_01';
 const PREFIX_CLASS_ALIAS = 'video-maker-user-resource';
 const NORMALIZED_PREFIX_PATTERN = 'video-maker/user-resources/*';
 const DEFAULT_MAX_OBJECT_BYTE_LENGTH = 32 * 1024 * 1024;
-const DEFAULT_POSTGRES_POOL_SIZE = 8;
-const DEFAULT_POSTGRES_CONNECTION_TIMEOUT_MS = 5_000;
-const DEFAULT_POSTGRES_IDLE_TIMEOUT_MS = 30_000;
 
 const VIDEO_MAKER_CALLER: Readonly<CallerIdentity> = Object.freeze({
   appId: VIDEO_MAKER_APP,
@@ -78,20 +75,15 @@ const EXACT_PROFILE_REQUEST: Readonly<StorageProfileRequest> = Object.freeze({
   profileVersion: PROFILE_VERSION,
   environment: DEVELOPMENT_ENVIRONMENT,
 });
-const WRITE_POLICY = Object.freeze({
-  uploadMode: 'server-streamed-single-object' as const,
-  allowedMediaTypes: Object.freeze(['image/png', 'video/mp4']),
-  intentTtlSeconds: 900 as const,
-});
 
 class RuntimeCompositionError extends Error {
-  readonly category: 'unauthenticated' | 'unauthorized' | 'dependency-unavailable' | 'internal';
+  readonly category: SafeDiagnostic['category'];
   readonly code: string;
   readonly status: number;
   readonly retryable: boolean;
 
   constructor(
-    category: RuntimeCompositionError['category'],
+    category: SafeDiagnostic['category'],
     code: string,
     status: number,
     retryable = false,
@@ -131,7 +123,7 @@ interface AuthorityRow extends Record<string, unknown> {
   binding_required: boolean;
   storage_provider_id: string;
   provider_id: string;
-  provider_type: ProviderType;
+  provider_type: string;
   provider_status: string;
   secret_reference_id: string;
 }
@@ -156,13 +148,13 @@ interface ProviderAuthority {
   secretReferenceId: string;
 }
 
-interface DevelopmentAuthoritySnapshot {
+interface AuthoritySnapshot {
   profile: Readonly<SafeResolvedStorageProfile>;
   writeAuthority: Readonly<ResolvedObjectWriteAuthority>;
   providers: Readonly<Record<'hot' | 'canonical', Readonly<ProviderAuthority>>>;
 }
 
-interface RuntimeEnvironmentConfiguration {
+interface RuntimeConfiguration {
   postgresUrl?: string;
   postgresPoolSize: number;
   postgresConnectionTimeoutMs: number;
@@ -176,8 +168,8 @@ interface RuntimeEnvironmentConfiguration {
 }
 
 export interface RuntimeProviderCredentialResolver extends ProviderCredentialResolver {
-  has(referenceIds: readonly string[]): boolean;
   readonly configured: boolean;
+  has(referenceIds: readonly string[]): boolean;
 }
 
 export interface VideoMakerRuntimeComposition {
@@ -185,7 +177,7 @@ export interface VideoMakerRuntimeComposition {
   close(): Promise<void>;
 }
 
-function trimmed(value: string | undefined): string | undefined {
+function optionalString(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized === undefined || normalized === '' ? undefined : normalized;
 }
@@ -198,27 +190,31 @@ function boundedInteger(
 ): number {
   if (value === undefined || value.trim() === '') return fallback;
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) return fallback;
-  return parsed;
+  return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum
+    ? parsed
+    : fallback;
 }
 
-function runtimeConfiguration(environment: NodeJS.ProcessEnv): RuntimeEnvironmentConfiguration {
-  const result: RuntimeEnvironmentConfiguration = {
-    postgresPoolSize: boundedInteger(
-      environment.Z_S_POSTGRES_MAX_CONNECTIONS,
-      DEFAULT_POSTGRES_POOL_SIZE,
-      1,
-      32,
-    ),
+function readConfiguration(environment: NodeJS.ProcessEnv): Readonly<RuntimeConfiguration> {
+  const postgresUrl = optionalString(environment.Z_S_POSTGRES_URL);
+  const videoMakerBearerToken = optionalString(environment.Z_S_VIDEO_MAKER_BEARER_TOKEN);
+  const zXBearerToken = optionalString(environment.Z_S_Z_X_BEARER_TOKEN);
+  const uploadSigningKey = optionalString(environment.Z_S_UPLOAD_COMPLETION_SIGNING_KEY);
+  const readGrantSigningKey = optionalString(environment.Z_S_READ_GRANT_SIGNING_KEY);
+  const providerCredentialBindingsJson = optionalString(
+    environment.Z_S_PROVIDER_CREDENTIAL_BINDINGS_JSON,
+  );
+  return Object.freeze({
+    postgresPoolSize: boundedInteger(environment.Z_S_POSTGRES_MAX_CONNECTIONS, 8, 1, 32),
     postgresConnectionTimeoutMs: boundedInteger(
       environment.Z_S_POSTGRES_CONNECTION_TIMEOUT_MS,
-      DEFAULT_POSTGRES_CONNECTION_TIMEOUT_MS,
+      5_000,
       100,
       60_000,
     ),
     postgresIdleTimeoutMs: boundedInteger(
       environment.Z_S_POSTGRES_IDLE_TIMEOUT_MS,
-      DEFAULT_POSTGRES_IDLE_TIMEOUT_MS,
+      30_000,
       1_000,
       10 * 60_000,
     ),
@@ -228,52 +224,54 @@ function runtimeConfiguration(environment: NodeJS.ProcessEnv): RuntimeEnvironmen
       1,
       512 * 1024 * 1024,
     ),
-  };
-  const optionalValues: ReadonlyArray<readonly [keyof RuntimeEnvironmentConfiguration, string | undefined]> = [
-    ['postgresUrl', trimmed(environment.Z_S_POSTGRES_URL)],
-    ['videoMakerBearerToken', trimmed(environment.Z_S_VIDEO_MAKER_BEARER_TOKEN)],
-    ['zXBearerToken', trimmed(environment.Z_S_Z_X_BEARER_TOKEN)],
-    ['uploadSigningKey', trimmed(environment.Z_S_UPLOAD_COMPLETION_SIGNING_KEY)],
-    ['readGrantSigningKey', trimmed(environment.Z_S_READ_GRANT_SIGNING_KEY)],
-    ['providerCredentialBindingsJson', trimmed(environment.Z_S_PROVIDER_CREDENTIAL_BINDINGS_JSON)],
-  ];
-  for (const [key, value] of optionalValues) {
-    if (value !== undefined) Object.assign(result, { [key]: value });
-  }
-  return Object.freeze(result);
+    ...(postgresUrl === undefined ? {} : { postgresUrl }),
+    ...(videoMakerBearerToken === undefined ? {} : { videoMakerBearerToken }),
+    ...(zXBearerToken === undefined ? {} : { zXBearerToken }),
+    ...(uploadSigningKey === undefined ? {} : { uploadSigningKey }),
+    ...(readGrantSigningKey === undefined ? {} : { readGrantSigningKey }),
+    ...(providerCredentialBindingsJson === undefined
+      ? {}
+      : { providerCredentialBindingsJson }),
+  });
 }
 
-function asIso(value: Date | string): string {
+function timestamp(value: Date | string): number {
   const date = value instanceof Date ? value : new Date(value);
-  if (!Number.isFinite(date.getTime())) {
+  const result = date.getTime();
+  if (!Number.isFinite(result)) {
     throw new RuntimeCompositionError('dependency-unavailable', 'storage-authority-invalid', 503);
   }
-  return date.toISOString();
+  return result;
 }
 
-function isProviderType(value: string): value is ProviderType {
-  return value === 'minio' || value === 'r2' || value === 's3-compatible';
+function iso(value: Date | string): string {
+  return new Date(timestamp(value)).toISOString();
 }
 
-function safeTokenMatch(received: string, expected: string | undefined): boolean {
+function providerType(value: string): ProviderType {
+  if (value === 'minio' || value === 'r2' || value === 's3-compatible') return value;
+  throw new RuntimeCompositionError('dependency-unavailable', 'provider-authority-invalid', 503);
+}
+
+function tokenMatches(received: string, expected: string | undefined): boolean {
   if (expected === undefined) return false;
   const receivedDigest = createHash('sha256').update(received, 'utf8').digest();
   const expectedDigest = createHash('sha256').update(expected, 'utf8').digest();
   return timingSafeEqual(receivedDigest, expectedDigest);
 }
 
-function authenticateWithConfiguration(
-  configuration: Readonly<RuntimeEnvironmentConfiguration>,
+function authenticate(
+  configuration: Readonly<RuntimeConfiguration>,
   token: string,
 ): Readonly<CallerIdentity> | null {
-  if (safeTokenMatch(token, configuration.videoMakerBearerToken)) return VIDEO_MAKER_CALLER;
-  if (safeTokenMatch(token, configuration.zXBearerToken)) {
+  if (tokenMatches(token, configuration.videoMakerBearerToken)) return VIDEO_MAKER_CALLER;
+  if (tokenMatches(token, configuration.zXBearerToken)) {
     return Object.freeze({ appId: Z_X_APP, serviceId: CALLER_SERVICE });
   }
   return null;
 }
 
-function authorizedCaller(caller: Readonly<CallerIdentity>): boolean {
+function authorizeCaller(caller: Readonly<CallerIdentity>): boolean {
   return (
     (caller.appId === VIDEO_MAKER_APP || caller.appId === Z_X_APP) &&
     caller.serviceId === CALLER_SERVICE
@@ -305,9 +303,7 @@ class UnavailablePostgresPool implements RuntimePostgresPool {
   async end(): Promise<void> {}
 }
 
-function createPostgresPool(
-  configuration: Readonly<RuntimeEnvironmentConfiguration>,
-): RuntimePostgresPool {
+function createPool(configuration: Readonly<RuntimeConfiguration>): RuntimePostgresPool {
   if (configuration.postgresUrl === undefined) return new UnavailablePostgresPool();
   const poolConfiguration: PoolConfig = {
     connectionString: configuration.postgresUrl,
@@ -324,12 +320,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function credentialBinding(value: unknown): Readonly<ResolvedS3CredentialBinding> | null {
+function parseCredential(value: unknown): Readonly<ResolvedS3CredentialBinding> | null {
   if (!isRecord(value)) return null;
-  const endpoint = trimmed(typeof value.endpoint === 'string' ? value.endpoint : undefined);
-  const region = trimmed(typeof value.region === 'string' ? value.region : undefined);
-  const accessKeyId = trimmed(typeof value.accessKeyId === 'string' ? value.accessKeyId : undefined);
-  const secretAccessKey = trimmed(
+  const endpoint = optionalString(typeof value.endpoint === 'string' ? value.endpoint : undefined);
+  const region = optionalString(typeof value.region === 'string' ? value.region : undefined);
+  const accessKeyId = optionalString(
+    typeof value.accessKeyId === 'string' ? value.accessKeyId : undefined,
+  );
+  const secretAccessKey = optionalString(
     typeof value.secretAccessKey === 'string' ? value.secretAccessKey : undefined,
   );
   if (
@@ -341,47 +339,45 @@ function credentialBinding(value: unknown): Readonly<ResolvedS3CredentialBinding
   ) {
     return null;
   }
-  let parsedEndpoint: URL;
   try {
-    parsedEndpoint = new URL(endpoint);
+    const url = new URL(endpoint);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
   } catch {
     return null;
   }
-  if (parsedEndpoint.protocol !== 'https:' && parsedEndpoint.protocol !== 'http:') return null;
-  const result: ResolvedS3CredentialBinding = {
+  const sessionToken = optionalString(
+    typeof value.sessionToken === 'string' ? value.sessionToken : undefined,
+  );
+  return Object.freeze({
     endpoint,
     region,
     forcePathStyle: value.forcePathStyle,
     accessKeyId,
     secretAccessKey,
-  };
-  const sessionToken = trimmed(
-    typeof value.sessionToken === 'string' ? value.sessionToken : undefined,
-  );
-  if (sessionToken !== undefined) result.sessionToken = sessionToken;
-  return Object.freeze(result);
+    ...(sessionToken === undefined ? {} : { sessionToken }),
+  });
 }
 
 export function createRuntimeProviderCredentialResolver(
   rawBindings: string | undefined,
 ): RuntimeProviderCredentialResolver {
   const bindings = new Map<string, Readonly<ResolvedS3CredentialBinding>>();
-  let parseValid = rawBindings !== undefined;
+  let valid = rawBindings !== undefined;
   if (rawBindings !== undefined) {
     try {
       const parsed: unknown = JSON.parse(rawBindings);
       if (!isRecord(parsed)) {
-        parseValid = false;
+        valid = false;
       } else {
         for (const [referenceId, value] of Object.entries(parsed)) {
-          const normalizedReference = trimmed(referenceId);
-          const binding = credentialBinding(value);
+          const normalizedReference = optionalString(referenceId);
+          const binding = parseCredential(value);
           if (
             normalizedReference === undefined ||
             normalizedReference.length > 256 ||
             binding === null
           ) {
-            parseValid = false;
+            valid = false;
             bindings.clear();
             break;
           }
@@ -389,16 +385,16 @@ export function createRuntimeProviderCredentialResolver(
         }
       }
     } catch {
-      parseValid = false;
+      valid = false;
     }
   }
-  const resolver: RuntimeProviderCredentialResolver = {
-    configured: parseValid && bindings.size > 0,
+  return Object.freeze({
+    configured: valid && bindings.size > 0,
     has(referenceIds: readonly string[]): boolean {
-      return parseValid && referenceIds.every((referenceId) => bindings.has(referenceId));
+      return valid && referenceIds.every((referenceId) => bindings.has(referenceId));
     },
     resolve(referenceId: string): Readonly<ResolvedS3CredentialBinding> {
-      const binding = parseValid ? bindings.get(referenceId) : undefined;
+      const binding = valid ? bindings.get(referenceId) : undefined;
       if (binding === undefined) {
         throw new RuntimeCompositionError(
           'dependency-unavailable',
@@ -409,11 +405,21 @@ export function createRuntimeProviderCredentialResolver(
       }
       return binding;
     },
-  };
-  return Object.freeze(resolver);
+  });
 }
 
-function unavailableUploadTokenService(): UploadCompletionTokenService {
+function validSigningKey(value: string | undefined): value is string {
+  return value !== undefined && value.length >= 16;
+}
+
+function uploadTokenService(
+  configuration: Readonly<RuntimeConfiguration>,
+): UploadCompletionTokenService {
+  if (validSigningKey(configuration.uploadSigningKey)) {
+    return createDeterministicUploadCompletionTokenService({
+      signingKey: configuration.uploadSigningKey,
+    });
+  }
   return Object.freeze({
     issue(): never {
       throw new RuntimeCompositionError(
@@ -433,7 +439,14 @@ function unavailableUploadTokenService(): UploadCompletionTokenService {
   });
 }
 
-function unavailableReadGrantTokenService(): ObjectReadGrantTokenService {
+function readTokenService(
+  configuration: Readonly<RuntimeConfiguration>,
+): ObjectReadGrantTokenService {
+  if (validSigningKey(configuration.readGrantSigningKey)) {
+    return createDeterministicObjectReadGrantTokenService({
+      signingKey: configuration.readGrantSigningKey,
+    });
+  }
   return Object.freeze({
     issue(): never {
       throw new RuntimeCompositionError(
@@ -453,37 +466,19 @@ function unavailableReadGrantTokenService(): ObjectReadGrantTokenService {
   });
 }
 
-function uploadTokenService(
-  configuration: Readonly<RuntimeEnvironmentConfiguration>,
-): UploadCompletionTokenService {
-  return configuration.uploadSigningKey === undefined
-    ? unavailableUploadTokenService()
-    : createDeterministicUploadCompletionTokenService({
-        signingKey: configuration.uploadSigningKey,
-      });
-}
-
-function readGrantTokenService(
-  configuration: Readonly<RuntimeEnvironmentConfiguration>,
-): ObjectReadGrantTokenService {
-  return configuration.readGrantSigningKey === undefined
-    ? unavailableReadGrantTokenService()
-    : createDeterministicObjectReadGrantTokenService({
-        signingKey: configuration.readGrantSigningKey,
-      });
-}
-
-function validateAuthorityRows(rows: readonly AuthorityRow[], now: Date): {
-  hot: AuthorityRow;
-  canonical: AuthorityRow;
-} {
-  if (rows.length !== 2) {
-    throw new RuntimeCompositionError('dependency-unavailable', 'storage-authority-incomplete', 503, true);
-  }
+function validateAuthorityRows(
+  rows: readonly AuthorityRow[],
+  now: Date,
+): Readonly<{ hot: AuthorityRow; canonical: AuthorityRow }> {
   const hot = rows.find((row) => row.provider_role === 'hot');
   const canonical = rows.find((row) => row.provider_role === 'canonical');
-  if (hot === undefined || canonical === undefined) {
-    throw new RuntimeCompositionError('dependency-unavailable', 'storage-authority-incomplete', 503, true);
+  if (rows.length !== 2 || hot === undefined || canonical === undefined) {
+    throw new RuntimeCompositionError(
+      'dependency-unavailable',
+      'storage-authority-incomplete',
+      503,
+      true,
+    );
   }
   for (const row of rows) {
     if (
@@ -493,33 +488,46 @@ function validateAuthorityRows(rows: readonly AuthorityRow[], now: Date): {
       row.profile_id !== PROFILE_ALIAS ||
       row.profile_version !== PROFILE_VERSION ||
       row.profile_status !== 'active' ||
-      new Date(row.effective_at).getTime() > now.getTime() ||
-      (row.retired_at !== null && new Date(row.retired_at).getTime() <= now.getTime()) ||
+      timestamp(row.effective_at) > now.getTime() ||
+      (row.retired_at !== null && timestamp(row.retired_at) <= now.getTime()) ||
       row.prefix_class_id !== PREFIX_CLASS_ALIAS ||
       row.operation_class !== 'user-upload' ||
       row.normalized_prefix_pattern !== NORMALIZED_PREFIX_PATTERN ||
       row.prefix_status !== 'active' ||
       row.binding_required !== true ||
-      row.provider_status !== 'active' ||
-      !isProviderType(row.provider_type)
+      row.provider_status !== 'active'
     ) {
-      throw new RuntimeCompositionError('dependency-unavailable', 'storage-authority-not-ready', 503, true);
+      throw new RuntimeCompositionError(
+        'dependency-unavailable',
+        'storage-authority-not-ready',
+        503,
+        true,
+      );
     }
+    providerType(row.provider_type);
   }
   if (hot.provider_id !== HOT_PROVIDER_ALIAS || canonical.provider_id !== CANONICAL_PROVIDER_ALIAS) {
-    throw new RuntimeCompositionError('dependency-unavailable', 'provider-authority-mismatch', 503);
+    throw new RuntimeCompositionError(
+      'dependency-unavailable',
+      'provider-authority-mismatch',
+      503,
+    );
   }
-  const commonKeys: ReadonlyArray<keyof AuthorityRow> = [
-    'managed_app_id',
-    'storage_profile_id',
-    'storage_prefix_class_id',
-    'prefix_class_id',
-    'normalized_prefix_pattern',
+  const sharedValues: ReadonlyArray<readonly [unknown, unknown]> = [
+    [hot.managed_app_id, canonical.managed_app_id],
+    [hot.storage_profile_id, canonical.storage_profile_id],
+    [hot.storage_prefix_class_id, canonical.storage_prefix_class_id],
+    [hot.prefix_class_id, canonical.prefix_class_id],
+    [hot.normalized_prefix_pattern, canonical.normalized_prefix_pattern],
   ];
-  if (commonKeys.some((key) => hot[key] !== canonical[key])) {
-    throw new RuntimeCompositionError('dependency-unavailable', 'storage-authority-ambiguous', 503);
+  if (sharedValues.some(([left, right]) => left !== right)) {
+    throw new RuntimeCompositionError(
+      'dependency-unavailable',
+      'storage-authority-ambiguous',
+      503,
+    );
   }
-  return { hot, canonical };
+  return Object.freeze({ hot, canonical });
 }
 
 class DevelopmentAuthorityResolver {
@@ -540,7 +548,7 @@ class DevelopmentAuthorityResolver {
   async resolve(
     request: Readonly<StorageProfileRequest>,
     caller: Readonly<CallerIdentity>,
-  ): Promise<Readonly<DevelopmentAuthoritySnapshot>> {
+  ): Promise<Readonly<AuthoritySnapshot>> {
     if (caller.appId !== VIDEO_MAKER_APP || caller.serviceId !== CALLER_SERVICE) {
       throw new RuntimeCompositionError('unauthorized', 'storage-authority-caller-mismatch', 403);
     }
@@ -571,9 +579,10 @@ class DevelopmentAuthorityResolver {
   }): Promise<Readonly<ResolvedProviderWriteTarget>> {
     const snapshot = await this.resolve(EXACT_PROFILE_REQUEST, VIDEO_MAKER_CALLER);
     const provider = snapshot.providers[input.providerRole];
+    const prefix = NORMALIZED_PREFIX_PATTERN.slice(0, -1);
     if (
       provider.providerBindingId !== input.providerBindingId ||
-      !input.internalLocator.startsWith(NORMALIZED_PREFIX_PATTERN.slice(0, -1)) ||
+      !input.internalLocator.startsWith(prefix) ||
       input.internalLocator.startsWith('/') ||
       input.internalLocator.includes('..') ||
       input.internalLocator.includes('\\') ||
@@ -592,7 +601,7 @@ class DevelopmentAuthorityResolver {
     });
   }
 
-  async #load(): Promise<Readonly<DevelopmentAuthoritySnapshot>> {
+  async #load(): Promise<Readonly<AuthoritySnapshot>> {
     const authorityResult = await this.#pool.query<AuthorityRow>(
       `SELECT managed_app.id AS managed_app_id, managed_app.app_id, managed_app.environment,
               managed_app.status AS managed_app_status,
@@ -653,7 +662,7 @@ class DevelopmentAuthorityResolver {
       ],
       providers: [hot, canonical].map((row) => ({
         providerId: row.provider_id,
-        providerType: row.provider_type,
+        providerType: providerType(row.provider_type),
         status: 'active' as const,
         secretReferenceId: row.secret_reference_id,
       })),
@@ -693,8 +702,8 @@ class DevelopmentAuthorityResolver {
         prefixClassId: row.prefix_class_id,
         capability: row.capability,
         result: row.result,
-        verifiedAt: asIso(row.verified_at),
-        expiresAt: row.expires_at === null ? null : asIso(row.expires_at),
+        verifiedAt: iso(row.verified_at),
+        expiresAt: row.expires_at === null ? null : iso(row.expires_at),
         safeEvidenceRef: row.safe_evidence_ref,
       })),
     };
@@ -716,14 +725,21 @@ class DevelopmentAuthorityResolver {
       assignment.prefixClassId !== PREFIX_CLASS_ALIAS ||
       assignment.capabilityPolicy.rangeRead !== 'required'
     ) {
-      throw new RuntimeCompositionError('dependency-unavailable', 'storage-capability-not-ready', 503, true);
+      throw new RuntimeCompositionError(
+        'dependency-unavailable',
+        'storage-capability-not-ready',
+        503,
+        true,
+      );
     }
     const capabilityPolicy: Readonly<ProviderCapabilityPolicy> = Object.freeze({
       ...assignment.capabilityPolicy,
     });
     const writePolicy = Object.freeze({
-      ...WRITE_POLICY,
+      uploadMode: 'server-streamed-single-object' as const,
+      allowedMediaTypes: Object.freeze(['image/png', 'video/mp4']),
       maxByteLength: this.#maximumObjectByteLength,
+      intentTtlSeconds: 900 as const,
     });
     const profile: SafeResolvedStorageProfile = Object.freeze({
       profileId: PROFILE_ALIAS,
@@ -782,21 +798,21 @@ class DevelopmentAuthorityResolver {
   }
 }
 
-function safeReadinessCode(error: unknown, fallback: string): string {
-  if (
-    error !== null &&
-    typeof error === 'object' &&
-    typeof (error as { code?: unknown }).code === 'string' &&
-    /^[a-z0-9][a-z0-9-]{0,95}$/.test((error as { code: string }).code)
-  ) {
-    return (error as { code: string }).code;
+function readinessCode(error: unknown, fallback: string): string {
+  if (isRecord(error)) {
+    const code = error.code;
+    if (typeof code === 'string' && /^[a-z0-9][a-z0-9-]{0,95}$/.test(code)) return code;
   }
   return fallback;
 }
 
 function routeNotFoundBody(value: unknown): boolean {
-  if (!isRecord(value) || !isRecord(value.error) || !isRecord(value.error.diagnostic)) return false;
-  return value.error.diagnostic.code === 'route-not-found';
+  return (
+    isRecord(value) &&
+    isRecord(value.error) &&
+    isRecord(value.error.diagnostic) &&
+    value.error.diagnostic.code === 'route-not-found'
+  );
 }
 
 async function isRouteNotFound(response: Response): Promise<boolean> {
@@ -830,18 +846,17 @@ function rejectUnexpectedWriteDispatch(): never {
 export function createVideoMakerRuntimeComposition(
   environment: NodeJS.ProcessEnv = process.env,
 ): VideoMakerRuntimeComposition {
-  const configuration = runtimeConfiguration(environment);
-  const pool = createPostgresPool(configuration);
-  const credentials = createRuntimeProviderCredentialResolver(
+  const configuration = readConfiguration(environment);
+  const pool = createPool(configuration);
+  const credentialResolver = createRuntimeProviderCredentialResolver(
     configuration.providerCredentialBindingsJson,
   );
   const authority = new DevelopmentAuthorityResolver({
     pool,
     maximumObjectByteLength: configuration.maximumObjectByteLength,
   });
-  const authenticate: StorageRuntimeOptions['authenticate'] = (token) =>
-    authenticateWithConfiguration(configuration, token);
-  const authorizeCaller: StorageRuntimeOptions['authorizeCaller'] = authorizedCaller;
+  const authenticateCaller: StorageRuntimeOptions['authenticate'] = (token) =>
+    authenticate(configuration, token);
   const resolveStorageProfile: StorageRuntimeOptions['resolveStorageProfile'] = async (
     request,
     context,
@@ -858,7 +873,7 @@ export function createVideoMakerRuntimeComposition(
     } catch (error) {
       return Object.freeze({
         status: 'not-ready',
-        code: safeReadinessCode(error, 'control-plane-not-ready'),
+        code: readinessCode(error, 'control-plane-not-ready'),
       });
     }
   };
@@ -867,8 +882,8 @@ export function createVideoMakerRuntimeComposition(
       if (
         configuration.videoMakerBearerToken === undefined ||
         configuration.zXBearerToken === undefined ||
-        configuration.uploadSigningKey === undefined ||
-        configuration.readGrantSigningKey === undefined
+        !validSigningKey(configuration.uploadSigningKey) ||
+        !validSigningKey(configuration.readGrantSigningKey)
       ) {
         throw new RuntimeCompositionError(
           'dependency-unavailable',
@@ -878,10 +893,10 @@ export function createVideoMakerRuntimeComposition(
         );
       }
       const snapshot = await authority.resolve(EXACT_PROFILE_REQUEST, VIDEO_MAKER_CALLER);
-      const secretReferences = Object.values(snapshot.providers).map(
+      const referenceIds = Object.values(snapshot.providers).map(
         (provider) => provider.secretReferenceId,
       );
-      if (!credentials.configured || !credentials.has(secretReferences)) {
+      if (!credentialResolver.configured || !credentialResolver.has(referenceIds)) {
         throw new RuntimeCompositionError(
           'dependency-unavailable',
           'provider-credential-binding-unavailable',
@@ -893,53 +908,46 @@ export function createVideoMakerRuntimeComposition(
     } catch (error) {
       return Object.freeze({
         status: 'not-ready',
-        code: safeReadinessCode(error, 'data-plane-not-ready'),
+        code: readinessCode(error, 'data-plane-not-ready'),
       });
     }
   };
 
-  const storageRegistry = new PostgresRuntimeStorageRegistry({
+  const registry = new PostgresRuntimeStorageRegistry({
     pool,
     duplicateResultCodec: createRuntimeStorageDuplicateResultCodec(),
   });
-  const writer = new S3CompatibleProviderObjectWriter({ credentialResolver: credentials });
-  const ingestAdapter = new DualProviderObjectIngestAdapter({
-    registry: storageRegistry,
-    writer,
-    mediaVerifier: new BoundedMediaVerifier({
-      maximumByteLength: configuration.maximumObjectByteLength,
-    }),
-    resolveTarget: {
-      resolve: (input) => authority.resolveTarget(input),
-    },
-  });
   const writeRuntime = createObjectIngestRuntime({
-    authenticate,
+    authenticate: authenticateCaller,
     authorizeCaller,
     resolveStorageProfile,
     resolveObjectWriteAuthority,
     uploadCompletionTokenService: uploadTokenService(configuration),
-    registry: storageRegistry,
-    adapter: ingestAdapter,
+    registry,
+    adapter: new DualProviderObjectIngestAdapter({
+      registry,
+      writer: new S3CompatibleProviderObjectWriter({ credentialResolver }),
+      mediaVerifier: new BoundedMediaVerifier({
+        maximumByteLength: configuration.maximumObjectByteLength,
+      }),
+      resolveTarget: {
+        resolve: (input) => authority.resolveTarget(input),
+      },
+    }),
     controlPlaneReadiness,
     dataPlaneReadiness,
   });
 
   const readRegistry = new PostgresObjectReadRegistry({ pool });
-  const readTokenService = readGrantTokenService(configuration);
   const readRuntime = createReadEnabledHttpStorageRuntime({
-    authenticate,
+    authenticate: authenticateCaller,
     authorizeCaller,
     resolveStorageProfile,
     resolveObjectWriteAuthority,
     createObjectWriteIntent: rejectUnexpectedWriteDispatch,
     controlPlaneReadiness,
     dataPlaneReadiness,
-    authorizeObjectReadGrant: async (input: {
-      caller: Readonly<CallerIdentity>;
-      request: Readonly<ObjectReadGrantRequest>;
-      appCorrelationReference: string;
-    }): Promise<boolean> => {
+    authorizeObjectReadGrant: async (input) => {
       if (input.caller.appId !== VIDEO_MAKER_APP || input.caller.serviceId !== CALLER_SERVICE) {
         return false;
       }
@@ -953,20 +961,20 @@ export function createVideoMakerRuntimeComposition(
         return false;
       }
     },
-    objectReadGrantTokenService: readTokenService,
+    objectReadGrantTokenService: readTokenService(configuration),
     objectReadGrantRegistry: readRegistry,
     objectReadDeliveryService: new ObjectReadDeliveryCoordinator({
       registry: readRegistry,
-      providerReader: new S3CompatibleProviderObjectReader({ credentialResolver: credentials }),
+      providerReader: new S3CompatibleProviderObjectReader({ credentialResolver }),
     }),
   });
 
-  let closing: Promise<void> | undefined;
+  let closePromise: Promise<void> | undefined;
   return Object.freeze({
     runtime: composeStorageRuntimeRoutes(writeRuntime, readRuntime),
     close(): Promise<void> {
-      closing ??= pool.end();
-      return closing;
+      closePromise ??= pool.end();
+      return closePromise;
     },
   });
 }
