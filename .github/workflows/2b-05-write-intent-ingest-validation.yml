@@ -38,17 +38,20 @@ jobs:
         run: |
           set -euo pipefail
           python <<'PY'
+          import re
           from pathlib import Path
           path = Path('src/runtime-read-grant.ts')
           text = path.read_text()
-          old = """SET state = $2, revoked_at = CASE WHEN $2 = 'revoked' THEN $3 ELSE NULL END,
-                 updated_at = $3, row_version = row_version + 1"""
-          new = """SET state = $2::text,
+          pattern = re.compile(
+              r"SET state = \$2,\s*revoked_at = CASE WHEN \$2 = 'revoked' THEN \$3 ELSE NULL END,\s*updated_at = \$3, row_version = row_version \+ 1"
+          )
+          replacement = """SET state = $2::text,
                  revoked_at = CASE WHEN $2::text = 'revoked' THEN $3::timestamptz ELSE NULL::timestamptz END,
                  updated_at = $3::timestamptz, row_version = row_version + 1"""
-          if text.count(old) != 1:
-              raise SystemExit('revocation-update-not-found')
-          path.write_text(text.replace(old, new, 1))
+          text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'revocation-update-count:{count}')
+          path.write_text(text)
           PY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
