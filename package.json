@@ -53,7 +53,7 @@
   ],
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node -e \"require('node:fs').writeFileSync('dist/.npmignore', 'runtime-local-composition.*\\n')\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:compile": "node scripts/clean-test.mjs && tsc -p tsconfig.test.json",
     "test:focused": "npm run test:compile && node --test .test-dist/tests/control-plane.test.js .test-dist/tests/integrity.test.js .test-dist/tests/runtime-service.test.js .test-dist/tests/runtime-ingest.test.js .test-dist/tests/runtime-dual-provider.test.js .test-dist/tests/runtime-media-verification.test.js .test-dist/tests/runtime-read-grant.test.js .test-dist/tests/runtime-read-delivery.test.js .test-dist/tests/runtime-local-composition.test.js",
