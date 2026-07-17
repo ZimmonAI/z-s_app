@@ -4,6 +4,7 @@ import type { HttpStorageRuntime } from '../src/runtime-contract.js';
 import {
   composeStorageRuntimeRoutes,
   createRuntimeProviderCredentialResolver,
+  isObjectReadGrantCallerAllowed,
 } from '../src/runtime-local-composition.js';
 
 function json(body: unknown, status = 200): Response {
@@ -122,6 +123,13 @@ test('health and readiness come from the real write runtime dependency graph', a
   );
   assert.equal((await composed.health()).process, 'healthy');
   assert.equal((await composed.readiness()).status, 'not-ready');
+});
+
+test('read grant caller allowlist is exact', () => {
+  assert.equal(isObjectReadGrantCallerAllowed({ appId: 'video-maker_app', serviceId: 'api' }), true);
+  assert.equal(isObjectReadGrantCallerAllowed({ appId: 'z-x_app', serviceId: 'api' }), true);
+  assert.equal(isObjectReadGrantCallerAllowed({ appId: 'video-maker_app', serviceId: 'worker' }), false);
+  assert.equal(isObjectReadGrantCallerAllowed({ appId: 'other_app', serviceId: 'api' }), false);
 });
 
 test('provider credential resolver exposes only exact runtime secret references', async () => {
