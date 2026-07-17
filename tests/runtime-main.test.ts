@@ -5,7 +5,7 @@ import test from 'node:test';
 import { createHttpStorageRuntime } from '../src/index.js';
 import { createNodeHttpHandler } from '../src/node-http-adapter.js';
 
-test('operator command and Zimspace manifest expose the local Z-s runtime', async () => {
+test('operator command and Zimspace manifest expose the composed local Z-s runtime', async () => {
   const packageJson = JSON.parse(await readFile('package.json', 'utf8')) as {
     readonly scripts?: Record<string, string>;
   };
@@ -21,17 +21,33 @@ test('operator command and Zimspace manifest expose the local Z-s runtime', asyn
       }[];
     }[];
   };
+  const runtimeMain = await readFile('src/runtime-main.ts', 'utf8');
+  const runtimeComposition = await readFile('src/runtime-local-composition.ts', 'utf8');
 
   const runtimeApp = manifest.projects
     ?.flatMap((project) => project.apps ?? [])
     .find((app) => app.id === 'z-s-runtime-api');
 
-  assert.equal(packageJson.scripts?.['local:start'], 'npm run build && node --enable-source-maps dist/runtime-main.js');
+  assert.equal(
+    packageJson.scripts?.['local:start'],
+    'npm run build && node --enable-source-maps dist/runtime-main.js',
+  );
+  assert.equal(
+    packageJson.scripts?.['verify:video-maker-runtime'],
+    'npm run build && node scripts/verify-video-maker-runtime.mjs',
+  );
   assert.equal(runtimeApp?.port, 4310);
   assert.equal(runtimeApp?.startCommand, 'npm run local:start');
   assert.equal(runtimeApp?.healthCheckUrl, 'http://127.0.0.1:4310/healthz');
   assert.equal(runtimeApp?.publicUrl, 'https://z-s.zimmon.ai');
   assert.equal(runtimeApp?.actionsEnabled, true);
+  assert.match(runtimeMain, /createVideoMakerRuntimeComposition/);
+  assert.doesNotMatch(runtimeMain, /local-runtime-placeholder|write runtime is not configured/);
+  assert.match(runtimeComposition, /PostgresRuntimeStorageRegistry/);
+  assert.match(runtimeComposition, /DualProviderObjectIngestAdapter/);
+  assert.match(runtimeComposition, /PostgresObjectReadRegistry/);
+  assert.match(runtimeComposition, /S3CompatibleProviderObjectReader/);
+  assert.match(runtimeComposition, /BoundedMediaVerifier/);
 });
 
 test('Node HTTP adapter serves health and preserves auth failures', async () => {
