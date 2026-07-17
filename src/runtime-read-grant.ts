@@ -375,14 +375,14 @@ function mapGrantRow(row: ObjectReadGrantRow): Readonly<ObjectReadGrantSnapshot>
   return Object.freeze(result);
 }
 
-const GRANT_SELECT = `SELECT grant.object_read_grant_id, grant.storage_object_id,
-       grant.managed_app_id, managed_app.app_id AS caller_app_id, grant.caller_service_id,
-       grant.app_correlation_ref, grant.business_authorization_ref, grant.purpose,
-       grant.allowed_methods, grant.range_allowed, grant.disposition, grant.safe_file_name,
-       grant.read_grant_token_digest, grant.token_purpose, grant.state, grant.expires_at,
-       grant.revoked_at, grant.created_at, grant.updated_at, grant.row_version
-  FROM public.object_read_grants AS grant
-  JOIN public.managed_apps AS managed_app ON managed_app.id = grant.managed_app_id`;
+const GRANT_SELECT = `SELECT read_grant.object_read_grant_id, read_grant.storage_object_id,
+       read_grant.managed_app_id, managed_app.app_id AS caller_app_id, read_grant.caller_service_id,
+       read_grant.app_correlation_ref, read_grant.business_authorization_ref, read_grant.purpose,
+       read_grant.allowed_methods, read_grant.range_allowed, read_grant.disposition, read_grant.safe_file_name,
+       read_grant.read_grant_token_digest, read_grant.token_purpose, read_grant.state, read_grant.expires_at,
+       read_grant.revoked_at, read_grant.created_at, read_grant.updated_at, read_grant.row_version
+  FROM public.object_read_grants AS read_grant
+  JOIN public.managed_apps AS managed_app ON managed_app.id = read_grant.managed_app_id`;
 
 export class PostgresObjectReadRegistry
   implements ObjectReadGrantRegistry, ObjectReadDeliveryRegistry
@@ -553,7 +553,7 @@ export class PostgresObjectReadRegistry
     const objectId = requireUuid(storageObjectId ?? '', 'duplicate-result-storage-object');
     const result = await client.query<ObjectReadGrantRow>(
       `${GRANT_SELECT}
-        WHERE grant.object_read_grant_id = $1 AND grant.storage_object_id = $2`,
+        WHERE read_grant.object_read_grant_id = $1 AND read_grant.storage_object_id = $2`,
       [grantId, objectId],
     );
     const row = result.rows[0];
@@ -697,11 +697,11 @@ export class PostgresObjectReadRegistry
       );
       const result = await client.query<ObjectReadGrantRow>(
         `${GRANT_SELECT}
-          WHERE grant.object_read_grant_id = $1
-            AND grant.storage_object_id = $2
+          WHERE read_grant.object_read_grant_id = $1
+            AND read_grant.storage_object_id = $2
             AND managed_app.app_id = $3
-            AND COALESCE(grant.caller_service_id, '') = $4
-            AND grant.read_grant_token_digest = $5`,
+            AND COALESCE(read_grant.caller_service_id, '') = $4
+            AND read_grant.read_grant_token_digest = $5`,
         [
           input.objectReadGrantId,
           input.storageObjectId,
@@ -725,8 +725,8 @@ export class PostgresObjectReadRegistry
     return this.#scope.run(async (client) => {
       const currentResult = await client.query<ObjectReadGrantRow>(
         `${GRANT_SELECT}
-          WHERE grant.object_read_grant_id = $1
-          FOR UPDATE OF grant`,
+          WHERE read_grant.object_read_grant_id = $1
+          FOR UPDATE OF read_grant`,
         [input.objectReadGrantId],
       );
       const currentRow = currentResult.rows[0];
@@ -1023,7 +1023,7 @@ export class PostgresObjectReadRegistry
   ): Promise<Readonly<ObjectReadGrantSnapshot>> {
     const result = await client.query<ObjectReadGrantRow>(
       `${GRANT_SELECT}
-        WHERE grant.object_read_grant_id = $1`,
+        WHERE read_grant.object_read_grant_id = $1`,
       [objectReadGrantId],
     );
     const row = result.rows[0];
