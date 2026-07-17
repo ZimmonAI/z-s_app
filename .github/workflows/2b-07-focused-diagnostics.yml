@@ -1,0 +1,46 @@
+name: 2B-07 focused test diagnostics
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies cleanly
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Capture focused test output
+        shell: bash
+        run: |
+          set +e
+          npm run test:focused > focused-test.log 2>&1
+          status=$?
+          echo "$status" > focused-test.status
+          tail -n 300 focused-test.log > focused-test-tail.log
+          exit 0
+
+      - name: Upload focused test diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: focused-test-diagnostics
+          path: |
+            focused-test.status
+            focused-test-tail.log
+          if-no-files-found: error
+          retention-days: 1
