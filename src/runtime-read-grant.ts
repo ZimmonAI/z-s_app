@@ -1022,7 +1022,8 @@ export class PostgresObjectReadRegistry
     objectReadGrantId: string,
   ): Promise<Readonly<ObjectReadGrantSnapshot>> {
     const result = await client.query<ObjectReadGrantRow>(
-      `${GRANT_SELECT} WHERE grant.object_read_grant_id = $1`,
+      `${GRANT_SELECT}
+        WHERE grant.object_read_grant_id = $1`,
       [objectReadGrantId],
     );
     const row = result.rows[0];
