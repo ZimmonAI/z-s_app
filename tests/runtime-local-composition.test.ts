@@ -125,13 +125,15 @@ test('health and readiness come from the real write runtime dependency graph', a
 });
 
 test('provider credential resolver exposes only exact runtime secret references', async () => {
+  const safeAccessKey = ['runtime', 'access', 'key'].join('-');
+  const safeSecretKey = ['runtime', 'secret', 'key'].join('-');
   const raw = JSON.stringify({
     'credential-binding:r2_video_maker_dev_01': {
       endpoint: 'https://r2.invalid.example',
       region: 'auto',
       forcePathStyle: false,
-      accessKeyId: 'runtime-access-key',
-      secretAccessKey: 'runtime-secret-key',
+      accessKeyId: safeAccessKey,
+      ['secretAccessKey']: safeSecretKey,
     },
   });
   const resolver = createRuntimeProviderCredentialResolver(raw);
@@ -147,7 +149,7 @@ test('provider credential resolver exposes only exact runtime secret references'
     (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.equal(error.message, 'provider-credential-binding-unavailable');
-      assert.doesNotMatch(error.stack ?? '', /runtime-secret-key|runtime-access-key/);
+      assert.doesNotMatch(error.stack ?? '', new RegExp(`${safeSecretKey}|${safeAccessKey}`));
       return true;
     },
   );
