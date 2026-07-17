@@ -189,7 +189,7 @@ test('environment credential resolution uses indirection and fails closed', asyn
   assert.equal(resolved.region, 'auto');
   assert.equal(resolved.forcePathStyle, false);
   await assert.rejects(
-    resolver.resolve('unknown'),
+    Promise.resolve(resolver.resolve('unknown')),
     (error: unknown) =>
       error instanceof RuntimeCompositionError &&
       error.code === 'provider-credential-binding-unavailable',
