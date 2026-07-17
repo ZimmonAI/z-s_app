@@ -1,27 +1,32 @@
 {
   "schemaVersion": 1,
-  "project": {
-    "id": "zimspace-storage",
-    "name": "Zimspace Storage",
-    "description": "Storage control-plane source and provider infrastructure",
-    "sortOrder": 30
-  },
-  "apps": [
+  "projects": [
     {
-      "id": "z-s_app",
-      "name": "Zimspace Storage App",
-      "description": "Sync-only local checkout for the Z-s control-plane source; runtime is not deployed.",
-      "port": null,
-      "type": "service",
-      "role": "main",
-      "workingDir": ".",
-      "startCommand": "not-configured",
-      "healthCheckUrl": null,
-      "actionsEnabled": false,
-      "includeInGitSync": true,
-      "isGateway": false,
-      "autoStartWith": [],
-      "sortOrder": 20
+      "id": "zimspace-storage",
+      "name": "Zimspace Storage",
+      "description": "Object storage infrastructure used by Zimspace project apps",
+      "sortOrder": 30,
+      "apps": [
+        {
+          "id": "z-s-runtime-api",
+          "name": "Z-s Storage API",
+          "description": "Whole Z-s development API running on Alpha port 4310 and published through the existing pi5-1 Cloudflare tunnel.",
+          "port": 4310,
+          "type": "service",
+          "role": "main",
+          "workingDir": ".",
+          "startCommand": "npm run local:start",
+          "healthCheckUrl": "http://127.0.0.1:4310/healthz",
+          "localUrl": "http://100.106.76.100:4310",
+          "listenHost": "0.0.0.0",
+          "publicUrl": "https://z-s.zimmon.ai",
+          "isGateway": false,
+          "autoStartWith": ["z-s"],
+          "actionsEnabled": true,
+          "includeInGitSync": true,
+          "sortOrder": 20
+        }
+      ]
     }
   ]
 }

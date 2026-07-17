@@ -60,6 +60,7 @@
     "test:registry": "npm run test:compile && node --test .test-dist/tests/runtime-storage-registry.integration.test.js && node --test .test-dist/tests/runtime-read-grant.integration.test.js",
     "test": "npm run test:compile && node --test .test-dist/tests/*.test.js",
     "lint": "node scripts/lint.mjs",
+    "local:start": "npm run build && node --enable-source-maps dist/runtime-main.js",
     "local:readiness": "node scripts/local-readiness.mjs",
     "validate:migration": "node scripts/validate-migration.mjs",
     "validate:seed": "node scripts/validate-seed.mjs",
