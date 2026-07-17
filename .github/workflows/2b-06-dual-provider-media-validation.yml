@@ -84,7 +84,7 @@ jobs:
           const manifest = JSON.parse(fs.readFileSync('package.json', 'utf8'));
           const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
           const expected = { '@aws-sdk/client-s3': '3.1088.0' };
-          if (manifest.name !== '@zimmonai/z-s-control-plane' || manifest.version !== '0.4.0') {
+          if (manifest.name !== '@zimmonai/z-s-control-plane' || manifest.version !== '0.5.0') {
             throw new Error('unexpected-package-identity');
           }
           if (JSON.stringify(manifest.dependencies) !== JSON.stringify(expected)) {
@@ -107,12 +107,17 @@ jobs:
       - name: Install dependencies cleanly
         run: npm ci --ignore-scripts --no-audit --no-fund
 
-      - name: Verify migrations and seeds are unchanged
+      - name: Verify prior migrations and seeds are unchanged
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
-          git diff --exit-code "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" -- db/migrations db/seeds
+          git diff --exit-code "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" -- \
+            db/migrations/0001_z_s_control_plane_foundation.sql \
+            db/migrations/0001_z_s_control_plane_foundation.down.sql \
+            db/migrations/0002_z_s_runtime_registry.sql \
+            db/migrations/0002_z_s_runtime_registry.down.sql \
+            db/seeds
 
       - name: Run focused 2B-06 tests
         run: npm run test:focused
