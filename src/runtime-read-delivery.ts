@@ -157,7 +157,7 @@ export class S3CompatibleProviderObjectReader implements ProviderObjectReader {
       throw new TypeError('resolveTarget must be a function.');
     }
     this.#resolveTarget = options.resolveTarget;
-    this.#createClient = options.createClient ?? ((configuration) => new S3Client(configuration));
+    this.#createClient = options.createClient ?? ((configuration) => new S3Client(configuration ?? {}));
   }
 
   async read(input: Readonly<ProviderObjectReadInput>): Promise<Readonly<ProviderObjectReadReceipt>> {
