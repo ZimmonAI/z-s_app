@@ -9,6 +9,10 @@ on:
       - 'package.json'
       - 'src/runtime-contract.ts'
       - 'src/runtime-storage-registry*.ts'
+      - 'src/runtime-read-delivery*.ts'
+      - 'src/runtime-read-grant*.ts'
+      - 'tests/runtime-read-delivery*.test.ts'
+      - 'tests/runtime-read-grant*.test.ts'
       - 'scripts/install-smoke.mjs'
       - 'scripts/local-readiness.mjs'
       - 'scripts/verify-package-artifact.mjs'
@@ -17,6 +21,8 @@ on:
       - 'docs/runtime-storage-registry.md'
       - 'db/migrations/0002_z_s_runtime_registry.sql'
       - 'db/migrations/0002_z_s_runtime_registry.down.sql'
+      - 'db/migrations/0003_z_s_read_delivery.sql'
+      - 'db/migrations/0003_z_s_read_delivery.down.sql'
   workflow_dispatch:
 
 permissions:

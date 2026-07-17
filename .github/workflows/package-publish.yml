@@ -3,7 +3,7 @@ name: Publish immutable Z-s package
 on:
   push:
     tags:
-      - 'z-s-control-plane-v0.2.1'
+      - 'z-s-control-plane-v0.5.0'
 
 permissions:
   contents: read
@@ -18,7 +18,8 @@ jobs:
           fetch-depth: 0
       - name: Gate exact immutable release source
         run: |
-          test "$GITHUB_REF_NAME" = 'z-s-control-plane-v0.2.1'
+          test "$GITHUB_REF_TYPE" = 'tag'
+          test "$GITHUB_REF_NAME" = 'z-s-control-plane-v0.5.0'
           git fetch origin main --no-tags
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - uses: actions/setup-node@v4
@@ -27,24 +28,37 @@ jobs:
           registry-url: 'https://npm.pkg.github.com'
           scope: '@zimmonai'
       - run: npm install --ignore-scripts
-      - name: Gate package identity
+      - name: Gate package, contract, exports, registry, and source migrations
         run: |
+          test "$(cat .npmrc)" = '@zimmonai:registry=https://npm.pkg.github.com'
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
+          import { readFile } from 'node:fs/promises';
           import manifest from './package.json' with { type: 'json' };
           assert.equal(manifest.name, '@zimmonai/z-s-control-plane');
-          assert.equal(manifest.version, '0.2.1');
+          assert.equal(manifest.version, '0.5.0');
           assert.equal(manifest.publishConfig.registry, 'https://npm.pkg.github.com');
           assert.equal(manifest.publishConfig.access, 'restricted');
+          assert.equal(manifest.engines.node, '>=22');
           assert.deepEqual(Object.keys(manifest.exports), [
             '.',
             './runtime-contract',
             './runtime-service',
             './runtime-storage-registry',
+            './runtime-read-delivery',
+            './runtime-read-grant',
           ]);
+          assert.ok(manifest.files.includes('db/migrations/0003_z_s_read_delivery.sql'));
+          assert.ok(manifest.files.includes('db/migrations/0003_z_s_read_delivery.down.sql'));
+          const contractSource = await readFile('src/runtime-contract.ts', 'utf8');
+          assert.match(contractSource, /PACKAGE_VERSION = '0\.5\.0'/);
+          assert.match(contractSource, /CONTRACT_VERSION = '1\.0'/);
           NODE
-      - run: npm run validate
-      - name: Pack and verify exact artifact
+          test "$(sha256sum db/migrations/0003_z_s_read_delivery.sql | awk '{print $1}')" = '244359b802dc30797f3551a11d72719c424db37136ff46fb18a2778324b54f66'
+          test "$(sha256sum db/migrations/0003_z_s_read_delivery.down.sql | awk '{print $1}')" = '96293236016a4ba361fe37b22d88074728bf04bf4a95cf6cb4ec65b9dfb7ca1c'
+      - name: Run full repository validation
+        run: npm run validate
+      - name: Pack and verify one exact artifact
         id: artifact
         run: |
           mkdir -p package-output evidence
@@ -53,17 +67,33 @@ jobs:
             --pack-json package-output/pack.json \
             --tarball-root package-output \
             --output evidence/package-artifact.json
-          echo "tarball=package-output/$(node -p \"require('./evidence/package-artifact.json').tarballFilename\")" >> "$GITHUB_OUTPUT"
+          filename="$(node -p "require('./evidence/package-artifact.json').tarballFilename")"
+          tarball="package-output/$filename"
+          forward_sha="$(tar -xOf "$tarball" package/db/migrations/0003_z_s_read_delivery.sql | sha256sum | awk '{print $1}')"
+          rollback_sha="$(tar -xOf "$tarball" package/db/migrations/0003_z_s_read_delivery.down.sql | sha256sum | awk '{print $1}')"
+          test "$forward_sha" = '244359b802dc30797f3551a11d72719c424db37136ff46fb18a2778324b54f66'
+          test "$rollback_sha" = '96293236016a4ba361fe37b22d88074728bf04bf4a95cf6cb4ec65b9dfb7ca1c'
+          cat > evidence/packed-migration-artifacts.json <<JSON
+          {
+            "forwardPath": "db/migrations/0003_z_s_read_delivery.sql",
+            "forwardSha256": "$forward_sha",
+            "rollbackPath": "db/migrations/0003_z_s_read_delivery.down.sql",
+            "rollbackSha256": "$rollback_sha",
+            "verified": true
+          }
+          JSON
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "filename=$filename" >> "$GITHUB_OUTPUT"
       - name: Refuse an existing immutable version
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ github.token }}
         run: |
           set +e
-          output="$(npm view '@zimmonai/z-s-control-plane@0.2.1' version --registry='https://npm.pkg.github.com' 2>&1)"
+          output="$(npm view '@zimmonai/z-s-control-plane@0.5.0' version --registry='https://npm.pkg.github.com' 2>&1)"
           status=$?
           set -e
           if [ "$status" -eq 0 ]; then
-            echo 'Refusing to overwrite existing @zimmonai/z-s-control-plane@0.2.1.'
+            echo 'Refusing to overwrite existing @zimmonai/z-s-control-plane@0.5.0.'
             exit 1
           fi
           if ! printf '%s' "$output" | grep -Eq 'E404|404 Not Found'; then
@@ -74,73 +104,142 @@ jobs:
         id: publish
         continue-on-error: true
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ github.token }}
         run: npm publish "${{ steps.artifact.outputs.tarball }}" --registry='https://npm.pkg.github.com' --access=restricted
-      - name: Clean exact-version post-publish install
+      - name: Clean exact-version post-publication install and export verification
         id: post_install
         if: steps.publish.outcome == 'success'
         continue-on-error: true
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ github.token }}
         run: |
           node scripts/install-smoke.mjs \
-            --spec '@zimmonai/z-s-control-plane@0.2.1' \
+            --spec '@zimmonai/z-s-control-plane@0.5.0' \
             --registry 'https://npm.pkg.github.com' \
             --evidence evidence/registry-install.json
-      - name: Write retained release report
+      - name: Verify installed migration artifacts
+        id: installed_migrations
+        if: steps.post_install.outcome == 'success'
+        continue-on-error: true
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          consumer="$(mktemp -d)"
+          trap 'rm -rf "$consumer"' EXIT
+          printf '%s\n' '{"name":"z-s-migration-verifier","private":true,"type":"module"}' > "$consumer/package.json"
+          npm install \
+            --prefix "$consumer" \
+            --ignore-scripts \
+            --no-audit \
+            --no-fund \
+            --save-exact \
+            --package-lock=true \
+            --registry='https://npm.pkg.github.com' \
+            '@zimmonai/z-s-control-plane@0.5.0'
+          CONSUMER_ROOT="$consumer" node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { mkdir, readFile, writeFile } from 'node:fs/promises';
+          import path from 'node:path';
+          const packageRoot = path.join(process.env.CONSUMER_ROOT, 'node_modules', '@zimmonai', 'z-s-control-plane');
+          const manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+          assert.equal(manifest.name, '@zimmonai/z-s-control-plane');
+          assert.equal(manifest.version, '0.5.0');
+          assert.deepEqual(Object.keys(manifest.exports), [
+            '.',
+            './runtime-contract',
+            './runtime-service',
+            './runtime-storage-registry',
+            './runtime-read-delivery',
+            './runtime-read-grant',
+          ]);
+          const expected = {
+            'db/migrations/0003_z_s_read_delivery.sql': '244359b802dc30797f3551a11d72719c424db37136ff46fb18a2778324b54f66',
+            'db/migrations/0003_z_s_read_delivery.down.sql': '96293236016a4ba361fe37b22d88074728bf04bf4a95cf6cb4ec65b9dfb7ca1c',
+          };
+          const files = {};
+          for (const [relativePath, expectedSha256] of Object.entries(expected)) {
+            const bytes = await readFile(path.join(packageRoot, relativePath));
+            const observedSha256 = createHash('sha256').update(bytes).digest('hex');
+            assert.equal(observedSha256, expectedSha256);
+            files[relativePath] = observedSha256;
+          }
+          await mkdir('evidence', { recursive: true });
+          await writeFile('evidence/registry-migration-artifacts.json', `${JSON.stringify({ verified: true, files }, null, 2)}\n`);
+          NODE
+      - name: Write retained publication report
         if: always()
         env:
           PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
           INSTALL_OUTCOME: ${{ steps.post_install.outcome }}
+          MIGRATION_OUTCOME: ${{ steps.installed_migrations.outcome }}
         run: |
           node --input-type=module <<'NODE'
           import { readFile, writeFile } from 'node:fs/promises';
-          const artifact = JSON.parse(await readFile('evidence/package-artifact.json', 'utf8'));
-          let install = null;
-          try { install = JSON.parse(await readFile('evidence/registry-install.json', 'utf8')); } catch {}
+          const readJson = async (file) => {
+            try { return JSON.parse(await readFile(file, 'utf8')); } catch { return null; }
+          };
+          const artifact = await readJson('evidence/package-artifact.json');
+          const packedMigrations = await readJson('evidence/packed-migration-artifacts.json');
+          const install = await readJson('evidence/registry-install.json');
+          const installedMigrations = await readJson('evidence/registry-migration-artifacts.json');
+          const completed = process.env.PUBLISH_OUTCOME === 'success'
+            && process.env.INSTALL_OUTCOME === 'success'
+            && process.env.MIGRATION_OUTCOME === 'success';
           const report = {
-            status: process.env.PUBLISH_OUTCOME === 'success' && process.env.INSTALL_OUTCOME === 'success' ? 'completed' : 'blocked',
+            status: completed ? 'completed' : 'blocked',
             source_repository: 'ZimmonAI/z-s_app',
-            source_baseline: 'abd710088ca1640eb6d5f864bc65a563b3481d82',
-            source_head: process.env.GITHUB_SHA,
             source_merge_commit: process.env.GITHUB_SHA,
+            release_tag: process.env.GITHUB_REF_NAME,
+            release_tag_commit: process.env.GITHUB_SHA,
+            workflow_run: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
             package_name: '@zimmonai/z-s-control-plane',
-            package_version: '0.2.1',
+            package_version: '0.5.0',
             contract_version: '1.0',
             package_owner_namespace: 'ZimmonAI/@zimmonai',
-            registry_or_artifact_authority: 'https://npm.pkg.github.com',
+            registry: 'https://npm.pkg.github.com',
+            package_visibility: 'private',
             package_url: 'https://github.com/orgs/ZimmonAI/packages/npm/package/z-s-control-plane',
-            release_tag: process.env.GITHUB_REF_NAME,
-            workflow_run: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
-            artifact_filename: artifact.tarballFilename,
-            tarball_sha256: artifact.tarballSha256,
-            package_manager_integrity: install?.packageManagerIntegrity ?? artifact.npmIntegrity,
+            artifact_filename: artifact?.tarballFilename ?? null,
+            tarball_sha256: artifact?.tarballSha256 ?? null,
+            package_manager_integrity: install?.packageManagerIntegrity ?? artifact?.npmIntegrity ?? null,
+            publish_outcome: process.env.PUBLISH_OUTCOME ?? 'not-run',
             published_once: process.env.PUBLISH_OUTCOME === 'success',
-            z_s_clean_install: process.env.INSTALL_OUTCOME === 'success' ? 'passed' : 'failed',
-            package_access_handoff_status: 'planned-ready',
-            video_maker_verification_status: 'blocked-pending',
-            live_actions_performed: 'none',
-            provider_actions_performed: 'none',
-            deployment_actions_performed: 'none',
+            clean_exact_version_install: process.env.INSTALL_OUTCOME === 'success' ? 'passed' : 'failed',
+            exports_verified: install ? [
+              '.',
+              './runtime-contract',
+              './runtime-service',
+              './runtime-storage-registry',
+              './runtime-read-delivery',
+              './runtime-read-grant',
+            ] : [],
+            packed_migration_artifacts: packedMigrations,
+            installed_migration_artifacts: installedMigrations,
+            migration_0003_artifacts_verified: process.env.MIGRATION_OUTCOME === 'success',
+            secret_values_recorded: false,
           };
-          const baseName = 'evidence/02b-03a-report-z-s-immutable-package-distribution';
-          await writeFile(`${baseName}.json`, `${JSON.stringify(report, null, 2)}\n`);
-          await writeFile(`${baseName}.md`, `# 2B-03A report: Z-s immutable package distribution\n\n\`\`\`yaml\n${Object.entries(report).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join('\n')}\n\`\`\`\n`);
+          await writeFile('evidence/02b-07-p0-s2b-package-publication.json', `${JSON.stringify(report, null, 2)}\n`);
+          await writeFile(
+            'evidence/02b-07-p0-s2b-package-publication.md',
+            `# P0-S2B immutable package publication\n\n\`\`\`yaml\n${Object.entries(report).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join('\n')}\n\`\`\`\n`,
+          );
           NODE
           if grep -R -E 'git\+ssh|ssh://|_authToken|npm_[A-Za-z0-9]{20,}|(^|[^[:alnum:]_])file:|workspace:|https?://[^/@[:space:]]+:[^/@[:space:]]+@' evidence; then
             echo 'Prohibited source or credential-shaped value found in retained evidence.'
             exit 1
           fi
-      - name: Retain immutable package publication evidence
+      - name: Retain immutable 0.5.0 publication evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: z-s-control-plane-0.2.1-publication-evidence
+          name: z-s-control-plane-0.5.0-publication-evidence
           path: evidence/
           if-no-files-found: error
           retention-days: 90
-      - name: Enforce publication and self-consumer success
+      - name: Enforce publication, acquisition, exports, and migration integrity
         if: always()
         run: |
           test '${{ steps.publish.outcome }}' = 'success'
           test '${{ steps.post_install.outcome }}' = 'success'
+          test '${{ steps.installed_migrations.outcome }}' = 'success'
