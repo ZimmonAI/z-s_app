@@ -137,14 +137,24 @@ async function loadState(runId) {
       parsed?.schemaVersion !== 1 ||
       parsed.runId !== runId ||
       !Array.isArray(parsed.pendingIntentIds) ||
-      !Array.isArray(parsed.readGrantIds)
+      !Array.isArray(parsed.readGrantIds) ||
+      !Array.isArray(parsed.completedObjectIds) ||
+      !parsed.pendingIntentIds.every((value) => typeof value === 'string' && UUID.test(value)) ||
+      !parsed.readGrantIds.every((value) => typeof value === 'string' && UUID.test(value)) ||
+      !parsed.completedObjectIds.every((value) => typeof value === 'string' && UUID.test(value))
     ) {
       throw new Error('verifier-state-invalid');
     }
     return parsed;
   } catch (error) {
     if (error?.code === 'ENOENT') {
-      return { schemaVersion: 1, runId, pendingIntentIds: [], readGrantIds: [] };
+      return {
+        schemaVersion: 1,
+        runId,
+        pendingIntentIds: [],
+        readGrantIds: [],
+        completedObjectIds: [],
+      };
     }
     throw error;
   }
@@ -263,6 +273,7 @@ async function uploadIntent(configuration, state, intent, suffix) {
   assert.equal(response.result.checksumSha256, intent.checksum);
   assert.equal(response.result.byteLength, intent.bytes.byteLength);
   state.pendingIntentIds = state.pendingIntentIds.filter((id) => id !== intent.writeIntentId);
+  state.completedObjectIds = unique([...state.completedObjectIds, intent.storageObjectId]);
   await saveState(state);
   return response.result;
 }
@@ -375,6 +386,7 @@ async function scenarioPngWriteRead(configuration, state) {
     byteLength: observed.byteLength,
     checksumVerified: true,
     deliveryState: get.headers.get('x-zs-delivery-state'),
+    retainedCompletedObjectCount: state.completedObjectIds.length,
   };
 }
 
@@ -396,6 +408,7 @@ async function scenarioMp4WriteReadRange(configuration, state) {
     rangeByteLength: observed.byteLength,
     rangeVerified: true,
     deliveryState: response.headers.get('x-zs-delivery-state'),
+    retainedCompletedObjectCount: state.completedObjectIds.length,
   };
 }
 
@@ -444,6 +457,9 @@ async function scenarioHotReadFallback(configuration, state) {
   if (!storageObjectId || !UUID.test(storageObjectId)) {
     throw new Error('verifier-fallback-object-required');
   }
+  if (!state.completedObjectIds.includes(storageObjectId)) {
+    throw new Error('verifier-fallback-object-not-owned-by-run');
+  }
   const grant = await issueGrant(configuration, state, storageObjectId, 'fallback');
   const response = await readContent(configuration, storageObjectId, grant, 'fallback');
   assert.equal(response.status, 200);
@@ -473,6 +489,8 @@ async function scenarioRevokeReadGrant(configuration, state) {
 }
 
 async function scenarioCleanupOnly(configuration, state) {
+  const grantCount = state.readGrantIds.length;
+  const intentCount = state.pendingIntentIds.length;
   const failures = [];
   for (const grantId of [...state.readGrantIds]) {
     try {
@@ -491,12 +509,20 @@ async function scenarioCleanupOnly(configuration, state) {
   if (failures.length > 0 || state.readGrantIds.length > 0 || state.pendingIntentIds.length > 0) {
     throw new Error('verifier-cleanup-incomplete');
   }
+  if (state.completedObjectIds.length > 0) {
+    await saveState(state);
+    throw new Error('completed-object-cleanup-not-supported-by-public-contract');
+  }
   try {
     await unlink(stateFile(configuration.runId));
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
   }
-  return { revokedGrantCount: 0, cancelledIntentCount: 0, cleanupComplete: true };
+  return {
+    revokedGrantCount: grantCount,
+    cancelledIntentCount: intentCount,
+    cleanupComplete: true,
+  };
 }
 
 async function runScenario(configuration, state) {
