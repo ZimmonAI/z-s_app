@@ -929,13 +929,13 @@ export class PostgresObjectReadGrantRegistry implements ObjectReadGrantRegistry 
         nextState = new Date(current.expiresAt).getTime() <= now.getTime() ? 'expired' : 'revoked';
         const updated = await client.query(
           `UPDATE public.object_read_grants
-              SET state = $2,
-                  revoked_at = CASE WHEN $2 = 'revoked' THEN $3 ELSE NULL END,
-                  updated_at = $3,
+              SET state = $2::text,
+                  revoked_at = CASE WHEN $2::text = 'revoked' THEN $3::timestamptz ELSE NULL END,
+                  updated_at = $3::timestamptz,
                   row_version = row_version + 1
-            WHERE object_read_grant_id = $1
+            WHERE object_read_grant_id = $1::uuid
               AND state = 'active'
-              AND row_version = $4`,
+              AND row_version = $4::integer`,
           [current.objectReadGrantId, nextState, now, current.rowVersion],
         );
         if (updated.rowCount !== 1) {
