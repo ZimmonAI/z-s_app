@@ -8,7 +8,6 @@ export * from './profile-registry.js';
 export * from './runtime-contract.js';
 export * from './runtime-dual-provider.js';
 export * from './runtime-ingest.js';
-export * from './runtime-local-composition.js';
 export * from './runtime-media-verification.js';
 export * from './runtime-read-delivery.js';
 export * from './runtime-read-grant.js';
