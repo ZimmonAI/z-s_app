@@ -18,15 +18,15 @@ It does not contain credential values, reusable upload authority, caller-selecte
 
 ## Source package identity
 
-The current source identity is `@zimmonai/z-s-control-plane@0.4.0`. Contract `1.0` and Node.js `>=22` remain unchanged. The existing root, `runtime-contract`, `runtime-service`, and `runtime-storage-registry` package entry points are preserved; no additional package subpath is introduced.
+The current source identity is `@zimmonai/z-s-control-plane@0.5.0`. Contract `1.0` and Node.js `>=22` remain unchanged. The existing package entry points remain available, with additive `runtime-read-grant` and `runtime-read-delivery` subpaths for the governed server runtime.
 
-Version `0.4.0` is a source implementation target only. This task does not publish the package, create a release tag, change package visibility, or grant consumer access.
+Version `0.5.0` is a source implementation target only. This task does not publish the package, create a release tag, change package visibility, or grant consumer access.
 
 The only direct runtime dependency is the exact registry package `@aws-sdk/client-s3@3.1088.0`. `package-lock.json` is the canonical npm lock and uses lockfile version 3.
 
 ## Runtime HTTP surface
 
-The in-process runtime recognizes exactly:
+The in-process runtime recognizes:
 
 ```text
 GET    /healthz
@@ -34,6 +34,10 @@ GET    /readyz
 POST   /v1/object-write-intents
 PUT    /v1/object-write-intents/{objectWriteIntentId}/content
 DELETE /v1/object-write-intents/{objectWriteIntentId}
+POST   /v1/object-read-grants
+DELETE /v1/object-read-grants/{objectReadGrantId}
+GET    /v1/storage-objects/{storageObjectId}/content
+HEAD   /v1/storage-objects/{storageObjectId}/content
 ```
 
 `POST /v1/object-write-intents` creates one durable object identity, one write intent, and exactly two pending provider-copy rows under resolved server-side authority.
@@ -139,4 +143,10 @@ The harness emits exactly one compact safe JSON line containing the run ID, scen
 
 Public responses and safe diagnostics exclude provider endpoints, bucket names, internal locators, object keys, credential values, credential-reference identifiers, connection strings, bearer tokens, upload-completion tokens, raw provider responses, and consumer business payloads.
 
-Real deployment, package publication, provider provisioning, schema changes, read delivery, technical deletion, broad reconciliation scheduling, browser behavior, and consumer adoption remain separate governed work.
+Real deployment, package publication, provider provisioning, future schema changes, technical deletion, broad reconciliation scheduling, browser behavior, and consumer adoption remain separate governed work.
+
+## Short-lived object read delivery
+
+Package 0.5.0 adds caller-bound, short-lived object read grants and server-streamed delivery without exposing provider authority. Callers create grants with `POST /v1/object-read-grants`, revoke them with `DELETE /v1/object-read-grants/{objectReadGrantId}`, and use `GET` or `HEAD /v1/storage-objects/{storageObjectId}/content` with `x-zs-read-grant-token`.
+
+Delivery accepts one closed, open-ended, or suffix byte range. It returns safe `206` or `416` metadata, tries a verified hot R2-compatible copy first, and falls back to a verified canonical MinIO-compatible copy only when the registry snapshot proves matching checksum, byte length, and media type. Conflicting verified metadata fails closed. Raw object keys, buckets, endpoints, credentials, signed URLs, and provider bodies never enter the public contract, token claims, diagnostics, attempts, or events.

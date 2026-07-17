@@ -50,26 +50,25 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
       - name: Install dependencies
         run: npm install --ignore-scripts
-
-      - name: Verify migrations are unchanged
+      - name: Verify prior migrations and seeds are unchanged
         shell: bash
         run: |
           set -euo pipefail
-          git diff --exit-code "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" -- db/migrations
-
+          git diff --exit-code "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" -- \
+            db/migrations/0001_z_s_control_plane_foundation.sql \
+            db/migrations/0001_z_s_control_plane_foundation.down.sql \
+            db/migrations/0002_z_s_runtime_registry.sql \
+            db/migrations/0002_z_s_runtime_registry.down.sql \
+            db/seeds
       - name: Run focused ingest tests
         run: npm run test:focused
-
       - name: Run PostgreSQL registry tests
         run: npm run test:registry
-
       - name: Run full validation
         run: npm run validate
