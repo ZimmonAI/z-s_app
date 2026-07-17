@@ -1,4 +1,4 @@
-name: 2B-07 bounded registry diagnostics
+name: 2B-07 bounded SQL alias repair
 
 on:
   pull_request:
@@ -6,48 +6,71 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  diagnose:
+  patch:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: z_s_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d z_s_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
         with:
-          node-version: 22
-      - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Capture bounded registry result
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+      - name: Replace reserved PostgreSQL alias
         shell: bash
         run: |
-          set +e
-          npm run test:registry > registry-test.log 2>&1
-          status=$?
-          echo "$status" > registry-test.status
-          tail -n 260 registry-test.log > registry-test-tail.log
-          exit 0
-      - uses: actions/upload-artifact@v4
-        with:
-          name: 2b-07-registry-diagnostics
-          path: |
-            registry-test.status
-            registry-test-tail.log
-          if-no-files-found: error
-          retention-days: 1
+          set -euo pipefail
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path('src/runtime-read-grant.ts')
+          text = path.read_text()
+          old_block = """const GRANT_SELECT = `SELECT grant.object_read_grant_id, grant.storage_object_id,
+       grant.managed_app_id, managed_app.app_id AS caller_app_id, grant.caller_service_id,
+       grant.app_correlation_ref, grant.business_authorization_ref, grant.purpose,
+       grant.allowed_methods, grant.range_allowed, grant.disposition, grant.safe_file_name,
+       grant.read_grant_token_digest, grant.token_purpose, grant.state, grant.expires_at,
+       grant.revoked_at, grant.created_at, grant.updated_at, grant.row_version
+  FROM public.object_read_grants AS grant
+  JOIN public.managed_apps AS managed_app ON managed_app.id = grant.managed_app_id`;"""
+          new_block = """const GRANT_SELECT = `SELECT read_grant.object_read_grant_id, read_grant.storage_object_id,
+       read_grant.managed_app_id, managed_app.app_id AS caller_app_id, read_grant.caller_service_id,
+       read_grant.app_correlation_ref, read_grant.business_authorization_ref, read_grant.purpose,
+       read_grant.allowed_methods, read_grant.range_allowed, read_grant.disposition,
+       read_grant.safe_file_name, read_grant.read_grant_token_digest,
+       read_grant.token_purpose, read_grant.state, read_grant.expires_at,
+       read_grant.revoked_at, read_grant.created_at, read_grant.updated_at,
+       read_grant.row_version
+  FROM public.object_read_grants AS read_grant
+  JOIN public.managed_apps AS managed_app ON managed_app.id = read_grant.managed_app_id`;"""
+          if text.count(old_block) != 1:
+              raise SystemExit('unexpected-grant-select-block')
+          text = text.replace(old_block, new_block)
+          replacements = {
+              'WHERE grant.object_read_grant_id': 'WHERE read_grant.object_read_grant_id',
+              'AND grant.storage_object_id': 'AND read_grant.storage_object_id',
+              'COALESCE(grant.caller_service_id': 'COALESCE(read_grant.caller_service_id',
+              'AND grant.read_grant_token_digest': 'AND read_grant.read_grant_token_digest',
+              'FOR UPDATE OF grant': 'FOR UPDATE OF read_grant',
+          }
+          expected_counts = {
+              'WHERE grant.object_read_grant_id': 4,
+              'AND grant.storage_object_id': 2,
+              'COALESCE(grant.caller_service_id': 1,
+              'AND grant.read_grant_token_digest': 1,
+              'FOR UPDATE OF grant': 1,
+          }
+          for old, new in replacements.items():
+              observed = text.count(old)
+              if observed != expected_counts[old]:
+                  raise SystemExit(f'unexpected-count:{old}:{observed}')
+              text = text.replace(old, new)
+          path.write_text(text)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/runtime-read-grant.ts
+          git commit -m 'Use a non-reserved read grant SQL alias'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
