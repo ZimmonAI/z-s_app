@@ -8,12 +8,11 @@ DECLARE
   row_total bigint;
 BEGIN
   IF to_regclass('public.object_read_grants') IS NULL THEN
-    RAISE EXCEPTION '2B-07 rollback blocked: public.object_read_grants is missing';
+    RAISE EXCEPTION '2B-07 rollback missing table public.object_read_grants';
   END IF;
-
-  SELECT COUNT(*) INTO row_total FROM public.object_read_grants;
+  SELECT count(*) INTO row_total FROM public.object_read_grants;
   IF row_total <> 0 THEN
-    RAISE EXCEPTION '2B-07 rollback blocked: public.object_read_grants contains adopted rows';
+    RAISE EXCEPTION '2B-07 rollback blocked: public.object_read_grants contains % adopted rows', row_total;
   END IF;
 END
 $$;

@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const root = process.cwd();
 const EXPECTED_NAME = '@zimmonai/z-s-control-plane';
-const EXPECTED_VERSION = '0.4.0';
+const EXPECTED_VERSION = '0.5.0';
 const EXPECTED_REPOSITORY = 'git+https://github.com/ZimmonAI/z-s_app.git';
 const EXPECTED_REGISTRY = 'https://npm.pkg.github.com';
 const EXPECTED_EXPORTS = [
@@ -17,6 +17,8 @@ const EXPECTED_EXPORTS = [
   './runtime-contract',
   './runtime-service',
   './runtime-storage-registry',
+  './runtime-read-delivery',
+  './runtime-read-grant',
 ];
 const EXPECTED_PACKAGE_FILES = [
   'dist',
@@ -24,6 +26,8 @@ const EXPECTED_PACKAGE_FILES = [
   'docs/runtime-contract.md',
   'db/migrations/0002_z_s_runtime_registry.sql',
   'db/migrations/0002_z_s_runtime_registry.down.sql',
+  'db/migrations/0003_z_s_read_delivery.sql',
+  'db/migrations/0003_z_s_read_delivery.down.sql',
 ];
 const APPROVED_DIST_MODULES = [
   'capability-registry',
@@ -38,6 +42,8 @@ const APPROVED_DIST_MODULES = [
   'runtime-dual-provider',
   'runtime-ingest',
   'runtime-media-verification',
+  'runtime-read-delivery',
+  'runtime-read-grant',
   'runtime-s3-provider',
   'runtime-service',
   'runtime-storage-registry',
@@ -56,6 +62,8 @@ function expectedFiles() {
     'package.json',
     'db/migrations/0002_z_s_runtime_registry.sql',
     'db/migrations/0002_z_s_runtime_registry.down.sql',
+    'db/migrations/0003_z_s_read_delivery.sql',
+    'db/migrations/0003_z_s_read_delivery.down.sql',
   ];
   for (const moduleName of APPROVED_DIST_MODULES) {
     files.push(
@@ -159,7 +167,7 @@ try {
     registry: EXPECTED_REGISTRY,
     repository: 'https://github.com/ZimmonAI/z-s_app',
     packageUrl: 'https://github.com/orgs/ZimmonAI/packages/npm/package/z-s-control-plane',
-    sourceBaseline: '9aa72e8cf6a6165395c296ca13d1b0b13296f187',
+    sourceBaseline: 'd13e74fb428cec20f1706034ed0e00274ee9fce2',
     tarballFilename: artifact.filename,
     tarballSha256: sha256,
     npmIntegrity: artifact.integrity,

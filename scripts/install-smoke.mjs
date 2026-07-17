@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const root = process.cwd();
 const EXPECTED_NAME = '@zimmonai/z-s-control-plane';
-const EXPECTED_VERSION = '0.4.0';
+const EXPECTED_VERSION = '0.5.0';
 const EXPECTED_REGISTRY = 'https://npm.pkg.github.com';
 
 function parseArguments(argv) {
@@ -103,6 +103,8 @@ try {
       `import * as contract from '${EXPECTED_NAME}/runtime-contract';`,
       `import * as runtime from '${EXPECTED_NAME}/runtime-service';`,
       `import * as registry from '${EXPECTED_NAME}/runtime-storage-registry';`,
+      `import * as readDelivery from '${EXPECTED_NAME}/runtime-read-delivery';`,
+      `import * as readGrant from '${EXPECTED_NAME}/runtime-read-grant';`,
       "if (root.SERVICE_ID !== 'z-s') throw new Error('root contract export missing');",
       `if (root.PACKAGE_VERSION !== '${EXPECTED_VERSION}') throw new Error('root package identity mismatch');`,
       `if (contract.PACKAGE_VERSION !== '${EXPECTED_VERSION}') throw new Error('contract package identity mismatch');`,
@@ -115,6 +117,10 @@ try {
       "if (runtime.BoundedMediaVerifier === undefined) throw new Error('media verifier export missing');",
       "if (registry.PostgresRuntimeStorageRegistry === undefined) throw new Error('registry export missing');",
       "if (registry.createRuntimeStorageDuplicateResultCodec === undefined) throw new Error('registry codec export missing');",
+      "if (readDelivery.ObjectReadDeliveryCoordinator === undefined) throw new Error('read delivery export missing');",
+      "if (readDelivery.S3CompatibleProviderObjectReader === undefined) throw new Error('provider reader export missing');",
+      "if (readGrant.PostgresObjectReadRegistry === undefined) throw new Error('read registry export missing');",
+      "if (readGrant.createReadEnabledHttpStorageRuntime === undefined) throw new Error('read HTTP export missing');",
       "if (root.CAPABILITY_POLICY_VERSION !== '1') throw new Error('control-plane export missing');",
     ].join('\n'),
     'utf8',
@@ -136,6 +142,8 @@ try {
     './runtime-contract',
     './runtime-service',
     './runtime-storage-registry',
+    './runtime-read-delivery',
+    './runtime-read-grant',
   ]);
 
   const lock = JSON.parse(await readFile(path.join(consumerDirectory, 'package-lock.json'), 'utf8'));
@@ -173,6 +181,8 @@ try {
     runtimeContractExportVerified: true,
     runtimeServiceExportVerified: true,
     runtimeStorageRegistryExportVerified: true,
+    readDeliveryExportVerified: true,
+    readGrantExportVerified: true,
     genericIngestExportVerified: true,
     uploadCompletionTokenExportVerified: true,
     prohibitedSourceDetected: false,
@@ -184,7 +194,7 @@ try {
   }
 
   const identity = options.spec
-    ? `${EXPECTED_NAME}@${EXPECTED_VERSION} ${installedLock.resolved}`
+    ? `${EXPECTED_NAME}@${EXPECTED_VERSION} ${installedLock?.resolved}`
     : `${tarballFilename} sha256:${tarballSha256}`;
   console.log(`pack:check passed ${identity}`);
 } finally {

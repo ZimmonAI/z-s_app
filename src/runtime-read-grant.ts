@@ -1,64 +1,48 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import type { CallerIdentity, ContractVersion, DuplicateProtectionSummary, SafeDiagnostic } from './runtime-contract.js';
 import {
-  RuntimeStorageRegistryError,
-  type PostgresPoolLike,
-  type PostgresQueryable,
-} from './runtime-storage-registry-types.js';
+  CONTRACT_VERSION,
+  PACKAGE_VERSION,
+  SUPPORTED_CONTRACT_VERSIONS,
+  type CallerIdentity,
+  type ContractVersion,
+  type HttpStorageRuntime,
+  type ObjectReadGrantRequest,
+  type ObjectReadGrantResult,
+  type ObjectReadGrantRevocationResult,
+  type SafeDiagnostic,
+  type StorageRuntimeOptions,
+} from './runtime-contract.js';
+import {
+  createHttpStorageRuntime,
+  createSafeDiagnostic,
+} from './runtime-service.js';
 import {
   PostgresTransactionScope,
   asIso,
   asNumber,
+  assertSafeJsonObject,
+  parseDuplicateScope,
   requireSafeIdentifier,
   requireSha256,
   requireUuid,
 } from './runtime-storage-registry-support.js';
+import type {
+  PostgresPoolLike,
+  PostgresQueryable,
+} from './runtime-storage-registry-types.js';
+import type {
+  ObjectReadDeliveryRegistry,
+  ObjectReadDeliveryService,
+  ObjectReadDeliverySnapshot,
+  ObjectReadGrantDisposition,
+  ObjectReadMethod,
+  ReadGrantDeliveryAuthorization,
+} from './runtime-read-delivery.js';
 
-export const READ_GRANT_TOKEN_PURPOSE = 'z-s-object-read-grant-v1' as const;
-export const READ_GRANT_MIN_TTL_SECONDS = 30 as const;
-export const READ_GRANT_MAX_TTL_SECONDS = 300 as const;
+export const OBJECT_READ_GRANT_TOKEN_PURPOSE = 'object-read-grant' as const;
 
-export type ObjectReadMethod = 'HEAD' | 'GET';
-export type ObjectReadGrantState = 'active' | 'revoked' | 'expired';
-export type ObjectReadDisposition = 'inline' | 'attachment';
-export type ReadProviderRole = 'hot' | 'canonical';
-
-export interface ReadGrantRequest {
-  storageObjectId: string;
-  purpose: string;
-  allowedMethods: readonly ObjectReadMethod[];
-  allowRange: boolean;
-  disposition: ObjectReadDisposition;
-  fileName?: string;
-  requestedTtlSeconds: number;
-  businessAuthorizationReference: string;
-}
-
-export interface ReadGrantResult {
-  objectReadGrantId: string;
-  storageObjectId: string;
-  state: ObjectReadGrantState;
-  expiresAt: string;
-  allowedMethods: readonly ObjectReadMethod[];
-  allowRange: boolean;
-  disposition: ObjectReadDisposition;
-  fileName?: string;
-  duplicateProtection: DuplicateProtectionSummary;
-  readGrantToken: string;
-  safeDiagnostic?: SafeDiagnostic;
-}
-
-export interface ReadGrantRevocationResult {
-  objectReadGrantId: string;
-  storageObjectId: string;
-  state: 'revoked' | 'expired';
-  revokedAt?: string;
-  expiresAt: string;
-  duplicateProtection: DuplicateProtectionSummary;
-}
-
-export interface ReadGrantTokenClaims {
-  tokenPurpose: typeof READ_GRANT_TOKEN_PURPOSE;
+export interface ObjectReadGrantTokenClaims {
+  tokenPurpose: typeof OBJECT_READ_GRANT_TOKEN_PURPOSE;
   objectReadGrantId: string;
   storageObjectId: string;
   callerAppId: string;
@@ -70,374 +54,269 @@ export interface ReadGrantTokenClaims {
   expiresAt: string;
 }
 
-export interface ReadGrantTokenExpectation {
-  tokenPurpose: typeof READ_GRANT_TOKEN_PURPOSE;
-  storageObjectId: string;
-  callerAppId: string;
-  callerServiceId: string;
-  method: ObjectReadMethod;
-  contractVersion: ContractVersion;
-  rangeRequested: boolean;
-  now: Date;
+export interface ObjectReadGrantTokenExpectation {
+  tokenPurpose?: typeof OBJECT_READ_GRANT_TOKEN_PURPOSE;
+  objectReadGrantId?: string;
+  storageObjectId?: string;
+  callerAppId?: string;
+  callerServiceId?: string;
+  contractVersion?: ContractVersion;
+  now?: Date;
 }
 
-export interface ReadGrantTokenService {
-  issue(claims: Readonly<ReadGrantTokenClaims>): Promise<string> | string;
+export interface ObjectReadGrantTokenService {
+  issue(claims: Readonly<ObjectReadGrantTokenClaims>): string | Promise<string>;
   verify(
     token: string,
-    expectation: Readonly<ReadGrantTokenExpectation>,
-  ): Promise<Readonly<ReadGrantTokenClaims>> | Readonly<ReadGrantTokenClaims>;
+    expected?: Readonly<ObjectReadGrantTokenExpectation>,
+  ):
+    | Readonly<ObjectReadGrantTokenClaims>
+    | Promise<Readonly<ObjectReadGrantTokenClaims>>;
 }
 
-export class ReadGrantError extends Error {
-  readonly category: SafeDiagnostic['category'];
-  readonly code: string;
-  readonly status: number;
-  readonly retryable: boolean;
+export class ObjectReadGrantTokenError extends Error {
+  readonly category = 'unauthenticated' as const;
+  readonly status = 401;
+  readonly retryable = false;
+  readonly code: 'invalid-object-read-grant-token' | 'object-read-grant-token-expired';
 
-  constructor(
-    category: SafeDiagnostic['category'],
-    code: string,
-    status: number,
-    retryable = false,
-  ) {
+  constructor(code: ObjectReadGrantTokenError['code']) {
     super(code);
-    this.name = 'ReadGrantError';
-    this.category = category;
+    this.name = 'ObjectReadGrantTokenError';
     this.code = code;
-    this.status = status;
-    this.retryable = retryable;
   }
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SAFE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const SAFE_FILE_NAME_PATTERN = /^[^\u0000-\u001f\u007f/\\]{1,180}$/u;
-const TOKEN_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const SAFE_CALLER_PATTERN = /^[a-z0-9][a-z0-9_-]{0,95}$/;
+const SAFE_FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,179}$/;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+function rejectToken(): never {
+  throw new ObjectReadGrantTokenError('invalid-object-read-grant-token');
 }
 
-function requireTokenString(value: unknown, name: string, max = 4096): string {
-  if (typeof value !== 'string') throw new ReadGrantError('invalid-request', `invalid-${name}`, 400);
-  const normalized = value.trim();
-  if (normalized.length === 0 || normalized.length > max) {
-    throw new ReadGrantError('invalid-request', `invalid-${name}`, 400);
-  }
-  return normalized;
+function normalizeUuid(value: unknown): string {
+  if (typeof value !== 'string' || !UUID_PATTERN.test(value)) rejectToken();
+  return value;
 }
 
-function normalizeMethods(value: unknown): readonly ObjectReadMethod[] {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 2) {
-    throw new ReadGrantError('invalid-request', 'invalid-allowed-methods', 400);
-  }
+function normalizeSafeId(value: unknown, pattern = SAFE_ID_PATTERN): string {
+  if (typeof value !== 'string' || !pattern.test(value)) rejectToken();
+  return value;
+}
+
+function normalizeIso(value: unknown): string {
+  if (typeof value !== 'string') rejectToken();
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) rejectToken();
+  return value;
+}
+
+function normalizeAllowedMethods(value: unknown, reject: () => never): readonly ObjectReadMethod[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 2) reject();
   const methods = value.map((entry) => {
-    if (entry !== 'HEAD' && entry !== 'GET') {
-      throw new ReadGrantError('invalid-request', 'invalid-allowed-methods', 400);
-    }
+    if (entry !== 'HEAD' && entry !== 'GET') reject();
     return entry;
   });
-  if (new Set(methods).size !== methods.length) {
-    throw new ReadGrantError('invalid-request', 'invalid-allowed-methods', 400);
-  }
-  return Object.freeze([...methods].sort() as ObjectReadMethod[]);
-}
-
-export function sanitizeReadFileName(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string') {
-    throw new ReadGrantError('invalid-request', 'invalid-file-name', 400);
-  }
-  const normalized = value.trim();
-  if (!SAFE_FILE_NAME_PATTERN.test(normalized) || normalized === '.' || normalized === '..') {
-    throw new ReadGrantError('invalid-request', 'invalid-file-name', 400);
-  }
-  return normalized;
-}
-
-export function normalizeReadGrantRequest(value: unknown): Readonly<ReadGrantRequest> {
-  if (!isRecord(value)) {
-    throw new ReadGrantError('invalid-request', 'invalid-object-read-grant', 400);
-  }
-  const storageObjectId = requireTokenString(value.storageObjectId, 'storage-object-id', 36);
-  if (!UUID_PATTERN.test(storageObjectId)) {
-    throw new ReadGrantError('invalid-request', 'invalid-storage-object-id', 400);
-  }
-  const purpose = requireTokenString(value.purpose, 'purpose', 128);
-  if (!SAFE_IDENTIFIER_PATTERN.test(purpose)) {
-    throw new ReadGrantError('invalid-request', 'invalid-purpose', 400);
-  }
-  const businessAuthorizationReference = requireTokenString(
-    value.businessAuthorizationReference,
-    'business-authorization-reference',
-    256,
+  if (new Set(methods).size !== methods.length) reject();
+  return Object.freeze(
+    (['HEAD', 'GET'] as const).filter((method) => methods.includes(method)),
   );
-  if (/\r|\n/.test(businessAuthorizationReference)) {
-    throw new ReadGrantError('invalid-request', 'invalid-business-authorization-reference', 400);
-  }
-  if (!Number.isSafeInteger(value.requestedTtlSeconds)) {
-    throw new ReadGrantError('invalid-request', 'invalid-requested-ttl-seconds', 400);
-  }
-  const requestedTtlSeconds = value.requestedTtlSeconds as number;
+}
+
+function normalizeTokenClaims(value: unknown): Readonly<ObjectReadGrantTokenClaims> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) rejectToken();
+  const record = value as Record<string, unknown>;
+  if (record.tokenPurpose !== OBJECT_READ_GRANT_TOKEN_PURPOSE) rejectToken();
+  if (record.contractVersion !== CONTRACT_VERSION) rejectToken();
+  if (typeof record.allowRange !== 'boolean') rejectToken();
+  const callerServiceId =
+    record.callerServiceId === undefined
+      ? undefined
+      : normalizeSafeId(record.callerServiceId, SAFE_CALLER_PATTERN);
+  const claims: ObjectReadGrantTokenClaims = {
+    tokenPurpose: OBJECT_READ_GRANT_TOKEN_PURPOSE,
+    objectReadGrantId: normalizeUuid(record.objectReadGrantId),
+    storageObjectId: normalizeUuid(record.storageObjectId),
+    callerAppId: normalizeSafeId(record.callerAppId, SAFE_CALLER_PATTERN),
+    purpose: normalizeSafeId(record.purpose),
+    allowedMethods: normalizeAllowedMethods(record.allowedMethods, rejectToken),
+    allowRange: record.allowRange,
+    contractVersion: CONTRACT_VERSION,
+    expiresAt: normalizeIso(record.expiresAt),
+  };
+  if (callerServiceId !== undefined) claims.callerServiceId = callerServiceId;
+  return Object.freeze(claims);
+}
+
+function encodeTokenPayload(claims: Readonly<ObjectReadGrantTokenClaims>): string {
+  return Buffer.from(
+    JSON.stringify({
+      tokenPurpose: claims.tokenPurpose,
+      objectReadGrantId: claims.objectReadGrantId,
+      storageObjectId: claims.storageObjectId,
+      callerAppId: claims.callerAppId,
+      ...(claims.callerServiceId === undefined
+        ? {}
+        : { callerServiceId: claims.callerServiceId }),
+      purpose: claims.purpose,
+      allowedMethods: claims.allowedMethods,
+      allowRange: claims.allowRange,
+      contractVersion: claims.contractVersion,
+      expiresAt: claims.expiresAt,
+    }),
+    'utf8',
+  ).toString('base64url');
+}
+
+function assertExpectedToken(
+  claims: Readonly<ObjectReadGrantTokenClaims>,
+  expected: Readonly<ObjectReadGrantTokenExpectation>,
+): void {
+  if ((expected.tokenPurpose ?? OBJECT_READ_GRANT_TOKEN_PURPOSE) !== claims.tokenPurpose) rejectToken();
   if (
-    requestedTtlSeconds < READ_GRANT_MIN_TTL_SECONDS ||
-    requestedTtlSeconds > READ_GRANT_MAX_TTL_SECONDS
+    expected.objectReadGrantId !== undefined &&
+    expected.objectReadGrantId !== claims.objectReadGrantId
   ) {
-    throw new ReadGrantError('invalid-request', 'invalid-requested-ttl-seconds', 400);
+    rejectToken();
   }
-  if (typeof value.allowRange !== 'boolean') {
-    throw new ReadGrantError('invalid-request', 'invalid-allow-range', 400);
+  if (expected.storageObjectId !== undefined && expected.storageObjectId !== claims.storageObjectId) {
+    rejectToken();
   }
-  if (value.disposition !== 'inline' && value.disposition !== 'attachment') {
-    throw new ReadGrantError('invalid-request', 'invalid-disposition', 400);
+  if (expected.callerAppId !== undefined && expected.callerAppId !== claims.callerAppId) {
+    rejectToken();
   }
-  const result: ReadGrantRequest = {
-    storageObjectId,
-    purpose,
-    allowedMethods: normalizeMethods(value.allowedMethods),
-    allowRange: value.allowRange,
-    disposition: value.disposition,
-    requestedTtlSeconds,
-    businessAuthorizationReference,
-  };
-  const fileName = sanitizeReadFileName(value.fileName);
-  if (fileName !== undefined) result.fileName = fileName;
-  return Object.freeze(result);
+  if (
+    expected.callerServiceId !== undefined &&
+    expected.callerServiceId !== (claims.callerServiceId ?? '')
+  ) {
+    rejectToken();
+  }
+  if (expected.contractVersion !== undefined && expected.contractVersion !== claims.contractVersion) {
+    rejectToken();
+  }
 }
 
-function validateClaims(value: unknown): Readonly<ReadGrantTokenClaims> {
-  if (!isRecord(value) || value.tokenPurpose !== READ_GRANT_TOKEN_PURPOSE) {
-    throw new ReadGrantError('unauthenticated', 'invalid-read-grant-token', 401);
+export function createDeterministicObjectReadGrantTokenService(options: {
+  signingKey: string;
+  now?: () => Date;
+}): ObjectReadGrantTokenService {
+  if (typeof options.signingKey !== 'string' || options.signingKey.length < 16) {
+    throw new TypeError('signingKey must contain at least 16 characters.');
   }
-  const objectReadGrantId = requireTokenString(value.objectReadGrantId, 'object-read-grant-id', 36);
-  const storageObjectId = requireTokenString(value.storageObjectId, 'storage-object-id', 36);
-  if (!UUID_PATTERN.test(objectReadGrantId) || !UUID_PATTERN.test(storageObjectId)) {
-    throw new ReadGrantError('unauthenticated', 'invalid-read-grant-token', 401);
-  }
-  const callerAppId = requireTokenString(value.callerAppId, 'caller-app', 96);
-  if (!/^[a-z0-9][a-z0-9_-]*$/.test(callerAppId)) {
-    throw new ReadGrantError('unauthenticated', 'invalid-read-grant-token', 401);
-  }
-  const purpose = requireTokenString(value.purpose, 'purpose', 128);
-  if (!SAFE_IDENTIFIER_PATTERN.test(purpose)) {
-    throw new ReadGrantError('unauthenticated', 'invalid-read-grant-token', 401);
-  }
-  const expiresAt = requireTokenString(value.expiresAt, 'expires-at', 64);
-  let normalizedExpiry: string;
-  try {
-    normalizedExpiry = new Date(expiresAt).toISOString();
-  } catch {
-    throw new ReadGrantError('unauthenticated', 'invalid-read-grant-token', 401);
-  }
-  if (normalizedExpiry !== expiresAt || value.contractVersion !== '1.0') {
-    throw new ReadGrantError('unauthenticated', 'invalid-read-grant-token', 401);
-  }
-  if (typeof value.allowRange !== 'boolean') {
-    throw new ReadGrantError('unauthenticated', 'invalid-read-grant-token', 401);
-  }
-  const result: ReadGrantTokenClaims = {
-    tokenPurpose: READ_GRANT_TOKEN_PURPOSE,
-    objectReadGrantId,
-    storageObjectId,
-    callerAppId,
-    purpose,
-    allowedMethods: normalizeMethods(value.allowedMethods),
-    allowRange: value.allowRange,
-    contractVersion: value.contractVersion,
-    expiresAt,
-  };
-  if (value.callerServiceId !== undefined) {
-    const callerServiceId = requireTokenString(value.callerServiceId, 'caller-service', 96);
-    if (!/^[a-z0-9][a-z0-9_-]*$/.test(callerServiceId)) {
-      throw new ReadGrantError('unauthenticated', 'invalid-read-grant-token', 401);
-    }
-    result.callerServiceId = callerServiceId;
-  }
-  return Object.freeze(result);
-}
-
-function encodeClaims(claims: Readonly<ReadGrantTokenClaims>): string {
-  const ordered = {
-    tokenPurpose: claims.tokenPurpose,
-    objectReadGrantId: claims.objectReadGrantId,
-    storageObjectId: claims.storageObjectId,
-    callerAppId: claims.callerAppId,
-    callerServiceId: claims.callerServiceId ?? '',
-    purpose: claims.purpose,
-    allowedMethods: [...claims.allowedMethods],
-    allowRange: claims.allowRange,
-    contractVersion: claims.contractVersion,
-    expiresAt: claims.expiresAt,
-  };
-  return Buffer.from(JSON.stringify(ordered), 'utf8').toString('base64url');
-}
-
-export function createDeterministicReadGrantTokenService(options: {
-  signingKey: string | Uint8Array;
-}): ReadGrantTokenService {
-  const key =
-    typeof options.signingKey === 'string'
-      ? Buffer.from(options.signingKey, 'utf8')
-      : Buffer.from(options.signingKey);
-  if (key.byteLength < 32) throw new TypeError('signingKey must contain at least 32 bytes.');
-
-  function signature(payload: string): Buffer {
-    return createHmac('sha256', key).update(payload).digest();
-  }
-
+  const now = options.now ?? (() => new Date());
   return Object.freeze({
-    issue(claims: Readonly<ReadGrantTokenClaims>): string {
-      const normalized = validateClaims(claims);
-      const payload = encodeClaims(normalized);
-      return `${payload}.${signature(payload).toString('base64url')}`;
+    issue(claimsInput: Readonly<ObjectReadGrantTokenClaims>): string {
+      const claims = normalizeTokenClaims(claimsInput);
+      const payload = encodeTokenPayload(claims);
+      const signature = createHmac('sha256', options.signingKey)
+        .update(payload)
+        .digest('base64url');
+      return `${payload}.${signature}`;
     },
     verify(
       token: string,
-      expectation: Readonly<ReadGrantTokenExpectation>,
-    ): Readonly<ReadGrantTokenClaims> {
-      if (token.length > 4096 || !TOKEN_PATTERN.test(token)) {
-        throw new ReadGrantError('unauthenticated', 'invalid-read-grant-token', 401);
-      }
-      const [payload, providedSignature] = token.split('.');
-      if (payload === undefined || providedSignature === undefined) {
-        throw new ReadGrantError('unauthenticated', 'invalid-read-grant-token', 401);
-      }
-      let signatureBytes: Buffer;
+      expected: Readonly<ObjectReadGrantTokenExpectation> = {},
+    ): Readonly<ObjectReadGrantTokenClaims> {
+      if (typeof token !== 'string' || token.length < 32 || token.length > 4096) rejectToken();
+      const segments = token.split('.');
+      if (segments.length !== 2) rejectToken();
+      const payload = segments[0];
+      const supplied = segments[1];
+      if (payload === undefined || supplied === undefined) rejectToken();
+      const expectedSignature = createHmac('sha256', options.signingKey).update(payload).digest();
+      let suppliedBytes: Buffer;
       try {
-        signatureBytes = Buffer.from(providedSignature, 'base64url');
+        suppliedBytes = Buffer.from(supplied, 'base64url');
       } catch {
-        throw new ReadGrantError('unauthenticated', 'invalid-read-grant-token', 401);
+        rejectToken();
       }
-      const expectedSignature = signature(payload);
       if (
-        signatureBytes.byteLength !== expectedSignature.byteLength ||
-        !timingSafeEqual(signatureBytes, expectedSignature)
+        suppliedBytes.length !== expectedSignature.length ||
+        !timingSafeEqual(suppliedBytes, expectedSignature)
       ) {
-        throw new ReadGrantError('unauthenticated', 'invalid-read-grant-token', 401);
+        rejectToken();
       }
-      let decoded: unknown;
+      let parsed: unknown;
       try {
-        decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+        parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
       } catch {
-        throw new ReadGrantError('unauthenticated', 'invalid-read-grant-token', 401);
+        rejectToken();
       }
-      const claims = validateClaims(decoded);
-      if (
-        claims.tokenPurpose !== expectation.tokenPurpose ||
-        claims.storageObjectId !== expectation.storageObjectId ||
-        claims.callerAppId !== expectation.callerAppId ||
-        (claims.callerServiceId ?? '') !== expectation.callerServiceId ||
-        claims.contractVersion !== expectation.contractVersion ||
-        !claims.allowedMethods.includes(expectation.method) ||
-        (expectation.rangeRequested && !claims.allowRange)
-      ) {
-        throw new ReadGrantError('unauthorized', 'read-grant-scope-mismatch', 403);
-      }
-      if (new Date(claims.expiresAt).getTime() <= expectation.now.getTime()) {
-        throw new ReadGrantError('unauthenticated', 'read-grant-expired', 401);
+      const claims = normalizeTokenClaims(parsed);
+      assertExpectedToken(claims, expected);
+      const verificationTime = expected.now ?? now();
+      if (new Date(claims.expiresAt).getTime() <= verificationTime.getTime()) {
+        throw new ObjectReadGrantTokenError('object-read-grant-token-expired');
       }
       return claims;
     },
   });
 }
 
-export function readGrantTokenDigest(token: string): string {
+export function objectReadGrantTokenDigest(token: string): string {
+  if (typeof token !== 'string' || token.length < 32 || token.length > 4096) {
+    throw new ObjectReadGrantTokenError('invalid-object-read-grant-token');
+  }
   return createHash('sha256').update(token, 'utf8').digest('hex');
 }
 
-export interface ReadGrantSnapshot {
-  objectReadGrantId: string;
-  storageObjectId: string;
+export type ObjectReadGrantState = 'active' | 'revoked' | 'expired';
+
+export interface ObjectReadGrantSnapshot extends ReadGrantDeliveryAuthorization {
   managedAppId: string;
   callerAppId: string;
   callerServiceId?: string;
   appCorrelationReference: string;
   businessAuthorizationReference: string;
-  purpose: string;
-  allowedMethods: readonly ObjectReadMethod[];
-  allowRange: boolean;
-  disposition: ObjectReadDisposition;
-  fileName?: string;
   tokenDigest: string;
-  tokenPurpose: typeof READ_GRANT_TOKEN_PURPOSE;
+  tokenPurpose: typeof OBJECT_READ_GRANT_TOKEN_PURPOSE;
   state: ObjectReadGrantState;
-  expiresAt: string;
   revokedAt?: string;
   createdAt: string;
   updatedAt: string;
   rowVersion: number;
 }
 
-export interface ResolvedReadTarget {
-  providerRole: ReadProviderRole;
-  storageObjectCopyId: string;
-  providerId: string;
-  bucketLabel: string;
-  internalLocator: string;
-  normalizedPrefixPattern: string;
-  credentialSecretReferenceId: string;
-}
-
-export interface ReadDeliverySnapshot {
-  grant: ReadGrantSnapshot;
-  storageObjectId: string;
-  mediaType: string;
-  byteLength: number;
-  checksumSha256: string;
-  targets: Readonly<Partial<Record<ReadProviderRole, Readonly<ResolvedReadTarget>>>>;
-}
-
-export interface ReadGrantRegistry {
-  issue(input: {
-    request: Readonly<ReadGrantRequest>;
-    caller: Readonly<CallerIdentity>;
-    contractVersion: ContractVersion;
-    appCorrelationReference: string;
-    duplicateProtectionKey: string;
-    requestFingerprint: string;
-    candidateObjectReadGrantId: string;
-    candidateTokenDigest: string;
-    candidateExpiresAt: Date;
-  }): Promise<Readonly<{ grant: ReadGrantSnapshot; replayed: boolean }>>;
-  revoke(input: {
+export interface ObjectReadGrantRegistry {
+  execute<T>(input: {
+    scope: string;
+    key: string;
+    fingerprint: string;
+    operation: () => Promise<T>;
+  }): Promise<Readonly<{ replayed: boolean; value: T }>>;
+  createObjectReadGrant(input: {
     objectReadGrantId: string;
-    caller: Readonly<CallerIdentity>;
+    storageObjectId: string;
+    callerAppId: string;
+    callerServiceId?: string;
     appCorrelationReference: string;
-    duplicateProtectionKey: string;
-    requestFingerprint: string;
-  }): Promise<Readonly<{ grant: ReadGrantSnapshot; replayed: boolean }>>;
-  authorize(input: {
-    claims: Readonly<ReadGrantTokenClaims>;
+    businessAuthorizationReference: string;
+    purpose: string;
+    allowedMethods: readonly ObjectReadMethod[];
+    allowRange: boolean;
+    disposition: ObjectReadGrantDisposition;
+    fileName?: string;
     tokenDigest: string;
-    method: ObjectReadMethod;
-    rangeRequested: boolean;
-    caller: Readonly<CallerIdentity>;
-    now: Date;
-  }): Promise<Readonly<ReadDeliverySnapshot>>;
-  beginReadAttempt(input: {
-    snapshot: Readonly<ReadDeliverySnapshot>;
-    providerRole: ReadProviderRole;
-    attemptNumber: number;
-  }): Promise<string>;
-  finishReadAttempt(input: {
-    providerAttemptId: string;
-    succeeded: boolean;
-    retryable?: boolean;
-    observedByteLength?: number;
-    diagnostic?: Readonly<SafeDiagnostic>;
-  }): Promise<void>;
-  appendReadEvent(input: {
-    snapshot: Readonly<ReadDeliverySnapshot>;
-    eventType: string;
-    deliveryState?: 'hot' | 'canonical-fallback';
-    method: ObjectReadMethod;
-    rangeRequested: boolean;
-    diagnostic?: Readonly<SafeDiagnostic>;
-  }): Promise<void>;
+    expiresAt: Date;
+  }): Promise<Readonly<ObjectReadGrantSnapshot>>;
+  getObjectReadGrant(input: {
+    objectReadGrantId: string;
+    storageObjectId: string;
+    callerAppId: string;
+    callerServiceId?: string;
+    tokenDigest: string;
+  }): Promise<Readonly<ObjectReadGrantSnapshot> | null>;
+  revokeObjectReadGrant(input: {
+    objectReadGrantId: string;
+    callerAppId: string;
+    callerServiceId?: string;
+    appCorrelationReference: string;
+  }): Promise<Readonly<ObjectReadGrantSnapshot>>;
 }
 
-interface ReadGrantRow extends Record<string, unknown> {
+interface ObjectReadGrantRow extends Record<string, unknown> {
   object_read_grant_id: string;
   storage_object_id: string;
   managed_app_id: string;
@@ -448,10 +327,10 @@ interface ReadGrantRow extends Record<string, unknown> {
   purpose: string;
   allowed_methods: string[];
   range_allowed: boolean;
-  disposition: ObjectReadDisposition;
+  disposition: ObjectReadGrantDisposition;
   safe_file_name: string | null;
   read_grant_token_digest: string;
-  token_purpose: string;
+  token_purpose: typeof OBJECT_READ_GRANT_TOKEN_PURPOSE;
   state: ObjectReadGrantState;
   expires_at: Date | string;
   revoked_at: Date | string | null;
@@ -460,27 +339,18 @@ interface ReadGrantRow extends Record<string, unknown> {
   row_version: number;
 }
 
-interface ReadDeliveryRow extends ReadGrantRow {
-  registry_state: string;
-  verified_checksum_sha256: string | null;
-  verified_byte_length: string | number | null;
-  expected_content_type: string;
-  provider_role: ReadProviderRole;
-  storage_object_copy_id: string;
-  copy_state: string;
-  observed_checksum_sha256: string | null;
-  observed_byte_length: string | number | null;
-  internal_locator: string;
-  bucket_label: string;
-  provider_id: string;
-  provider_status: string;
-  secret_reference_id: string;
-  normalized_prefix_pattern: string;
+export interface PostgresObjectReadRegistryOptions {
+  pool: PostgresPoolLike;
+  now?: () => Date;
+  createId?: () => string;
+  idempotencyReservationTtlMs?: number;
 }
 
-function mapGrant(row: ReadGrantRow): Readonly<ReadGrantSnapshot> {
-  const methods = normalizeMethods(row.allowed_methods);
-  const result: ReadGrantSnapshot = {
+function mapGrantRow(row: ObjectReadGrantRow): Readonly<ObjectReadGrantSnapshot> {
+  const methods = normalizeAllowedMethods(row.allowed_methods, () => {
+    throw new Error('invalid-object-read-grant-methods');
+  });
+  const result: ObjectReadGrantSnapshot = {
     objectReadGrantId: row.object_read_grant_id,
     storageObjectId: row.storage_object_id,
     managedAppId: row.managed_app_id,
@@ -491,8 +361,8 @@ function mapGrant(row: ReadGrantRow): Readonly<ReadGrantSnapshot> {
     allowedMethods: methods,
     allowRange: row.range_allowed,
     disposition: row.disposition,
-    tokenDigest: requireSha256(row.read_grant_token_digest, 'read-grant-token-digest'),
-    tokenPurpose: READ_GRANT_TOKEN_PURPOSE,
+    tokenDigest: row.read_grant_token_digest,
+    tokenPurpose: row.token_purpose,
     state: row.state,
     expiresAt: asIso(row.expires_at),
     createdAt: asIso(row.created_at),
@@ -505,606 +375,1279 @@ function mapGrant(row: ReadGrantRow): Readonly<ReadGrantSnapshot> {
   return Object.freeze(result);
 }
 
-function callerService(caller: Readonly<CallerIdentity>): string {
-  return caller.serviceId ?? '';
-}
+const GRANT_SELECT = `SELECT grant.object_read_grant_id, grant.storage_object_id,
+       grant.managed_app_id, managed_app.app_id AS caller_app_id, grant.caller_service_id,
+       grant.app_correlation_ref, grant.business_authorization_ref, grant.purpose,
+       grant.allowed_methods, grant.range_allowed, grant.disposition, grant.safe_file_name,
+       grant.read_grant_token_digest, grant.token_purpose, grant.state, grant.expires_at,
+       grant.revoked_at, grant.created_at, grant.updated_at, grant.row_version
+  FROM public.object_read_grants AS grant
+  JOIN public.managed_apps AS managed_app ON managed_app.id = grant.managed_app_id`;
 
-function normalizeDatabaseError(error: unknown): never {
-  if (error instanceof ReadGrantError || error instanceof RuntimeStorageRegistryError) throw error;
-  throw new ReadGrantError('dependency-unavailable', 'read-grant-registry-unavailable', 503, true);
-}
-
-export interface PostgresReadGrantRegistryOptions {
-  pool: PostgresPoolLike;
-  now?: () => Date;
-  createId?: () => string;
-  idempotencyReservationTtlMs?: number;
-}
-
-export class PostgresReadGrantRegistry implements ReadGrantRegistry {
+export class PostgresObjectReadRegistry
+  implements ObjectReadGrantRegistry, ObjectReadDeliveryRegistry
+{
   readonly #scope: PostgresTransactionScope;
   readonly #now: () => Date;
   readonly #createId: () => string;
   readonly #idempotencyReservationTtlMs: number;
 
-  constructor(options: PostgresReadGrantRegistryOptions) {
+  constructor(options: PostgresObjectReadRegistryOptions) {
     this.#scope = new PostgresTransactionScope(options.pool);
     this.#now = options.now ?? (() => new Date());
     this.#createId = options.createId ?? randomUUID;
     this.#idempotencyReservationTtlMs = options.idempotencyReservationTtlMs ?? 5 * 60_000;
   }
 
-  async #readGrant(client: PostgresQueryable, objectReadGrantId: string): Promise<ReadGrantSnapshot> {
-    const result = await client.query<ReadGrantRow>(
-      `SELECT object_read_grant_id, storage_object_id, managed_app_id, caller_app_id,
-              caller_service_id, app_correlation_ref, business_authorization_ref, purpose,
-              allowed_methods, range_allowed, disposition, safe_file_name,
-              read_grant_token_digest, token_purpose, state, expires_at, revoked_at,
-              created_at, updated_at, row_version
-         FROM public.object_read_grants
-        WHERE object_read_grant_id = $1`,
-      [objectReadGrantId],
-    );
-    const row = result.rows[0];
-    if (row === undefined) throw new ReadGrantError('internal', 'read-grant-result-missing', 500);
-    return mapGrant(row);
-  }
-
-  async issue(input: {
-    request: Readonly<ReadGrantRequest>;
-    caller: Readonly<CallerIdentity>;
-    contractVersion: ContractVersion;
-    appCorrelationReference: string;
-    duplicateProtectionKey: string;
-    requestFingerprint: string;
-    candidateObjectReadGrantId: string;
-    candidateTokenDigest: string;
-    candidateExpiresAt: Date;
-  }): Promise<Readonly<{ grant: ReadGrantSnapshot; replayed: boolean }>> {
-    requireUuid(input.candidateObjectReadGrantId, 'object-read-grant-id');
-    requireSha256(input.candidateTokenDigest, 'read-grant-token-digest');
-    requireSha256(input.requestFingerprint, 'request-fingerprint');
-    const key = requireSafeIdentifier(input.duplicateProtectionKey, 'duplicate-protection-key');
-    try {
-      return await this.#scope.run(async (client) => {
-        const now = this.#now();
-        const objectResult = await client.query<{
-          storage_object_id: string;
-          managed_app_id: string;
-          registry_state: string;
-          verified_checksum_sha256: string | null;
-          verified_byte_length: string | number | null;
-          profile_status: string;
-          readable_copy_count: string | number;
-          head_capability_count: string | number;
-          get_capability_count: string | number;
-          range_capability_count: string | number;
-        }>(
-          `SELECT object_record.storage_object_id, object_record.managed_app_id,
-                  object_record.registry_state, object_record.verified_checksum_sha256,
-                  object_record.verified_byte_length, profile.status AS profile_status,
-                  COUNT(DISTINCT copy.storage_object_copy_id) FILTER (
-                    WHERE copy.copy_state = 'verified'
-                      AND copy.observed_checksum_sha256 = object_record.verified_checksum_sha256
-                      AND copy.observed_byte_length = object_record.verified_byte_length
-                  ) AS readable_copy_count,
-                  COUNT(DISTINCT binding.id) FILTER (
-                    WHERE capability.capability = 'head' AND capability.result = 'passed'
-                      AND (capability.expires_at IS NULL OR capability.expires_at > $3)
-                  ) AS head_capability_count,
-                  COUNT(DISTINCT binding.id) FILTER (
-                    WHERE capability.capability = 'get' AND capability.result = 'passed'
-                      AND (capability.expires_at IS NULL OR capability.expires_at > $3)
-                  ) AS get_capability_count,
-                  COUNT(DISTINCT binding.id) FILTER (
-                    WHERE capability.capability = 'range' AND capability.result = 'passed'
-                      AND (capability.expires_at IS NULL OR capability.expires_at > $3)
-                  ) AS range_capability_count
-             FROM public.storage_objects AS object_record
-             JOIN public.managed_apps AS app ON app.id = object_record.managed_app_id
-             JOIN public.storage_profiles AS profile ON profile.id = object_record.storage_profile_id
-             JOIN public.storage_prefix_classes AS prefix_class
-               ON prefix_class.id = object_record.storage_prefix_class_id
-             LEFT JOIN public.storage_object_copies AS copy
-               ON copy.storage_object_id = object_record.storage_object_id
-             LEFT JOIN public.storage_profile_provider_bindings AS binding
-               ON binding.id = copy.storage_profile_provider_binding_id
-             LEFT JOIN public.storage_capability_results AS capability
-               ON capability.storage_profile_id = object_record.storage_profile_id
-              AND capability.storage_provider_id = binding.storage_provider_id
-              AND capability.bucket_label = binding.bucket_label
-              AND capability.prefix_class_id = prefix_class.prefix_class_id
-            WHERE object_record.storage_object_id = $1
-              AND app.app_id = $2
-            GROUP BY object_record.storage_object_id, object_record.managed_app_id,
-                     object_record.registry_state, object_record.verified_checksum_sha256,
-                     object_record.verified_byte_length, profile.status`,
-          [input.request.storageObjectId, input.caller.appId, now],
+  async execute<T>(input: {
+    scope: string;
+    key: string;
+    fingerprint: string;
+    operation: () => Promise<T>;
+  }): Promise<Readonly<{ replayed: boolean; value: T }>> {
+    const parsedScope = parseDuplicateScope(input.scope);
+    const key = requireSafeIdentifier(input.key, 'duplicate-protection-key');
+    const requestFingerprint = requireSha256(input.fingerprint, 'request-fingerprint');
+    return this.#scope.run(async (client) => {
+      const now = this.#now();
+      const expiresAt = new Date(now.getTime() + this.#idempotencyReservationTtlMs);
+      const recordId = this.#createId();
+      const inserted = await client.query<{ id: string }>(
+        `INSERT INTO public.storage_idempotency_records (
+           id, caller_app_id, caller_service_id, operation_scope, idempotency_key,
+           request_fingerprint, state, expires_at, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, 'in_progress', $7, $8, $8)
+         ON CONFLICT (caller_app_id, caller_service_id, operation_scope, idempotency_key)
+         DO NOTHING
+         RETURNING id`,
+        [
+          recordId,
+          parsedScope.callerAppId,
+          parsedScope.callerServiceId,
+          parsedScope.operationScope,
+          key,
+          requestFingerprint,
+          expiresAt,
+          now,
+        ],
+      );
+      const existing = await client.query<{
+        request_fingerprint: string;
+        state: 'in_progress' | 'succeeded' | 'failed';
+        result_kind: string | null;
+        result_reference_id: string | null;
+        result_storage_object_id: string | null;
+        expires_at: Date | string;
+      }>(
+        `SELECT request_fingerprint, state, result_kind, result_reference_id,
+                result_storage_object_id, expires_at
+           FROM public.storage_idempotency_records
+          WHERE caller_app_id = $1 AND caller_service_id = $2
+            AND operation_scope = $3 AND idempotency_key = $4
+          FOR UPDATE`,
+        [parsedScope.callerAppId, parsedScope.callerServiceId, parsedScope.operationScope, key],
+      );
+      const row = existing.rows[0];
+      if (row === undefined) throw registryError('internal', 'idempotency-record-missing', 500);
+      if (row.request_fingerprint !== requestFingerprint) {
+        throw registryError('duplicate-conflict', 'idempotency-key-reused', 409);
+      }
+      if (inserted.rowCount === 0 && row.state === 'succeeded') {
+        if (row.result_kind === null || row.result_reference_id === null) {
+          throw registryError('internal', 'idempotency-result-missing', 500);
+        }
+        const decoded = await this.#decodeResult(
+          client,
+          row.result_kind,
+          row.result_reference_id,
+          row.result_storage_object_id,
         );
-        const object = objectResult.rows[0];
-        const requiresHead = input.request.allowedMethods.includes('HEAD');
-        const requiresGet = input.request.allowedMethods.includes('GET');
-        if (
-          object === undefined ||
-          (object.registry_state !== 'active' && object.registry_state !== 'degraded') ||
-          object.verified_checksum_sha256 === null ||
-          object.verified_byte_length === null ||
-          object.profile_status !== 'active' ||
-          asNumber(object.readable_copy_count) < 1 ||
-          (requiresHead && asNumber(object.head_capability_count) < 1) ||
-          (requiresGet && asNumber(object.get_capability_count) < 1) ||
-          (input.request.allowRange && asNumber(object.range_capability_count) < 1)
-        ) {
-          throw new ReadGrantError('not-ready', 'storage-object-not-readable', 409);
-        }
-
-        const idempotencyExpiry = new Date(now.getTime() + this.#idempotencyReservationTtlMs);
-        const inserted = await client.query<{ id: string }>(
-          `INSERT INTO public.storage_idempotency_records (
-             id, caller_app_id, caller_service_id, operation_scope, idempotency_key,
-             request_fingerprint, state, expires_at, created_at, updated_at
-           ) VALUES ($1, $2, $3, 'object-read-grant', $4, $5, 'in_progress', $6, $7, $7)
-           ON CONFLICT (caller_app_id, caller_service_id, operation_scope, idempotency_key)
-           DO NOTHING RETURNING id`,
-          [
-            this.#createId(),
-            input.caller.appId,
-            callerService(input.caller),
-            key,
-            input.requestFingerprint,
-            idempotencyExpiry,
-            now,
-          ],
+        return Object.freeze({ replayed: true, value: decoded as T });
+      }
+      if (inserted.rowCount === 0 && row.state === 'in_progress' && new Date(row.expires_at) > now) {
+        throw registryError(
+          'duplicate-conflict',
+          'idempotency-request-in-progress',
+          409,
+          true,
         );
-        const existing = await client.query<{
-          request_fingerprint: string;
-          state: string;
-          result_kind: string | null;
-          result_reference_id: string | null;
-          expires_at: Date | string;
-        }>(
-          `SELECT request_fingerprint, state, result_kind, result_reference_id, expires_at
-             FROM public.storage_idempotency_records
-            WHERE caller_app_id = $1 AND caller_service_id = $2
-              AND operation_scope = 'object-read-grant' AND idempotency_key = $3
-            FOR UPDATE`,
-          [input.caller.appId, callerService(input.caller), key],
-        );
-        const duplicate = existing.rows[0];
-        if (duplicate === undefined) {
-          throw new ReadGrantError('internal', 'idempotency-record-missing', 500);
-        }
-        if (duplicate.request_fingerprint !== input.requestFingerprint) {
-          throw new ReadGrantError('duplicate-conflict', 'idempotency-key-reused', 409);
-        }
-        if (
-          inserted.rowCount === 0 &&
-          duplicate.state === 'succeeded' &&
-          duplicate.result_kind === 'object-read-grant' &&
-          duplicate.result_reference_id !== null
-        ) {
-          return Object.freeze({
-            grant: await this.#readGrant(client, duplicate.result_reference_id),
-            replayed: true,
-          });
-        }
-        if (
-          inserted.rowCount === 0 &&
-          duplicate.state === 'in_progress' &&
-          new Date(duplicate.expires_at) > now
-        ) {
-          throw new ReadGrantError(
-            'duplicate-conflict',
-            'idempotency-request-in-progress',
-            409,
-            true,
-          );
-        }
-        if (inserted.rowCount === 0) {
-          await client.query(
-            `UPDATE public.storage_idempotency_records
-                SET state = 'in_progress', result_kind = NULL, result_reference_id = NULL,
-                    result_storage_object_id = NULL, expires_at = $4, updated_at = $5
-              WHERE caller_app_id = $1 AND caller_service_id = $2
-                AND operation_scope = 'object-read-grant' AND idempotency_key = $3`,
-            [
-              input.caller.appId,
-              callerService(input.caller),
-              key,
-              idempotencyExpiry,
-              now,
-            ],
-          );
-        }
-
-        await client.query(
-          `INSERT INTO public.object_read_grants (
-             object_read_grant_id, storage_object_id, managed_app_id, caller_service_id,
-             app_correlation_ref, business_authorization_ref, purpose, allowed_methods,
-             range_allowed, disposition, safe_file_name, read_grant_token_digest,
-             token_purpose, state, expires_at, created_at, updated_at
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9, $10, $11, $12,
-                     $13, 'active', $14, $15, $15)`,
-          [
-            input.candidateObjectReadGrantId,
-            input.request.storageObjectId,
-            object.managed_app_id,
-            input.caller.serviceId ?? null,
-            input.appCorrelationReference,
-            input.request.businessAuthorizationReference,
-            input.request.purpose,
-            [...input.request.allowedMethods],
-            input.request.allowRange,
-            input.request.disposition,
-            input.request.fileName ?? null,
-            input.candidateTokenDigest,
-            READ_GRANT_TOKEN_PURPOSE,
-            input.candidateExpiresAt,
-            now,
-          ],
-        );
+      }
+      if (inserted.rowCount === 0) {
         await client.query(
           `UPDATE public.storage_idempotency_records
-              SET state = 'succeeded', result_kind = 'object-read-grant',
-                  result_reference_id = $4, result_storage_object_id = $5, updated_at = $6
+              SET state = 'in_progress', result_kind = NULL, result_reference_id = NULL,
+                  result_storage_object_id = NULL, expires_at = $5, updated_at = $6
             WHERE caller_app_id = $1 AND caller_service_id = $2
-              AND operation_scope = 'object-read-grant' AND idempotency_key = $3`,
+              AND operation_scope = $3 AND idempotency_key = $4`,
           [
-            input.caller.appId,
-            callerService(input.caller),
+            parsedScope.callerAppId,
+            parsedScope.callerServiceId,
+            parsedScope.operationScope,
             key,
-            input.candidateObjectReadGrantId,
-            input.request.storageObjectId,
+            expiresAt,
             now,
           ],
         );
-        return Object.freeze({
-          grant: await this.#readGrant(client, input.candidateObjectReadGrantId),
-          replayed: false,
-        });
-      });
-    } catch (error) {
-      return normalizeDatabaseError(error);
-    }
+      }
+      const value = await input.operation();
+      const reference = this.#encodeResult(value);
+      await client.query(
+        `UPDATE public.storage_idempotency_records
+            SET state = 'succeeded', result_kind = $5, result_reference_id = $6,
+                result_storage_object_id = $7, updated_at = $8
+          WHERE caller_app_id = $1 AND caller_service_id = $2
+            AND operation_scope = $3 AND idempotency_key = $4`,
+        [
+          parsedScope.callerAppId,
+          parsedScope.callerServiceId,
+          parsedScope.operationScope,
+          key,
+          reference.resultKind,
+          reference.resultReferenceId,
+          reference.storageObjectId,
+          now,
+        ],
+      );
+      return Object.freeze({ replayed: false, value });
+    });
   }
 
-  async revoke(input: {
+  #encodeResult(value: unknown): {
+    resultKind: 'object-read-grant' | 'object-read-grant-revocation';
+    resultReferenceId: string;
+    storageObjectId: string;
+  } {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw registryError('internal', 'invalid-idempotency-result', 500);
+    }
+    const record = value as Record<string, unknown>;
+    const resultReferenceId = requireUuid(
+      typeof record.objectReadGrantId === 'string' ? record.objectReadGrantId : '',
+      'duplicate-result-read-grant',
+    );
+    const storageObjectId = requireUuid(
+      typeof record.storageObjectId === 'string' ? record.storageObjectId : '',
+      'duplicate-result-storage-object',
+    );
+    const state = record.state;
+    if (state !== 'active' && state !== 'revoked' && state !== 'expired') {
+      throw registryError('internal', 'unsupported-idempotency-result', 500);
+    }
+    return {
+      resultKind: state === 'active' ? 'object-read-grant' : 'object-read-grant-revocation',
+      resultReferenceId,
+      storageObjectId,
+    };
+  }
+
+  async #decodeResult(
+    client: PostgresQueryable,
+    resultKind: string,
+    resultReferenceId: string,
+    storageObjectId: string | null,
+  ): Promise<Readonly<ObjectReadGrantSnapshot>> {
+    if (resultKind !== 'object-read-grant' && resultKind !== 'object-read-grant-revocation') {
+      throw registryError('internal', 'unsupported-idempotency-result-kind', 500);
+    }
+    const grantId = requireUuid(resultReferenceId, 'duplicate-result-read-grant');
+    const objectId = requireUuid(storageObjectId ?? '', 'duplicate-result-storage-object');
+    const result = await client.query<ObjectReadGrantRow>(
+      `${GRANT_SELECT}
+        WHERE grant.object_read_grant_id = $1 AND grant.storage_object_id = $2`,
+      [grantId, objectId],
+    );
+    const row = result.rows[0];
+    if (row === undefined) throw registryError('internal', 'idempotency-result-missing', 500);
+    const snapshot = mapGrantRow(row);
+    if (
+      resultKind === 'object-read-grant' &&
+      (snapshot.state !== 'active' || new Date(snapshot.expiresAt) <= this.#now())
+    ) {
+      throw registryError('duplicate-conflict', 'object-read-grant-replay-not-active', 409);
+    }
+    return snapshot;
+  }
+
+  async createObjectReadGrant(input: {
     objectReadGrantId: string;
-    caller: Readonly<CallerIdentity>;
+    storageObjectId: string;
+    callerAppId: string;
+    callerServiceId?: string;
     appCorrelationReference: string;
-    duplicateProtectionKey: string;
-    requestFingerprint: string;
-  }): Promise<Readonly<{ grant: ReadGrantSnapshot; replayed: boolean }>> {
-    requireUuid(input.objectReadGrantId, 'object-read-grant-id');
-    requireSha256(input.requestFingerprint, 'request-fingerprint');
-    const key = requireSafeIdentifier(input.duplicateProtectionKey, 'duplicate-protection-key');
-    try {
-      return await this.#scope.run(async (client) => {
-        const now = this.#now();
-        const result = await client.query<ReadGrantRow>(
-          `SELECT grant.object_read_grant_id, grant.storage_object_id, grant.managed_app_id,
-                  app.app_id AS caller_app_id, grant.caller_service_id,
-                  grant.app_correlation_ref, grant.business_authorization_ref, grant.purpose,
-                  grant.allowed_methods, grant.range_allowed, grant.disposition,
-                  grant.safe_file_name, grant.read_grant_token_digest, grant.token_purpose,
-                  grant.state, grant.expires_at, grant.revoked_at, grant.created_at,
-                  grant.updated_at, grant.row_version
-             FROM public.object_read_grants AS grant
-             JOIN public.managed_apps AS app ON app.id = grant.managed_app_id
-            WHERE grant.object_read_grant_id = $1
-              AND app.app_id = $2
-              AND COALESCE(grant.caller_service_id, '') = $3
-            FOR UPDATE OF grant`,
-          [input.objectReadGrantId, input.caller.appId, callerService(input.caller)],
-        );
-        const row = result.rows[0];
-        if (row === undefined) {
-          throw new ReadGrantError('unauthorized', 'read-grant-not-found', 404);
-        }
-        if (row.state === 'active' && new Date(row.expires_at) <= now) {
-          await client.query(
-            `UPDATE public.object_read_grants
-                SET state = 'expired', updated_at = $2, row_version = row_version + 1
-              WHERE object_read_grant_id = $1 AND state = 'active'`,
-            [input.objectReadGrantId, now],
-          );
-        } else if (row.state === 'active') {
-          await client.query(
-            `UPDATE public.object_read_grants
-                SET state = 'revoked', revoked_at = $2, updated_at = $2,
-                    row_version = row_version + 1
-              WHERE object_read_grant_id = $1 AND state = 'active'`,
-            [input.objectReadGrantId, now],
-          );
-        }
-
-        const idempotencyExpiry = new Date(now.getTime() + this.#idempotencyReservationTtlMs);
-        const inserted = await client.query<{ id: string }>(
-          `INSERT INTO public.storage_idempotency_records (
-             id, caller_app_id, caller_service_id, operation_scope, idempotency_key,
-             request_fingerprint, state, result_kind, result_reference_id,
-             result_storage_object_id, expires_at, created_at, updated_at
-           ) VALUES ($1, $2, $3, 'object-read-grant-revoke', $4, $5, 'succeeded',
-                     'object-read-grant-revoke', $6, $7, $8, $9, $9)
-           ON CONFLICT (caller_app_id, caller_service_id, operation_scope, idempotency_key)
-           DO NOTHING RETURNING id`,
-          [
-            this.#createId(),
-            input.caller.appId,
-            callerService(input.caller),
-            key,
-            input.requestFingerprint,
-            input.objectReadGrantId,
-            row.storage_object_id,
-            idempotencyExpiry,
-            now,
-          ],
-        );
-        const duplicate = await client.query<{
-          request_fingerprint: string;
-          result_reference_id: string | null;
-        }>(
-          `SELECT request_fingerprint, result_reference_id
-             FROM public.storage_idempotency_records
-            WHERE caller_app_id = $1 AND caller_service_id = $2
-              AND operation_scope = 'object-read-grant-revoke' AND idempotency_key = $3`,
-          [input.caller.appId, callerService(input.caller), key],
-        );
-        const duplicateRow = duplicate.rows[0];
-        if (duplicateRow === undefined) {
-          throw new ReadGrantError('internal', 'idempotency-record-missing', 500);
-        }
-        if (
-          duplicateRow.request_fingerprint !== input.requestFingerprint ||
-          duplicateRow.result_reference_id !== input.objectReadGrantId
-        ) {
-          throw new ReadGrantError('duplicate-conflict', 'idempotency-key-reused', 409);
-        }
-        return Object.freeze({
-          grant: await this.#readGrant(client, input.objectReadGrantId),
-          replayed: inserted.rowCount === 0,
-        });
-      });
-    } catch (error) {
-      return normalizeDatabaseError(error);
-    }
-  }
-
-  async authorize(input: {
-    claims: Readonly<ReadGrantTokenClaims>;
+    businessAuthorizationReference: string;
+    purpose: string;
+    allowedMethods: readonly ObjectReadMethod[];
+    allowRange: boolean;
+    disposition: ObjectReadGrantDisposition;
+    fileName?: string;
     tokenDigest: string;
-    method: ObjectReadMethod;
-    rangeRequested: boolean;
-    caller: Readonly<CallerIdentity>;
-    now: Date;
-  }): Promise<Readonly<ReadDeliverySnapshot>> {
+    expiresAt: Date;
+  }): Promise<Readonly<ObjectReadGrantSnapshot>> {
+    requireUuid(input.objectReadGrantId, 'object-read-grant-id');
+    requireUuid(input.storageObjectId, 'storage-object-id');
     requireSha256(input.tokenDigest, 'read-grant-token-digest');
-    try {
-      return await this.#scope.run(async (client) => {
-        await client.query(
-          `UPDATE public.object_read_grants
-              SET state = 'expired', updated_at = $2, row_version = row_version + 1
-            WHERE object_read_grant_id = $1 AND state = 'active' AND expires_at <= $2`,
-          [input.claims.objectReadGrantId, input.now],
-        );
-        const result = await client.query<ReadDeliveryRow>(
-          `SELECT grant.object_read_grant_id, grant.storage_object_id, grant.managed_app_id,
-                  app.app_id AS caller_app_id, grant.caller_service_id,
-                  grant.app_correlation_ref, grant.business_authorization_ref, grant.purpose,
-                  grant.allowed_methods, grant.range_allowed, grant.disposition,
-                  grant.safe_file_name, grant.read_grant_token_digest, grant.token_purpose,
-                  grant.state, grant.expires_at, grant.revoked_at, grant.created_at,
-                  grant.updated_at, grant.row_version, object_record.registry_state,
-                  object_record.verified_checksum_sha256, object_record.verified_byte_length,
-                  object_record.expected_content_type, copy.provider_role,
-                  copy.storage_object_copy_id, copy.copy_state,
-                  copy.observed_checksum_sha256, copy.observed_byte_length,
-                  copy.internal_locator, binding.bucket_label, provider.provider_id,
-                  provider.status AS provider_status, provider.secret_reference_id,
-                  prefix_class.normalized_prefix_pattern
-             FROM public.object_read_grants AS grant
-             JOIN public.managed_apps AS app ON app.id = grant.managed_app_id
-             JOIN public.storage_objects AS object_record
-               ON object_record.storage_object_id = grant.storage_object_id
-             JOIN public.storage_prefix_classes AS prefix_class
-               ON prefix_class.id = object_record.storage_prefix_class_id
-             JOIN public.storage_object_copies AS copy
-               ON copy.storage_object_id = object_record.storage_object_id
-             JOIN public.storage_profile_provider_bindings AS binding
-               ON binding.id = copy.storage_profile_provider_binding_id
-             JOIN public.storage_providers AS provider
-               ON provider.id = binding.storage_provider_id
-            WHERE grant.object_read_grant_id = $1
-            ORDER BY copy.provider_role DESC`,
-          [input.claims.objectReadGrantId],
-        );
-        const first = result.rows[0];
-        if (first === undefined) {
-          throw new ReadGrantError('unauthorized', 'read-grant-not-found', 404);
-        }
-        const grant = mapGrant(first);
-        if (
-          grant.state !== 'active' ||
-          new Date(grant.expiresAt) <= input.now ||
-          grant.tokenDigest !== input.tokenDigest
-        ) {
-          throw new ReadGrantError('unauthenticated', 'read-grant-inactive', 401);
-        }
-        if (
-          grant.objectReadGrantId !== input.claims.objectReadGrantId ||
-          grant.storageObjectId !== input.claims.storageObjectId ||
-          grant.callerAppId !== input.caller.appId ||
-          (grant.callerServiceId ?? '') !== callerService(input.caller) ||
-          grant.purpose !== input.claims.purpose ||
-          grant.allowRange !== input.claims.allowRange ||
-          grant.expiresAt !== input.claims.expiresAt ||
-          JSON.stringify(grant.allowedMethods) !== JSON.stringify(input.claims.allowedMethods) ||
-          !grant.allowedMethods.includes(input.method) ||
-          (input.rangeRequested && !grant.allowRange)
-        ) {
-          throw new ReadGrantError('unauthorized', 'read-grant-scope-mismatch', 403);
-        }
-        if (
-          (first.registry_state !== 'active' && first.registry_state !== 'degraded') ||
-          first.verified_checksum_sha256 === null ||
-          first.verified_byte_length === null
-        ) {
-          throw new ReadGrantError('not-ready', 'storage-object-not-readable', 409);
-        }
-        const verifiedLength = asNumber(first.verified_byte_length);
-        const targets: Partial<Record<ReadProviderRole, Readonly<ResolvedReadTarget>>> = {};
-        for (const row of result.rows) {
-          if (
-            row.copy_state !== 'verified' ||
-            row.provider_status !== 'active' ||
-            row.observed_checksum_sha256 !== first.verified_checksum_sha256 ||
-            row.observed_byte_length === null ||
-            asNumber(row.observed_byte_length) !== verifiedLength
-          ) {
-            continue;
-          }
-          targets[row.provider_role] = Object.freeze({
-            providerRole: row.provider_role,
-            storageObjectCopyId: row.storage_object_copy_id,
-            providerId: row.provider_id,
-            bucketLabel: row.bucket_label,
-            internalLocator: row.internal_locator,
-            normalizedPrefixPattern: row.normalized_prefix_pattern,
-            credentialSecretReferenceId: row.secret_reference_id,
-          });
-        }
-        if (targets.hot === undefined && targets.canonical === undefined) {
-          throw new ReadGrantError('not-ready', 'verified-read-copy-unavailable', 503, true);
-        }
-        return Object.freeze({
-          grant,
-          storageObjectId: grant.storageObjectId,
-          mediaType: first.expected_content_type,
-          byteLength: verifiedLength,
-          checksumSha256: first.verified_checksum_sha256,
-          targets: Object.freeze(targets),
-        });
+    return this.#scope.run(async (client) => {
+      const authority = await client.query<{
+        managed_app_id: string;
+        caller_app_id: string;
+        managed_app_status: string;
+        profile_status: string;
+        registry_state: string;
+        verified_checksum_sha256: string | null;
+        verified_byte_length: string | number | null;
+        usable_copy_count: string | number;
+      }>(
+        `SELECT object_record.managed_app_id, managed_app.app_id AS caller_app_id,
+                managed_app.status AS managed_app_status, profile.status AS profile_status,
+                object_record.registry_state, object_record.verified_checksum_sha256,
+                object_record.verified_byte_length,
+                (SELECT count(*) FROM public.storage_object_copies AS copy
+                  WHERE copy.storage_object_id = object_record.storage_object_id
+                    AND copy.copy_state = 'verified'
+                    AND copy.observed_checksum_sha256 = object_record.verified_checksum_sha256
+                    AND copy.observed_byte_length = object_record.verified_byte_length) AS usable_copy_count
+           FROM public.storage_objects AS object_record
+           JOIN public.managed_apps AS managed_app ON managed_app.id = object_record.managed_app_id
+           JOIN public.storage_profiles AS profile ON profile.id = object_record.storage_profile_id
+          WHERE object_record.storage_object_id = $1
+          FOR SHARE OF object_record, managed_app, profile`,
+        [input.storageObjectId],
+      );
+      const row = authority.rows[0];
+      if (row === undefined) throw registryError('not-ready', 'storage-object-not-found', 404);
+      if (row.caller_app_id !== input.callerAppId) {
+        throw registryError('unauthorized', 'storage-object-scope-mismatch', 403);
+      }
+      if (row.managed_app_status !== 'active' || row.profile_status !== 'active') {
+        throw registryError('not-ready', 'storage-profile-not-ready', 503, true);
+      }
+      if (row.registry_state !== 'active' && row.registry_state !== 'degraded') {
+        throw registryError('not-ready', 'storage-object-not-ready', 409, true);
+      }
+      if (
+        row.verified_checksum_sha256 === null ||
+        row.verified_byte_length === null ||
+        asNumber(row.usable_copy_count) < 1
+      ) {
+        throw registryError('not-ready', 'storage-object-unverified', 409);
+      }
+      const now = this.#now();
+      await client.query(
+        `INSERT INTO public.object_read_grants (
+           object_read_grant_id, storage_object_id, managed_app_id, caller_service_id,
+           app_correlation_ref, business_authorization_ref, purpose, allowed_methods,
+           range_allowed, disposition, safe_file_name, read_grant_token_digest,
+           token_purpose, state, expires_at, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9, $10, $11, $12,
+                   $13, 'active', $14, $15, $15)`,
+        [
+          input.objectReadGrantId,
+          input.storageObjectId,
+          row.managed_app_id,
+          input.callerServiceId ?? null,
+          input.appCorrelationReference,
+          input.businessAuthorizationReference,
+          input.purpose,
+          input.allowedMethods,
+          input.allowRange,
+          input.disposition,
+          input.fileName ?? null,
+          input.tokenDigest,
+          OBJECT_READ_GRANT_TOKEN_PURPOSE,
+          input.expiresAt,
+          now,
+        ],
+      );
+      await this.#insertEvent(client, {
+        eventType: 'object-read-grant-issued',
+        dedupeKey: `object-read-grant-issued:${input.objectReadGrantId}`,
+        managedAppId: row.managed_app_id,
+        ...(input.callerServiceId === undefined ? {} : { callerServiceId: input.callerServiceId }),
+        storageObjectId: input.storageObjectId,
+        appCorrelationReference: input.appCorrelationReference,
+        payload: Object.freeze({
+          objectReadGrantId: input.objectReadGrantId,
+          allowedMethods: input.allowedMethods,
+          rangeAllowed: input.allowRange,
+          state: 'active',
+        }),
+        occurredAt: now,
       });
-    } catch (error) {
-      return normalizeDatabaseError(error);
-    }
+      return this.#readGrant(client, input.objectReadGrantId);
+    });
   }
 
-  async beginReadAttempt(input: {
-    snapshot: Readonly<ReadDeliverySnapshot>;
-    providerRole: ReadProviderRole;
-    attemptNumber: number;
-  }): Promise<string> {
-    const target = input.snapshot.targets[input.providerRole];
-    if (target === undefined) {
-      throw new ReadGrantError('internal', 'read-target-missing', 500);
-    }
+  async getObjectReadGrant(input: {
+    objectReadGrantId: string;
+    storageObjectId: string;
+    callerAppId: string;
+    callerServiceId?: string;
+    tokenDigest: string;
+  }): Promise<Readonly<ObjectReadGrantSnapshot> | null> {
+    requireUuid(input.objectReadGrantId, 'object-read-grant-id');
+    requireUuid(input.storageObjectId, 'storage-object-id');
+    requireSha256(input.tokenDigest, 'read-grant-token-digest');
+    return this.#scope.run(async (client) => {
+      const now = this.#now();
+      await client.query(
+        `UPDATE public.object_read_grants
+            SET state = 'expired', updated_at = $2, row_version = row_version + 1
+          WHERE object_read_grant_id = $1 AND state = 'active' AND expires_at <= $2`,
+        [input.objectReadGrantId, now],
+      );
+      const result = await client.query<ObjectReadGrantRow>(
+        `${GRANT_SELECT}
+          WHERE grant.object_read_grant_id = $1
+            AND grant.storage_object_id = $2
+            AND managed_app.app_id = $3
+            AND COALESCE(grant.caller_service_id, '') = $4
+            AND grant.read_grant_token_digest = $5`,
+        [
+          input.objectReadGrantId,
+          input.storageObjectId,
+          input.callerAppId,
+          input.callerServiceId ?? '',
+          input.tokenDigest,
+        ],
+      );
+      const row = result.rows[0];
+      return row === undefined ? null : mapGrantRow(row);
+    });
+  }
+
+  async revokeObjectReadGrant(input: {
+    objectReadGrantId: string;
+    callerAppId: string;
+    callerServiceId?: string;
+    appCorrelationReference: string;
+  }): Promise<Readonly<ObjectReadGrantSnapshot>> {
+    requireUuid(input.objectReadGrantId, 'object-read-grant-id');
+    return this.#scope.run(async (client) => {
+      const currentResult = await client.query<ObjectReadGrantRow>(
+        `${GRANT_SELECT}
+          WHERE grant.object_read_grant_id = $1
+          FOR UPDATE OF grant`,
+        [input.objectReadGrantId],
+      );
+      const currentRow = currentResult.rows[0];
+      if (
+        currentRow === undefined ||
+        currentRow.caller_app_id !== input.callerAppId ||
+        (currentRow.caller_service_id ?? '') !== (input.callerServiceId ?? '')
+      ) {
+        throw registryError('unauthorized', 'object-read-grant-scope-mismatch', 403);
+      }
+      const current = mapGrantRow(currentRow);
+      if (current.state !== 'active') return current;
+      const now = this.#now();
+      const expired = new Date(current.expiresAt) <= now;
+      const nextState: 'expired' | 'revoked' = expired ? 'expired' : 'revoked';
+      const update = await client.query(
+        `UPDATE public.object_read_grants
+            SET state = $2, revoked_at = CASE WHEN $2 = 'revoked' THEN $3 ELSE NULL END,
+                updated_at = $3, row_version = row_version + 1
+          WHERE object_read_grant_id = $1 AND state = 'active' AND row_version = $4`,
+        [input.objectReadGrantId, nextState, now, current.rowVersion],
+      );
+      if (update.rowCount !== 1) {
+        throw registryError('duplicate-conflict', 'object-read-grant-version-conflict', 409);
+      }
+      await this.#insertEvent(client, {
+        eventType: nextState === 'revoked' ? 'object-read-grant-revoked' : 'object-read-grant-expired',
+        dedupeKey: `object-read-grant-${nextState}:${input.objectReadGrantId}`,
+        managedAppId: current.managedAppId,
+        ...(input.callerServiceId === undefined ? {} : { callerServiceId: input.callerServiceId }),
+        storageObjectId: current.storageObjectId,
+        appCorrelationReference: input.appCorrelationReference,
+        payload: Object.freeze({
+          objectReadGrantId: input.objectReadGrantId,
+          state: nextState,
+        }),
+        occurredAt: now,
+      });
+      return this.#readGrant(client, input.objectReadGrantId);
+    });
+  }
+
+  async getObjectReadDeliverySnapshot(input: {
+    storageObjectId: string;
+    callerAppId: string;
+    callerServiceId?: string;
+  }): Promise<Readonly<ObjectReadDeliverySnapshot> | null> {
+    requireUuid(input.storageObjectId, 'storage-object-id');
+    return this.#scope.run(async (client) => {
+      const result = await client.query<{
+        storage_object_id: string;
+        caller_app_id: string;
+        registry_state: ObjectReadDeliverySnapshot['registryState'];
+        object_protection_stage: string;
+        verified_checksum_sha256: string | null;
+        verified_byte_length: string | number | null;
+        expected_content_type: string;
+        hot_storage_object_copy_id: string;
+        hot_copy_state: ObjectReadDeliverySnapshot['copies']['hot']['state'];
+        hot_observed_checksum_sha256: string | null;
+        hot_observed_byte_length: string | number | null;
+        hot_latest_verified_at: Date | string | null;
+        hot_provider_id: string;
+        hot_bucket_label: string;
+        hot_internal_locator: string;
+        hot_secret_reference_id: string;
+        canonical_storage_object_copy_id: string;
+        canonical_copy_state: ObjectReadDeliverySnapshot['copies']['canonical']['state'];
+        canonical_observed_checksum_sha256: string | null;
+        canonical_observed_byte_length: string | number | null;
+        canonical_latest_verified_at: Date | string | null;
+        canonical_provider_id: string;
+        canonical_bucket_label: string;
+        canonical_internal_locator: string;
+        canonical_secret_reference_id: string;
+      }>(
+        `SELECT object_record.storage_object_id, managed_app.app_id AS caller_app_id,
+                object_record.registry_state, object_record.object_protection_stage,
+                object_record.verified_checksum_sha256, object_record.verified_byte_length,
+                object_record.expected_content_type,
+                hot_copy.storage_object_copy_id AS hot_storage_object_copy_id,
+                hot_copy.copy_state AS hot_copy_state,
+                hot_copy.observed_checksum_sha256 AS hot_observed_checksum_sha256,
+                hot_copy.observed_byte_length AS hot_observed_byte_length,
+                hot_copy.latest_verified_at AS hot_latest_verified_at,
+                hot_provider.provider_id AS hot_provider_id,
+                hot_binding.bucket_label AS hot_bucket_label,
+                hot_copy.internal_locator AS hot_internal_locator,
+                hot_provider.secret_reference_id AS hot_secret_reference_id,
+                canonical_copy.storage_object_copy_id AS canonical_storage_object_copy_id,
+                canonical_copy.copy_state AS canonical_copy_state,
+                canonical_copy.observed_checksum_sha256 AS canonical_observed_checksum_sha256,
+                canonical_copy.observed_byte_length AS canonical_observed_byte_length,
+                canonical_copy.latest_verified_at AS canonical_latest_verified_at,
+                canonical_provider.provider_id AS canonical_provider_id,
+                canonical_binding.bucket_label AS canonical_bucket_label,
+                canonical_copy.internal_locator AS canonical_internal_locator,
+                canonical_provider.secret_reference_id AS canonical_secret_reference_id
+           FROM public.storage_objects AS object_record
+           JOIN public.managed_apps AS managed_app ON managed_app.id = object_record.managed_app_id
+           JOIN public.storage_object_copies AS hot_copy
+             ON hot_copy.storage_object_id = object_record.storage_object_id
+            AND hot_copy.provider_role = 'hot'
+           JOIN public.storage_profile_provider_bindings AS hot_binding
+             ON hot_binding.id = hot_copy.storage_profile_provider_binding_id
+           JOIN public.storage_providers AS hot_provider
+             ON hot_provider.id = hot_binding.storage_provider_id AND hot_provider.status = 'active'
+           JOIN public.storage_object_copies AS canonical_copy
+             ON canonical_copy.storage_object_id = object_record.storage_object_id
+            AND canonical_copy.provider_role = 'canonical'
+           JOIN public.storage_profile_provider_bindings AS canonical_binding
+             ON canonical_binding.id = canonical_copy.storage_profile_provider_binding_id
+           JOIN public.storage_providers AS canonical_provider
+             ON canonical_provider.id = canonical_binding.storage_provider_id
+            AND canonical_provider.status = 'active'
+          WHERE object_record.storage_object_id = $1 AND managed_app.app_id = $2`,
+        [input.storageObjectId, input.callerAppId],
+      );
+      const row = result.rows[0];
+      if (row === undefined) return null;
+      const copy = (
+        role: 'hot' | 'canonical',
+        values: {
+          id: string;
+          state: ObjectReadDeliverySnapshot['copies']['hot']['state'];
+          checksum: string | null;
+          length: string | number | null;
+          verifiedAt: Date | string | null;
+          providerId: string;
+          bucketLabel: string;
+          locator: string;
+          secretReferenceId: string;
+        },
+      ) => Object.freeze({
+        storageObjectCopyId: values.id,
+        providerRole: role,
+        state: values.state,
+        ...(values.checksum === null ? {} : { observedChecksumSha256: values.checksum }),
+        ...(values.length === null ? {} : { observedByteLength: asNumber(values.length) }),
+        ...(values.verifiedAt === null ? {} : { latestVerifiedAt: asIso(values.verifiedAt) }),
+        target: Object.freeze({
+          providerRole: role,
+          providerId: values.providerId,
+          bucketLabel: values.bucketLabel,
+          internalLocator: values.locator,
+          credentialSecretReferenceId: values.secretReferenceId,
+        }),
+      });
+      return Object.freeze({
+        storageObjectId: row.storage_object_id,
+        callerAppId: row.caller_app_id,
+        registryState: row.registry_state,
+        objectProtectionStage: row.object_protection_stage,
+        ...(row.verified_checksum_sha256 === null
+          ? {}
+          : { verifiedChecksumSha256: row.verified_checksum_sha256 }),
+        ...(row.verified_byte_length === null
+          ? {}
+          : { verifiedByteLength: asNumber(row.verified_byte_length) }),
+        verifiedContentType: row.expected_content_type,
+        copies: Object.freeze({
+          hot: copy('hot', {
+            id: row.hot_storage_object_copy_id,
+            state: row.hot_copy_state,
+            checksum: row.hot_observed_checksum_sha256,
+            length: row.hot_observed_byte_length,
+            verifiedAt: row.hot_latest_verified_at,
+            providerId: row.hot_provider_id,
+            bucketLabel: row.hot_bucket_label,
+            locator: row.hot_internal_locator,
+            secretReferenceId: row.hot_secret_reference_id,
+          }),
+          canonical: copy('canonical', {
+            id: row.canonical_storage_object_copy_id,
+            state: row.canonical_copy_state,
+            checksum: row.canonical_observed_checksum_sha256,
+            length: row.canonical_observed_byte_length,
+            verifiedAt: row.canonical_latest_verified_at,
+            providerId: row.canonical_provider_id,
+            bucketLabel: row.canonical_bucket_label,
+            locator: row.canonical_internal_locator,
+            secretReferenceId: row.canonical_secret_reference_id,
+          }),
+        }),
+      });
+    });
+  }
+
+  async beginObjectReadAttempt(input: {
+    storageObjectCopyId: string;
+    storageObjectId: string;
+    operationReference: string;
+    expectedChecksumSha256: string;
+    expectedByteLength: number;
+  }): Promise<Readonly<{ providerAttemptId: string }>> {
+    requireUuid(input.storageObjectCopyId, 'storage-object-copy-id');
+    requireUuid(input.storageObjectId, 'storage-object-id');
+    requireSha256(input.expectedChecksumSha256, 'expected-checksum-sha256');
     const providerAttemptId = this.#createId();
-    try {
-      await this.#scope.run(async (client) => {
-        const now = this.#now();
-        await client.query(
-          `INSERT INTO public.storage_provider_attempts (
-             storage_provider_attempt_id, storage_object_copy_id, storage_object_id,
-             operation, operation_reference, attempt_number, state, retryable,
-             expected_checksum_sha256, expected_byte_length, started_at, created_at, updated_at
-           ) VALUES ($1, $2, $3, 'read', $4, $5, 'in_progress', false, $6, $7, $8, $8, $8)`,
-          [
-            providerAttemptId,
-            target.storageObjectCopyId,
-            input.snapshot.storageObjectId,
-            `object-read-grant:${input.snapshot.grant.objectReadGrantId}`,
-            input.attemptNumber,
-            input.snapshot.checksumSha256,
-            input.snapshot.byteLength,
-            now,
-          ],
-        );
-      });
-      return providerAttemptId;
-    } catch (error) {
-      return normalizeDatabaseError(error);
-    }
+    await this.#scope.run(async (client) => {
+      const now = this.#now();
+      await client.query(
+        `INSERT INTO public.storage_provider_attempts (
+           storage_provider_attempt_id, storage_object_copy_id, storage_object_id,
+           operation, operation_reference, attempt_number, state, retryable,
+           expected_checksum_sha256, expected_byte_length, started_at, created_at, updated_at
+         ) VALUES ($1, $2, $3, 'read', $4, 1, 'in_progress', false, $5, $6, $7, $7, $7)`,
+        [
+          providerAttemptId,
+          input.storageObjectCopyId,
+          input.storageObjectId,
+          input.operationReference,
+          input.expectedChecksumSha256,
+          input.expectedByteLength,
+          now,
+        ],
+      );
+    });
+    return Object.freeze({ providerAttemptId });
   }
 
-  async finishReadAttempt(input: {
+  async finishObjectReadAttempt(input: {
     providerAttemptId: string;
-    succeeded: boolean;
-    retryable?: boolean;
+    nextState: 'succeeded' | 'failed';
     observedByteLength?: number;
     diagnostic?: Readonly<SafeDiagnostic>;
   }): Promise<void> {
     requireUuid(input.providerAttemptId, 'provider-attempt-id');
-    try {
-      await this.#scope.run(async (client) => {
-        const now = this.#now();
-        const result = await client.query(
-          `UPDATE public.storage_provider_attempts
-              SET state = $2, retryable = $3, observed_byte_length = $4,
-                  safe_diagnostic_category = $5, safe_diagnostic_code = $6,
-                  finished_at = $7, updated_at = $7
-            WHERE storage_provider_attempt_id = $1 AND state = 'in_progress'`,
-          [
-            input.providerAttemptId,
-            input.succeeded ? 'succeeded' : 'failed',
-            input.retryable ?? false,
-            input.observedByteLength ?? null,
-            input.diagnostic?.category ?? null,
-            input.diagnostic?.code ?? null,
-            now,
-          ],
-        );
-        if (result.rowCount !== 1) {
-          throw new ReadGrantError('duplicate-conflict', 'read-attempt-finish-conflict', 409);
-        }
+    await this.#scope.run(async (client) => {
+      const now = this.#now();
+      const result = await client.query(
+        `UPDATE public.storage_provider_attempts
+            SET state = $2, retryable = $3, observed_byte_length = $4,
+                safe_diagnostic_category = $5, safe_diagnostic_code = $6,
+                finished_at = $7, updated_at = $7
+          WHERE storage_provider_attempt_id = $1 AND operation = 'read'
+            AND state = 'in_progress'`,
+        [
+          input.providerAttemptId,
+          input.nextState,
+          input.diagnostic?.retryable ?? false,
+          input.observedByteLength ?? null,
+          input.diagnostic?.category ?? null,
+          input.diagnostic?.code ?? null,
+          now,
+        ],
+      );
+      if (result.rowCount !== 1) {
+        throw registryError('duplicate-conflict', 'read-attempt-state-conflict', 409);
+      }
+    });
+  }
+
+  async appendObjectReadEvent(input: {
+    eventId: string;
+    dedupeKey: string;
+    eventType: string;
+    occurredAt: Date;
+    callerAppId: string;
+    callerServiceId?: string;
+    storageObjectId: string;
+    appCorrelationReference: string;
+    payload: Readonly<Record<string, unknown>>;
+    diagnostic?: Readonly<SafeDiagnostic>;
+  }): Promise<void> {
+    assertSafeJsonObject(input.payload, 'object-read-event-payload');
+    await this.#scope.run(async (client) => {
+      const managedApp = await client.query<{ id: string }>(
+        `SELECT id FROM public.managed_apps WHERE app_id = $1 AND status = 'active'`,
+        [input.callerAppId],
+      );
+      const row = managedApp.rows[0];
+      if (row === undefined) throw registryError('unauthorized', 'invalid-caller', 403);
+      await this.#insertEvent(client, {
+        eventId: input.eventId,
+        eventType: input.eventType,
+        dedupeKey: input.dedupeKey,
+        managedAppId: row.id,
+        ...(input.callerServiceId === undefined
+          ? {}
+          : { callerServiceId: input.callerServiceId }),
+        storageObjectId: input.storageObjectId,
+        appCorrelationReference: input.appCorrelationReference,
+        payload: input.payload,
+        ...(input.diagnostic === undefined ? {} : { diagnostic: input.diagnostic }),
+        occurredAt: input.occurredAt,
       });
+    });
+  }
+
+  async #readGrant(
+    client: PostgresQueryable,
+    objectReadGrantId: string,
+  ): Promise<Readonly<ObjectReadGrantSnapshot>> {
+    const result = await client.query<ObjectReadGrantRow>(
+      `${GRANT_SELECT} WHERE grant.object_read_grant_id = $1`,
+      [objectReadGrantId],
+    );
+    const row = result.rows[0];
+    if (row === undefined) throw registryError('internal', 'object-read-grant-missing', 500);
+    return mapGrantRow(row);
+  }
+
+  async #insertEvent(
+    client: PostgresQueryable,
+    input: {
+      eventId?: string;
+      dedupeKey: string;
+      eventType: string;
+      occurredAt: Date;
+      managedAppId: string;
+      callerServiceId?: string;
+      storageObjectId: string;
+      appCorrelationReference: string;
+      payload: Readonly<Record<string, unknown>>;
+      diagnostic?: Readonly<SafeDiagnostic>;
+    },
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO public.storage_operation_events (
+         storage_operation_event_id, dedupe_key, event_type, contract_version, occurred_at,
+         managed_app_id, caller_service_id, storage_object_id, app_correlation_ref,
+         safe_payload, safe_diagnostic_category, safe_diagnostic_code, created_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13)
+       ON CONFLICT (dedupe_key) DO NOTHING`,
+      [
+        input.eventId ?? this.#createId(),
+        input.dedupeKey,
+        input.eventType,
+        CONTRACT_VERSION,
+        input.occurredAt,
+        input.managedAppId,
+        input.callerServiceId ?? null,
+        input.storageObjectId,
+        input.appCorrelationReference,
+        JSON.stringify(input.payload),
+        input.diagnostic?.category ?? null,
+        input.diagnostic?.code ?? null,
+        this.#now(),
+      ],
+    );
+  }
+}
+
+class ObjectReadRegistryError extends Error {
+  readonly category: SafeDiagnostic['category'];
+  readonly code: string;
+  readonly status: number;
+  readonly retryable: boolean;
+
+  constructor(
+    category: SafeDiagnostic['category'],
+    code: string,
+    status: number,
+    retryable = false,
+  ) {
+    super(code);
+    this.name = 'ObjectReadRegistryError';
+    this.category = category;
+    this.code = code;
+    this.status = status;
+    this.retryable = retryable;
+  }
+}
+
+function registryError(
+  category: SafeDiagnostic['category'],
+  code: string,
+  status: number,
+  retryable = false,
+): ObjectReadRegistryError {
+  return new ObjectReadRegistryError(category, code, status, retryable);
+}
+
+class ObjectReadHttpError extends Error {
+  readonly category: SafeDiagnostic['category'];
+  readonly code: string;
+  readonly status: number;
+  readonly retryable: boolean;
+  readonly headers?: Readonly<Record<string, string>>;
+
+  constructor(
+    category: SafeDiagnostic['category'],
+    code: string,
+    status: number,
+    retryable = false,
+    headers?: Readonly<Record<string, string>>,
+  ) {
+    super(code);
+    this.name = 'ObjectReadHttpError';
+    this.category = category;
+    this.code = code;
+    this.status = status;
+    this.retryable = retryable;
+    if (headers !== undefined) this.headers = headers;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function requireString(
+  value: unknown,
+  code: string,
+  options: { min?: number; max?: number; pattern?: RegExp; trim?: boolean } = {},
+): string {
+  if (typeof value !== 'string') throw new ObjectReadHttpError('invalid-request', code, 400);
+  const normalized = options.trim === false ? value : value.trim();
+  if (
+    normalized.length < (options.min ?? 1) ||
+    normalized.length > (options.max ?? 256) ||
+    (options.pattern !== undefined && !options.pattern.test(normalized))
+  ) {
+    throw new ObjectReadHttpError('invalid-request', code, 400);
+  }
+  return normalized;
+}
+
+function requireHttpUuid(value: unknown, code: string): string {
+  return requireString(value, code, { min: 36, max: 36, pattern: UUID_PATTERN });
+}
+
+function parseGrantRequest(value: unknown): Readonly<ObjectReadGrantRequest> {
+  if (!isRecord(value)) {
+    throw new ObjectReadHttpError('invalid-request', 'invalid-object-read-grant', 400);
+  }
+  const methods = normalizeAllowedMethods(value.allowedMethods, () => {
+    throw new ObjectReadHttpError('invalid-request', 'invalid-allowed-methods', 400);
+  });
+  if (typeof value.allowRange !== 'boolean') {
+    throw new ObjectReadHttpError('invalid-request', 'invalid-allow-range', 400);
+  }
+  if (value.disposition !== 'inline' && value.disposition !== 'attachment') {
+    throw new ObjectReadHttpError('invalid-request', 'invalid-disposition', 400);
+  }
+  if (
+    !Number.isSafeInteger(value.requestedTtlSeconds) ||
+    (value.requestedTtlSeconds as number) < 30 ||
+    (value.requestedTtlSeconds as number) > 300
+  ) {
+    throw new ObjectReadHttpError('invalid-request', 'invalid-requested-ttl-seconds', 400);
+  }
+  const result: ObjectReadGrantRequest = {
+    storageObjectId: requireHttpUuid(value.storageObjectId, 'invalid-storage-object-id'),
+    purpose: requireString(value.purpose, 'invalid-purpose', {
+      max: 128,
+      pattern: SAFE_ID_PATTERN,
+    }),
+    allowedMethods: methods,
+    allowRange: value.allowRange,
+    disposition: value.disposition,
+    requestedTtlSeconds: value.requestedTtlSeconds as number,
+    businessAuthorizationReference: requireString(
+      value.businessAuthorizationReference,
+      'invalid-business-authorization-reference',
+      { max: 256, pattern: /^[^\u0000-\u001f\u007f]+$/ },
+    ),
+  };
+  if (value.fileName !== undefined && value.fileName !== null) {
+    const fileName = requireString(value.fileName, 'invalid-file-name', {
+      max: 180,
+      pattern: SAFE_FILE_NAME_PATTERN,
+    });
+    if (fileName.includes('..') || fileName.includes('/') || fileName.includes('\\')) {
+      throw new ObjectReadHttpError('invalid-request', 'invalid-file-name', 400);
+    }
+    result.fileName = fileName;
+  }
+  return Object.freeze(result);
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+function fingerprint(value: unknown): string {
+  return createHash('sha256').update(stableStringify(value)).digest('hex');
+}
+
+function json(
+  body: unknown,
+  status = 200,
+  headers: Readonly<Record<string, string>> = {},
+): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      ...headers,
+    },
+  });
+}
+
+function requiredHeader(request: Request, name: string, code: string, max = 256): string {
+  return requireString(request.headers.get(name), code, { max });
+}
+
+function contractVersion(request: Request): ContractVersion {
+  const value = requiredHeader(request, 'x-zs-contract-version', 'invalid-contract-version', 16);
+  if (!SUPPORTED_CONTRACT_VERSIONS.includes(value as ContractVersion)) {
+    throw new ObjectReadHttpError(
+      'incompatible-version',
+      'unsupported-contract-version',
+      409,
+    );
+  }
+  return value as ContractVersion;
+}
+
+function bearerToken(request: Request): string {
+  const value = request.headers.get('authorization') ?? '';
+  const match = /^Bearer\s+(.+)$/i.exec(value);
+  if (match?.[1] === undefined || match[1].trim() === '') {
+    throw new ObjectReadHttpError('unauthenticated', 'authentication-required', 401);
+  }
+  return match[1].trim();
+}
+
+function normalizeCaller(value: unknown): Readonly<CallerIdentity> {
+  if (!isRecord(value)) throw new ObjectReadHttpError('unauthenticated', 'authentication-required', 401);
+  const appId = requireString(value.appId, 'invalid-caller', {
+    max: 96,
+    pattern: SAFE_CALLER_PATTERN,
+  });
+  if (value.serviceId === undefined || value.serviceId === null) return Object.freeze({ appId });
+  return Object.freeze({
+    appId,
+    serviceId: requireString(value.serviceId, 'invalid-caller', {
+      max: 96,
+      pattern: SAFE_CALLER_PATTERN,
+    }),
+  });
+}
+
+async function authenticateAndAuthorize(
+  request: Request,
+  options: StorageRuntimeOptions,
+): Promise<Readonly<CallerIdentity>> {
+  let caller: Readonly<CallerIdentity>;
+  try {
+    caller = normalizeCaller(await options.authenticate(bearerToken(request)));
+  } catch (error) {
+    if (error instanceof ObjectReadHttpError) throw error;
+    throw new ObjectReadHttpError('unauthenticated', 'authentication-failed', 401);
+  }
+  const claimedApp = requiredHeader(request, 'x-zs-caller-app', 'invalid-caller', 96);
+  if (claimedApp !== caller.appId) {
+    throw new ObjectReadHttpError('unauthorized', 'invalid-caller', 403);
+  }
+  let allowed = false;
+  try {
+    allowed = (await options.authorizeCaller(caller)) === true;
+  } catch {
+    allowed = false;
+  }
+  if (!allowed) throw new ObjectReadHttpError('unauthorized', 'invalid-caller', 403);
+  return caller;
+}
+
+function duplicateKey(request: Request): string {
+  return requireString(request.headers.get('idempotency-key'), 'invalid-duplicate-protection-key', {
+    max: 128,
+    pattern: SAFE_ID_PATTERN,
+  });
+}
+
+function correlationReference(request: Request): string {
+  return requireString(
+    request.headers.get('x-app-correlation-reference'),
+    'invalid-app-correlation-reference',
+    { max: 128, pattern: SAFE_ID_PATTERN },
+  );
+}
+
+function callerScope(caller: Readonly<CallerIdentity>, operation: string): string {
+  return `${caller.appId}:${caller.serviceId ?? ''}:${operation}`;
+}
+
+async function readJson(request: Request): Promise<unknown> {
+  const contentType = request.headers.get('content-type') ?? '';
+  if (!contentType.toLowerCase().startsWith('application/json')) {
+    throw new ObjectReadHttpError('invalid-request', 'json-content-type-required', 415);
+  }
+  try {
+    return await request.json();
+  } catch {
+    throw new ObjectReadHttpError('invalid-request', 'invalid-json', 400);
+  }
+}
+
+function tokenClaimsFromGrant(grant: Readonly<ObjectReadGrantSnapshot>): ObjectReadGrantTokenClaims {
+  const claims: ObjectReadGrantTokenClaims = {
+    tokenPurpose: OBJECT_READ_GRANT_TOKEN_PURPOSE,
+    objectReadGrantId: grant.objectReadGrantId,
+    storageObjectId: grant.storageObjectId,
+    callerAppId: grant.callerAppId,
+    purpose: grant.purpose,
+    allowedMethods: grant.allowedMethods,
+    allowRange: grant.allowRange,
+    contractVersion: CONTRACT_VERSION,
+    expiresAt: grant.expiresAt,
+  };
+  if (grant.callerServiceId !== undefined) claims.callerServiceId = grant.callerServiceId;
+  return claims;
+}
+
+function exactGrantBinding(
+  claims: Readonly<ObjectReadGrantTokenClaims>,
+  grant: Readonly<ObjectReadGrantSnapshot>,
+): boolean {
+  return (
+    claims.objectReadGrantId === grant.objectReadGrantId &&
+    claims.storageObjectId === grant.storageObjectId &&
+    claims.callerAppId === grant.callerAppId &&
+    (claims.callerServiceId ?? '') === (grant.callerServiceId ?? '') &&
+    claims.purpose === grant.purpose &&
+    claims.allowRange === grant.allowRange &&
+    claims.contractVersion === CONTRACT_VERSION &&
+    claims.expiresAt === grant.expiresAt &&
+    claims.allowedMethods.length === grant.allowedMethods.length &&
+    claims.allowedMethods.every((method, index) => method === grant.allowedMethods[index])
+  );
+}
+
+function normalizeExternalError(error: unknown): ObjectReadHttpError {
+  if (error instanceof ObjectReadHttpError) return error;
+  if (error instanceof ObjectReadGrantTokenError) {
+    return new ObjectReadHttpError(error.category, error.code, error.status, error.retryable);
+  }
+  if (error !== null && typeof error === 'object') {
+    const record = error as Record<string, unknown>;
+    if (
+      typeof record.category === 'string' &&
+      typeof record.code === 'string' &&
+      typeof record.status === 'number' &&
+      Number.isSafeInteger(record.status) &&
+      record.status >= 400 &&
+      record.status <= 599 &&
+      /^[a-z0-9][a-z0-9-]{0,95}$/.test(record.code)
+    ) {
+      const category = record.category as SafeDiagnostic['category'];
+      const headerEntries = isRecord(record.headers)
+        ? Object.entries(record.headers).filter(
+            (entry): entry is [string, string] =>
+              (entry[0] === 'content-range' || entry[0] === 'accept-ranges') &&
+              typeof entry[1] === 'string',
+          )
+        : [];
+      const headers = headerEntries.length === 0
+        ? undefined
+        : Object.freeze(Object.fromEntries(headerEntries));
+      return new ObjectReadHttpError(
+        category,
+        record.code,
+        record.status,
+        record.retryable === true,
+        headers,
+      );
+    }
+  }
+  return new ObjectReadHttpError('internal', 'internal-error', 500);
+}
+
+export interface ReadEnabledStorageRuntimeOptions extends StorageRuntimeOptions {
+  authorizeObjectReadGrant: (input: {
+    caller: Readonly<CallerIdentity>;
+    request: Readonly<ObjectReadGrantRequest>;
+    appCorrelationReference: string;
+  }) => Promise<boolean> | boolean;
+  objectReadGrantTokenService: ObjectReadGrantTokenService;
+  objectReadGrantRegistry: ObjectReadGrantRegistry;
+  objectReadDeliveryService: ObjectReadDeliveryService;
+}
+
+export function createReadEnabledHttpStorageRuntime(
+  options: ReadEnabledStorageRuntimeOptions,
+): HttpStorageRuntime {
+  if (typeof options.authorizeObjectReadGrant !== 'function') {
+    throw new TypeError('authorizeObjectReadGrant must be a function.');
+  }
+  if (typeof options.objectReadGrantTokenService?.issue !== 'function') {
+    throw new TypeError('objectReadGrantTokenService.issue must be a function.');
+  }
+  if (typeof options.objectReadGrantRegistry?.execute !== 'function') {
+    throw new TypeError('objectReadGrantRegistry.execute must be a function.');
+  }
+  if (typeof options.objectReadDeliveryService?.deliver !== 'function') {
+    throw new TypeError('objectReadDeliveryService.deliver must be a function.');
+  }
+  const baseRuntime = createHttpStorageRuntime(options);
+  const now = options.now ?? (() => new Date());
+  const createId = options.createId ?? randomUUID;
+
+  async function issueGrant(request: Request): Promise<Response> {
+    const version = contractVersion(request);
+    const caller = await authenticateAndAuthorize(request, options);
+    const key = duplicateKey(request);
+    const appCorrelationReference = correlationReference(request);
+    const payload = parseGrantRequest(await readJson(request));
+    let purposeAllowed = false;
+    try {
+      purposeAllowed = (await options.authorizeObjectReadGrant({
+        caller,
+        request: payload,
+        appCorrelationReference,
+      })) === true;
+    } catch {
+      purposeAllowed = false;
+    }
+    if (!purposeAllowed) {
+      throw new ObjectReadHttpError('unauthorized', 'object-read-purpose-not-authorized', 403);
+    }
+    const duplicate = await options.objectReadGrantRegistry.execute({
+      scope: callerScope(caller, 'object-read-grant'),
+      key,
+      fingerprint: fingerprint({ caller, payload }),
+      operation: async () => {
+        const objectReadGrantId = createId();
+        const expiresAt = new Date(now().getTime() + payload.requestedTtlSeconds * 1000);
+        const provisional: ObjectReadGrantTokenClaims = {
+          tokenPurpose: OBJECT_READ_GRANT_TOKEN_PURPOSE,
+          objectReadGrantId,
+          storageObjectId: payload.storageObjectId,
+          callerAppId: caller.appId,
+          purpose: payload.purpose,
+          allowedMethods: payload.allowedMethods,
+          allowRange: payload.allowRange,
+          contractVersion: version,
+          expiresAt: expiresAt.toISOString(),
+        };
+        if (caller.serviceId !== undefined) provisional.callerServiceId = caller.serviceId;
+        const token = await options.objectReadGrantTokenService.issue(Object.freeze(provisional));
+        return options.objectReadGrantRegistry.createObjectReadGrant({
+          objectReadGrantId,
+          storageObjectId: payload.storageObjectId,
+          callerAppId: caller.appId,
+          ...(caller.serviceId === undefined ? {} : { callerServiceId: caller.serviceId }),
+          appCorrelationReference,
+          businessAuthorizationReference: payload.businessAuthorizationReference,
+          purpose: payload.purpose,
+          allowedMethods: payload.allowedMethods,
+          allowRange: payload.allowRange,
+          disposition: payload.disposition,
+          ...(payload.fileName === undefined ? {} : { fileName: payload.fileName }),
+          tokenDigest: objectReadGrantTokenDigest(token),
+          expiresAt,
+        });
+      },
+    });
+    const grant = duplicate.value as Readonly<ObjectReadGrantSnapshot>;
+    const readGrantToken = await options.objectReadGrantTokenService.issue(
+      Object.freeze(tokenClaimsFromGrant(grant)),
+    );
+    if (objectReadGrantTokenDigest(readGrantToken) !== grant.tokenDigest) {
+      throw new ObjectReadHttpError('internal', 'object-read-grant-token-digest-mismatch', 500);
+    }
+    const result: ObjectReadGrantResult = {
+      objectReadGrantId: grant.objectReadGrantId,
+      storageObjectId: grant.storageObjectId,
+      state: grant.state,
+      expiresAt: grant.expiresAt,
+      allowedMethods: grant.allowedMethods,
+      allowRange: grant.allowRange,
+      disposition: grant.disposition,
+      readGrantToken,
+      duplicateProtection: Object.freeze({ key, replayed: duplicate.replayed }),
+    };
+    if (grant.fileName !== undefined) result.fileName = grant.fileName;
+    return json({
+      packageVersion: PACKAGE_VERSION,
+      contractVersion: CONTRACT_VERSION,
+      appCorrelationReference,
+      result: Object.freeze(result),
+    });
+  }
+
+  async function revokeGrant(request: Request, objectReadGrantId: string): Promise<Response> {
+    requireHttpUuid(objectReadGrantId, 'invalid-object-read-grant-id');
+    contractVersion(request);
+    const caller = await authenticateAndAuthorize(request, options);
+    const key = duplicateKey(request);
+    const appCorrelationReference = correlationReference(request);
+    const duplicate = await options.objectReadGrantRegistry.execute({
+      scope: callerScope(caller, 'object-read-grant-revoke'),
+      key,
+      fingerprint: fingerprint({ caller, objectReadGrantId }),
+      operation: () => options.objectReadGrantRegistry.revokeObjectReadGrant({
+        objectReadGrantId,
+        callerAppId: caller.appId,
+        ...(caller.serviceId === undefined ? {} : { callerServiceId: caller.serviceId }),
+        appCorrelationReference,
+      }),
+    });
+    const grant = duplicate.value as Readonly<ObjectReadGrantSnapshot>;
+    const result: ObjectReadGrantRevocationResult = {
+      objectReadGrantId: grant.objectReadGrantId,
+      storageObjectId: grant.storageObjectId,
+      state: grant.state === 'active' ? 'revoked' : grant.state,
+      expiresAt: grant.expiresAt,
+      duplicateProtection: Object.freeze({ key, replayed: duplicate.replayed }),
+    };
+    if (grant.revokedAt !== undefined) result.revokedAt = grant.revokedAt;
+    return json({
+      packageVersion: PACKAGE_VERSION,
+      contractVersion: CONTRACT_VERSION,
+      appCorrelationReference,
+      result: Object.freeze(result),
+    });
+  }
+
+  async function deliverContent(
+    request: Request,
+    storageObjectId: string,
+  ): Promise<Response> {
+    requireHttpUuid(storageObjectId, 'invalid-storage-object-id');
+    const version = contractVersion(request);
+    const caller = await authenticateAndAuthorize(request, options);
+    const appCorrelationReference = correlationReference(request);
+    const token = requiredHeader(
+      request,
+      'x-zs-read-grant-token',
+      'invalid-object-read-grant-token',
+      4096,
+    );
+    const claims = await options.objectReadGrantTokenService.verify(token, {
+      storageObjectId,
+      callerAppId: caller.appId,
+      callerServiceId: caller.serviceId ?? '',
+      contractVersion: version,
+      now: now(),
+    });
+    const method = request.method as ObjectReadMethod;
+    if (!claims.allowedMethods.includes(method)) {
+      throw new ObjectReadHttpError('unauthorized', 'object-read-method-not-allowed', 403);
+    }
+    const rangeHeader = request.headers.get('range') ?? undefined;
+    if (rangeHeader !== undefined && !claims.allowRange) {
+      throw new ObjectReadHttpError('unauthorized', 'object-read-range-not-allowed', 403);
+    }
+    const grant = await options.objectReadGrantRegistry.getObjectReadGrant({
+      objectReadGrantId: claims.objectReadGrantId,
+      storageObjectId,
+      callerAppId: caller.appId,
+      ...(caller.serviceId === undefined ? {} : { callerServiceId: caller.serviceId }),
+      tokenDigest: objectReadGrantTokenDigest(token),
+    });
+    if (grant === null || !exactGrantBinding(claims, grant)) {
+      throw new ObjectReadHttpError('unauthenticated', 'invalid-object-read-grant-token', 401);
+    }
+    if (grant.state === 'revoked') {
+      throw new ObjectReadHttpError('unauthorized', 'object-read-grant-revoked', 403);
+    }
+    if (grant.state === 'expired' || new Date(grant.expiresAt) <= now()) {
+      throw new ObjectReadHttpError('unauthenticated', 'object-read-grant-expired', 401);
+    }
+    const delivered = await options.objectReadDeliveryService.deliver({
+      grant,
+      caller,
+      method,
+      ...(rangeHeader === undefined ? {} : { rangeHeader }),
+      appCorrelationReference,
+      requestId: createId(),
+      signal: request.signal,
+    });
+    return new Response(method === 'HEAD' ? null : delivered.body, {
+      status: delivered.status,
+      headers: delivered.headers,
+    });
+  }
+
+  async function handle(request: Request): Promise<Response> {
+    const correlation = request.headers.get('x-app-correlation-reference') ?? undefined;
+    const url = new URL(request.url);
+    const issueRoute = url.pathname === '/v1/object-read-grants';
+    const revokeRoute = /^\/v1\/object-read-grants\/([^/]+)$/.exec(url.pathname);
+    const contentRoute = /^\/v1\/storage-objects\/([^/]+)\/content$/.exec(url.pathname);
+    const isReadRoute =
+      (request.method === 'POST' && issueRoute) ||
+      (request.method === 'DELETE' && revokeRoute?.[1] !== undefined) ||
+      ((request.method === 'GET' || request.method === 'HEAD') && contentRoute?.[1] !== undefined);
+    if (!isReadRoute) return baseRuntime.handle(request);
+    try {
+      if (request.method === 'POST') return await issueGrant(request);
+      if (request.method === 'DELETE' && revokeRoute?.[1] !== undefined) {
+        return await revokeGrant(request, revokeRoute[1]);
+      }
+      if (
+        (request.method === 'GET' || request.method === 'HEAD') &&
+        contentRoute?.[1] !== undefined
+      ) {
+        return await deliverContent(request, contentRoute[1]);
+      }
+      throw new ObjectReadHttpError('invalid-request', 'route-not-found', 404);
     } catch (error) {
-      return normalizeDatabaseError(error);
+      const normalized = normalizeExternalError(error);
+      const diagnostic = createSafeDiagnostic(
+        normalized.category,
+        normalized.code,
+        normalized.retryable,
+        correlation,
+      );
+      return json(
+        { contractVersion: CONTRACT_VERSION, error: { diagnostic } },
+        normalized.status,
+        normalized.headers,
+      );
     }
   }
 
-  async appendReadEvent(input: {
-    snapshot: Readonly<ReadDeliverySnapshot>;
-    eventType: string;
-    deliveryState?: 'hot' | 'canonical-fallback';
-    method: ObjectReadMethod;
-    rangeRequested: boolean;
-    diagnostic?: Readonly<SafeDiagnostic>;
-  }): Promise<void> {
-    requireSafeIdentifier(input.eventType, 'event-type', 96);
-    try {
-      await this.#scope.run(async (client) => {
-        const now = this.#now();
-        const payload: Record<string, unknown> = {
-          objectReadGrantId: input.snapshot.grant.objectReadGrantId,
-          method: input.method,
-          rangeRequested: input.rangeRequested,
-        };
-        if (input.deliveryState !== undefined) payload.deliveryState = input.deliveryState;
-        await client.query(
-          `INSERT INTO public.storage_operation_events (
-             storage_operation_event_id, dedupe_key, event_type, contract_version,
-             occurred_at, managed_app_id, caller_service_id, storage_object_id,
-             app_correlation_ref, safe_payload, safe_diagnostic_category,
-             safe_diagnostic_code, created_at
-           ) VALUES ($1, $2, $3, '1.0', $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $4)`,
-          [
-            this.#createId(),
-            `${input.eventType}:${input.snapshot.grant.objectReadGrantId}:${this.#createId()}`,
-            input.eventType,
-            now,
-            input.snapshot.grant.managedAppId,
-            input.snapshot.grant.callerServiceId ?? null,
-            input.snapshot.storageObjectId,
-            input.snapshot.grant.appCorrelationReference,
-            JSON.stringify(payload),
-            input.diagnostic?.category ?? null,
-            input.diagnostic?.code ?? null,
-          ],
-        );
-      });
-    } catch (error) {
-      return normalizeDatabaseError(error);
-    }
-  }
+  return Object.freeze({
+    handle,
+    health: () => baseRuntime.health(),
+    readiness: () => baseRuntime.readiness(),
+  });
 }
