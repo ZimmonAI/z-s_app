@@ -6,6 +6,7 @@ import {
   PostgresVideoMakerAuthorityResolver,
   RuntimeCompositionError,
   createRuntimeLocalComposition,
+  type ClosableRuntimePool,
 } from '../src/runtime-local-composition.js';
 import {
   EnvironmentProviderCredentialResolver,
@@ -13,7 +14,6 @@ import {
 } from '../src/runtime-environment.js';
 import type {
   PostgresClientLike,
-  PostgresPoolLike,
   PostgresQueryResult,
 } from '../src/runtime-storage-registry-types.js';
 
@@ -144,12 +144,16 @@ function capabilityRows(): Array<Record<string, unknown>> {
   );
 }
 
-function authorityPool(): PostgresPoolLike {
+function authorityPool(input: { authorityPresent?: boolean } = {}): ClosableRuntimePool {
   const client: PostgresClientLike = {
     async query<Row extends Record<string, unknown>>(
       text: string,
     ): Promise<PostgresQueryResult<Row>> {
+      if (text.includes('SELECT 1 AS ready')) {
+        return { rows: [{ ready: 1 } as unknown as Row], rowCount: 1 };
+      }
       if (text.includes('FROM public.managed_apps')) {
+        if (input.authorityPresent === false) return { rows: [], rowCount: 0 };
         return {
           rows: [{
             managed_app_id: AUTHORITY_IDS.managedApp,
@@ -183,7 +187,12 @@ function authorityPool(): PostgresPoolLike {
       // No resource is held by the fake client.
     },
   };
-  return { connect: async () => client };
+  return {
+    connect: async () => client,
+    async end(): Promise<void> {
+      // No resource is held by the fake pool.
+    },
+  };
 }
 
 test('PostgreSQL authority resolution binds exact aliases and derives required Range readiness', async () => {
@@ -213,4 +222,68 @@ test('PostgreSQL authority resolution binds exact aliases and derives required R
       return true;
     },
   );
+});
+
+test('runtime readiness becomes ready only for exact database authority and secret bindings', async () => {
+  const environment: NodeJS.ProcessEnv = {
+    Z_S_DATABASE_URL: 'postgresql://runtime.invalid/z-s',
+    Z_S_UPLOAD_COMPLETION_SIGNING_KEY: 'u'.repeat(32),
+    Z_S_OBJECT_READ_GRANT_SIGNING_KEY: 'r'.repeat(32),
+    Z_S_PROVIDER_SECRET_BINDINGS_JSON: JSON.stringify({
+      'r2-ref': {
+        endpointEnv: 'TEST_R2_ENDPOINT',
+        regionEnv: 'TEST_R2_REGION',
+        accessKeyIdEnv: 'TEST_R2_ACCESS_KEY',
+        secretAccessKeyEnv: 'TEST_R2_SECRET_KEY',
+      },
+      'minio-ref': {
+        endpointEnv: 'TEST_MINIO_ENDPOINT',
+        regionEnv: 'TEST_MINIO_REGION',
+        forcePathStyle: true,
+        accessKeyIdEnv: 'TEST_MINIO_ACCESS_KEY',
+        secretAccessKeyEnv: 'TEST_MINIO_SECRET_KEY',
+      },
+    }),
+    TEST_R2_ENDPOINT: 'https://r2.invalid',
+    TEST_R2_REGION: 'auto',
+    TEST_R2_ACCESS_KEY: 'r2-access',
+    TEST_R2_SECRET_KEY: 'r2-secret',
+    TEST_MINIO_ENDPOINT: 'http://minio.invalid',
+    TEST_MINIO_REGION: 'us-east-1',
+    TEST_MINIO_ACCESS_KEY: 'minio-access',
+    TEST_MINIO_SECRET_KEY: 'minio-secret',
+  };
+  const composition = createRuntimeLocalComposition({
+    environment,
+    pool: authorityPool(),
+    now: () => new Date('2026-07-17T12:00:00.000Z'),
+  });
+  try {
+    const ready = await composition.runtime.readiness() as {
+      readonly status: string;
+      readonly controlPlane: { readonly status: string };
+      readonly dataPlane: { readonly status: string };
+    };
+    assert.equal(ready.status, 'ready');
+    assert.equal(ready.controlPlane.status, 'ready');
+    assert.equal(ready.dataPlane.status, 'ready');
+  } finally {
+    await composition.close();
+  }
+
+  const missingAuthority = createRuntimeLocalComposition({
+    environment,
+    pool: authorityPool({ authorityPresent: false }),
+    now: () => new Date('2026-07-17T12:00:00.000Z'),
+  });
+  try {
+    const notReady = await missingAuthority.runtime.readiness() as {
+      readonly status: string;
+      readonly controlPlane: { readonly code?: string };
+    };
+    assert.equal(notReady.status, 'not-ready');
+    assert.equal(notReady.controlPlane.code, 'video-maker-storage-authority-not-ready');
+  } finally {
+    await missingAuthority.close();
+  }
 });
