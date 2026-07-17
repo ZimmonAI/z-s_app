@@ -22,43 +22,9 @@ on:
       - .github/workflows/2b-05-write-intent-ingest-validation.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-read-grant-revocation:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-      - name: Cast revocation SQL parameters
-        shell: bash
-        run: |
-          set -euo pipefail
-          python <<'PY'
-          import re
-          from pathlib import Path
-          path = Path('src/runtime-read-grant.ts')
-          text = path.read_text()
-          pattern = re.compile(
-              r"SET state = \$2,\s*revoked_at = CASE WHEN \$2 = 'revoked' THEN \$3 ELSE NULL END,\s*updated_at = \$3, row_version = row_version \+ 1"
-          )
-          replacement = """SET state = $2::text,
-                 revoked_at = CASE WHEN $2::text = 'revoked' THEN $3::timestamptz ELSE NULL::timestamptz END,
-                 updated_at = $3::timestamptz, row_version = row_version + 1"""
-          text, count = pattern.subn(replacement, text, count=1)
-          if count != 1:
-              raise SystemExit(f'revocation-update-count:{count}')
-          path.write_text(text)
-          PY
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/runtime-read-grant.ts
-          git commit -m 'Cast read grant revocation SQL parameters'
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
-
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 30
