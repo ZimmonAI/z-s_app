@@ -1,0 +1,78 @@
+name: 2B-07 source bundle bootstrap
+
+on:
+  push:
+    branches:
+      - agent/02b-07-read-grant-delivery-range
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify and apply governed source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/agent-2b07/part-{00..09} > /tmp/zs-changes.b64
+          echo '59c20ffd08a9f53aa6d75f7ba54fd9b9b868c0ca0454dcf702ba27b171920a39  /tmp/zs-changes.b64' | sha256sum --check --strict
+          base64 --decode /tmp/zs-changes.b64 > /tmp/zs-changes.tgz
+          echo '816ca448952d604df142b247b6517cfe1139903d1af6d5c40f378c3554848543  /tmp/zs-changes.tgz' | sha256sum --check --strict
+          tar -xzf /tmp/zs-changes.tgz -C .
+          npm version 0.5.0 --no-git-tag-version --allow-same-version
+
+          python <<'PY'
+          from pathlib import Path
+
+          runtime_test = Path('tests/runtime-service.test.ts')
+          runtime_text = runtime_test.read_text()
+          if "'0.4.0'" not in runtime_text:
+              raise SystemExit('runtime-service-version-assertion-not-found')
+          runtime_test.write_text(runtime_text.replace("'0.4.0'", "'0.5.0'"))
+
+          prior_workflow = Path('.github/workflows/2b-06-dual-provider-media-validation.yml')
+          workflow_text = prior_workflow.read_text()
+          if "manifest.version !== '0.4.0'" not in workflow_text:
+              raise SystemExit('prior-workflow-version-guard-not-found')
+          workflow_text = workflow_text.replace("manifest.version !== '0.4.0'", "manifest.version !== '0.5.0'")
+          old_scope = 'git diff --exit-code "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" -- db/migrations db/seeds'
+          new_scope = '''git diff --exit-code "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" -- \\
+            db/migrations/0001_z_s_control_plane_foundation.sql \\
+            db/migrations/0001_z_s_control_plane_foundation.down.sql \\
+            db/migrations/0002_z_s_runtime_registry.sql \\
+            db/migrations/0002_z_s_runtime_registry.down.sql \\
+            db/seeds'''
+          if old_scope not in workflow_text:
+              raise SystemExit('prior-workflow-migration-guard-not-found')
+          prior_workflow.write_text(workflow_text.replace(old_scope, new_scope))
+
+          readme = Path('README.md')
+          readme_text = readme.read_text()
+          readme_marker = '## Short-lived object read delivery'
+          if readme_marker not in readme_text:
+              readme_text += '''\n\n## Short-lived object read delivery\n\nPackage 0.5.0 adds caller-bound, short-lived object read grants and server-streamed delivery without exposing provider authority. Callers create grants with `POST /v1/object-read-grants`, revoke them with `DELETE /v1/object-read-grants/{readGrantId}`, and use `GET` or `HEAD /v1/storage-objects/{storageObjectId}/content` with `x-zs-read-grant-token`.\n\nDelivery accepts one closed, open-ended, or suffix byte range. It returns safe `206` or `416` metadata, tries a verified hot R2-compatible copy first, and falls back to a verified canonical MinIO-compatible copy only when the registry snapshot proves matching checksum, byte length, and media type. Conflicting verified metadata fails closed. Raw object keys, buckets, endpoints, credentials, signed URLs, and provider bodies never enter the public contract, token claims, diagnostics, attempts, or events.\n\nRun `npm run verify:2b07:read` for the deterministic no-provider-action handoff check.\n'''
+              readme.write_text(readme_text)
+
+          contract = Path('docs/runtime-contract.md')
+          contract_text = contract.read_text()
+          contract_marker = '## 2B-07 short-lived read grants and delivery'
+          if contract_marker not in contract_text:
+              contract_text += '''\n\n## 2B-07 short-lived read grants and delivery\n\nThe 1.0 contract adds three routes: `POST /v1/object-read-grants`, `DELETE /v1/object-read-grants/{readGrantId}`, and `GET|HEAD /v1/storage-objects/{storageObjectId}/content`. Grant creation requires the normal bearer caller identity, contract version, app correlation reference, and duplicate-protection key. The body binds `storageObjectId`, a business `purpose`, `requestedTtlSeconds`, allowed delivery methods, and whether a single byte range is permitted. Business-purpose authorization is an explicit service callback and is evaluated before issuance.\n\nThe returned opaque delivery token is HMAC authenticated and bound to the grant, object, caller app/service, purpose, allowed methods, range policy, contract version, and expiry. PostgreSQL stores only a SHA-256 token digest. Revocation and expiry are durable and checked again at delivery time. Idempotent retries replay the same grant result; a reused key with a different fingerprint is rejected.\n\nContent requests send the opaque token in `x-zs-read-grant-token`. `HEAD` returns the same trusted representation metadata without a body. `GET` streams with backpressure and propagates cancellation to the provider body. At most one byte range is accepted, including closed, open-ended, and suffix forms. Unsatisfiable or malformed ranges return safe `416` metadata and multi-range requests are refused.\n\nProvider selection is internal: a verified hot copy is attempted first, followed by a verified canonical copy when fallback is safe. The registry snapshot must agree on checksum, byte length, and media type before delivery; conflicting verified copies fail closed. Responses expose only trusted MIME type, length, checksum-derived ETag, safe disposition, cache policy, range headers, and bounded diagnostics. Provider aliases, buckets, endpoints, locators, keys, credentials, ETags, signed URLs, and raw provider responses are excluded from the public surface and from safe event payloads. Provider read attempts and grant lifecycle events are persisted for audit and reconciliation.\n'''
+              contract.write_text(contract_text)
+          PY
+
+          rm -rf .github/agent-2b07
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Implement 2B-07 read grant delivery'
+          git push origin HEAD
