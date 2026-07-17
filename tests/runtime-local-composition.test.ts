@@ -18,7 +18,7 @@ function runtime(options: {
   readiness?: 'ready' | 'not-ready';
 }): HttpStorageRuntime {
   return Object.freeze({
-    handle: options.handle,
+    handle: async (request: Request) => options.handle(request),
     health: async () => Object.freeze({
       serviceId: 'z-s',
       packageVersion: '0.5.0',
