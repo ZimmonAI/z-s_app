@@ -1,9 +1,6 @@
 name: 2B-07 read delivery validation
 
 on:
-  push:
-    branches:
-      - agent/02b-07-read-grant-delivery-range
   pull_request:
     paths:
       - package.json
@@ -38,13 +35,14 @@ permissions:
 
 jobs:
   sync-lock:
-    if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -61,7 +59,7 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add package-lock.json
           git commit -m "Synchronize 0.5.0 package lock"
-          git push origin HEAD:${GITHUB_REF_NAME}
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
 
   validate:
     runs-on: ubuntu-latest
