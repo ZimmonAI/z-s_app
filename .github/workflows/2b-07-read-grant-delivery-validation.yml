@@ -20,7 +20,38 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref }}
 
-      - name: Verify and apply complete governed source bundle
+      - name: Verify source chunks 00-03
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat <<'SUMS' | sha256sum --check --strict
+          98b519f232c753d8ba49bc7fd83572bd51f64d3ecc5e5a250952a673636e5e59  .github/agent-2b07/part-00
+          e98cb261b0550b38870feb85baed120ce3e6ac3123d768ea5c29c40117b87d1e  .github/agent-2b07/part-01
+          5966311e23abdd5210460eadc47517ba226a34b1fe562ef0d75a5fd575bea3e3  .github/agent-2b07/part-02
+          4df6ef1c7175f1fd6afff28c7f382eaa2c08d8d004d53de48204c49cc1f3625c  .github/agent-2b07/part-03
+          SUMS
+
+      - name: Verify source chunks 04-06
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat <<'SUMS' | sha256sum --check --strict
+          2a937d93e584ae006c5c2d8d196f3f1551f5f39c8407d899dd9a5123ab2118bb  .github/agent-2b07/part-04
+          d78c8555f83105f5b15b6679ed1e062d3a6706f9ba50318956b824f88b0f1d2d  .github/agent-2b07/part-05
+          5ea42ed59c2acb4b8ab966cb42247f84c3cc5952d08335d533f9caf5b8e67a48  .github/agent-2b07/part-06
+          SUMS
+
+      - name: Verify source chunks 07-09
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat <<'SUMS' | sha256sum --check --strict
+          43536b6493807050cec20499622fe0fa6c5562699b5286c15a82a9cc4bdffb67  .github/agent-2b07/part-07
+          7843994c3ced90df379241784295a79c9766767a4b82d829fc7793ca8f08035a  .github/agent-2b07/part-08
+          bd596a01da8038d1e6f21daa2242cf67995d8b733dbdeaa21b775ac69db412b2  .github/agent-2b07/part-09
+          SUMS
+
+      - name: Assemble and verify archive
         shell: bash
         run: |
           set -euo pipefail
@@ -28,6 +59,12 @@ jobs:
           echo '59c20ffd08a9f53aa6d75f7ba54fd9b9b868c0ca0454dcf702ba27b171920a39  /tmp/zs-changes.b64' | sha256sum --check --strict
           base64 --decode /tmp/zs-changes.b64 > /tmp/zs-changes.tgz
           echo '816ca448952d604df142b247b6517cfe1139903d1af6d5c40f378c3554848543  /tmp/zs-changes.tgz' | sha256sum --check --strict
+          tar -tzf /tmp/zs-changes.tgz >/dev/null
+
+      - name: Apply and push complete source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
           tar -xzf /tmp/zs-changes.tgz -C .
           rm -rf .github/agent-2b07
           git config user.name 'github-actions[bot]'
