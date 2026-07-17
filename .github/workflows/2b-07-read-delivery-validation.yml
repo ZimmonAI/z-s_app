@@ -115,7 +115,23 @@ jobs:
         run: npm run validate:migration
 
       - name: Run focused read-grant and delivery tests
-        run: npm run test:read
+        id: focused_read_tests
+        continue-on-error: true
+        shell: bash
+        run: npm run test:read > /tmp/2b07-read-tests.log 2>&1
+
+      - name: Upload focused-test diagnostics
+        if: steps.focused_read_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: 2b07-read-tests-${{ github.run_id }}
+          path: /tmp/2b07-read-tests.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Enforce focused-test result
+        if: steps.focused_read_tests.outcome == 'failure'
+        run: exit 1
 
       - name: Run PostgreSQL registry tests
         run: npm run test:registry
