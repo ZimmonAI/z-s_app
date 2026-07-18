@@ -277,3 +277,78 @@ test('Node HTTP adapter serves health and preserves auth failures', async () => 
     });
   }
 });
+
+test('upload completion responses preserve dual-provider protection stages', async () => {
+  const runtime = createHttpStorageRuntime({
+    authenticate: () => ({ appId: 'video-maker_app', serviceId: 'api' }),
+    authorizeCaller: () => true,
+    resolveStorageProfile: () => {
+      throw new Error('not used');
+    },
+    createObjectWriteIntent: () => {
+      throw new Error('not used');
+    },
+    uploadCompletionTokenService: {
+      issue: () => 'not-used',
+      verify: () => ({
+        purpose: 'object-upload-completion',
+        objectWriteIntentId: '00000000-0000-4000-8000-000000000001',
+        storageObjectId: '00000000-0000-4000-8000-000000000002',
+        callerAppId: 'video-maker_app',
+        callerServiceId: 'api',
+        contractVersion: '1.0',
+        expiresAt: '2026-07-17T00:15:00.000Z',
+      }),
+    },
+    completeObjectUpload: () => ({
+      storageObjectId: '00000000-0000-4000-8000-000000000002',
+      writeIntentId: '00000000-0000-4000-8000-000000000001',
+      state: 'recorded',
+      checksumSha256: 'a'.repeat(64),
+      byteLength: 1,
+      integrityVerification: {
+        verified: true,
+        checksumVerified: true,
+        sizeVerified: true,
+        sizeVerificationDisposition: 'matched',
+      },
+      objectProtectionStage: 'canonical-and-hot-verified',
+      storageState: 'ready',
+      verifiedMedia: {
+        mediaType: 'image/png',
+        mediaFamily: 'image',
+        image: { width: 1, height: 1 },
+      },
+      copies: {
+        hot: { state: 'verified', retryable: false },
+        canonical: { state: 'verified', retryable: false },
+      },
+    }),
+    controlPlaneReadiness: () => ({ status: 'ready' }),
+    dataPlaneReadiness: () => ({ status: 'ready' }),
+    now: () => new Date('2026-07-17T00:00:00.000Z'),
+  });
+
+  const response = await runtime.handle(new Request(
+    'http://z-s/v1/object-write-intents/00000000-0000-4000-8000-000000000001/content',
+    {
+      method: 'PUT',
+      headers: {
+        authorization: 'Bearer valid-token',
+        'x-zs-caller-app': 'video-maker_app',
+        'x-zs-contract-version': '1.0',
+        'x-app-correlation-reference': 'resource-01',
+        'idempotency-key': 'complete-dual-provider',
+        'x-zs-upload-completion-token': 'valid-token',
+        'x-content-sha256': 'a'.repeat(64),
+        'content-type': 'image/png',
+        'content-length': '1',
+      },
+      body: new Uint8Array([1]),
+    },
+  ));
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as Record<string, unknown>;
+  assert.equal((body.result as Record<string, unknown>).objectProtectionStage, 'canonical-and-hot-verified');
+});

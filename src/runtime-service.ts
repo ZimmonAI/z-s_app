@@ -382,7 +382,7 @@ function sanitizeUploadCompletionCore(
   ) {
     throw new StorageRuntimeError('internal', 'invalid-runtime-result', 500);
   }
-  if (value.objectProtectionStage !== 'upload-completion-recorded') {
+  if (typeof value.objectProtectionStage !== 'string' || value.objectProtectionStage.trim() === '') {
     throw new StorageRuntimeError('internal', 'invalid-runtime-result', 500);
   }
   return Object.freeze({
@@ -401,7 +401,7 @@ function sanitizeUploadCompletionCore(
       sizeVerified: true,
       sizeVerificationDisposition: 'matched',
     }),
-    objectProtectionStage: 'upload-completion-recorded',
+    objectProtectionStage: value.objectProtectionStage,
   });
 }
 
