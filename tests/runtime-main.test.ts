@@ -94,6 +94,9 @@ test('operator command and Zimspace manifest expose the composed local Z-s runti
   assert.match(runtimeComposition, /S3CompatibleProviderObjectReader/);
   assert.match(runtimeComposition, /BoundedMediaVerifier/);
   assert.match(verifier, /--confirm-live-actions/);
+  assert.doesNotMatch(verifier, /commonHeaders\(configuration, `\$\{suffix\}-upload`\)/);
+  assert.doesNotMatch(verifier, /commonHeaders\(configuration, `\$\{suffix\}-cancel`\)/);
+  assert.doesNotMatch(verifier, /commonHeaders\(configuration, 'cancel-upload'\)/);
   for (const scenario of [
     'png-write-read',
     'mp4-write-read-range',

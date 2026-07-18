@@ -232,7 +232,7 @@ async function createIntent(configuration, state, media, suffix, duplicateKey) {
     {
       method: 'POST',
       headers: {
-        ...commonHeaders(configuration, `${suffix}-intent`),
+        ...commonHeaders(configuration, suffix),
         'content-type': 'application/json',
         'idempotency-key': duplicateKey ?? idempotency(configuration, `${suffix}-intent`),
       },
@@ -256,7 +256,7 @@ async function uploadIntent(configuration, state, intent, suffix) {
     {
       method: 'PUT',
       headers: {
-        ...commonHeaders(configuration, `${suffix}-upload`),
+        ...commonHeaders(configuration, suffix),
         'content-type': intent.mediaType,
         'content-length': String(intent.bytes.byteLength),
         'x-content-sha256': intent.checksum,
@@ -285,7 +285,7 @@ async function cancelIntent(configuration, state, intentId, suffix, acceptedStat
     {
       method: 'DELETE',
       headers: {
-        ...commonHeaders(configuration, `${suffix}-cancel`),
+        ...commonHeaders(configuration, suffix),
         'idempotency-key': idempotency(configuration, `${suffix}-cancel`),
       },
     },
@@ -305,7 +305,7 @@ async function issueGrant(configuration, state, storageObjectId, suffix) {
     {
       method: 'POST',
       headers: {
-        ...commonHeaders(configuration, `${suffix}-grant`),
+        ...commonHeaders(configuration, suffix),
         'content-type': 'application/json',
         'idempotency-key': idempotency(configuration, `${suffix}-grant`),
       },
@@ -337,7 +337,7 @@ async function revokeGrant(configuration, state, grantId, suffix, acceptedStatus
     {
       method: 'DELETE',
       headers: {
-        ...commonHeaders(configuration, `${suffix}-revoke`),
+        ...commonHeaders(configuration, suffix),
         'idempotency-key': idempotency(configuration, `${suffix}-revoke`),
       },
     },
@@ -415,8 +415,8 @@ async function scenarioMp4WriteReadRange(configuration, state) {
 async function scenarioDuplicateReplay(configuration, state) {
   const media = Object.freeze({ mediaType: 'image/png', bytes: png() });
   const key = idempotency(configuration, 'duplicate-shared');
-  const first = await createIntent(configuration, state, media, 'duplicate-first', key);
-  const second = await createIntent(configuration, state, media, 'duplicate-second', key);
+  const first = await createIntent(configuration, state, media, 'duplicate', key);
+  const second = await createIntent(configuration, state, media, 'duplicate', key);
   assert.equal(first.writeIntentId, second.writeIntentId);
   assert.equal(first.storageObjectId, second.storageObjectId);
   assert.equal(first.duplicateProtection.replayed, false);
@@ -435,7 +435,7 @@ async function scenarioCancelBeforeContent(configuration, state) {
     {
       method: 'PUT',
       headers: {
-        ...commonHeaders(configuration, 'cancel-upload'),
+        ...commonHeaders(configuration, 'cancel'),
         'content-type': intent.mediaType,
         'content-length': String(intent.bytes.byteLength),
         'x-content-sha256': intent.checksum,
