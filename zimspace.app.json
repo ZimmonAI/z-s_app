@@ -16,6 +16,7 @@
           "role": "main",
           "workingDir": ".",
           "startCommand": "npm run local:start",
+          "envFile": "D:\\zimspace\\workspace-os\\storage\\z_secret\\by_entity\\apps\\z-s_app\\.env",
           "healthCheckUrl": "http://127.0.0.1:4310/healthz",
           "localUrl": "http://100.106.76.100:4310",
           "listenHost": "0.0.0.0",
