@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { createNodeHttpHandler } from './node-http-adapter.js';
-import { createVideoMakerRuntimeComposition } from './runtime-local-composition.js';
+import { createVideoMakerControlRuntimeComposition as createVideoMakerRuntimeComposition } from './runtime-control-composition.js';
 
 const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_PORT = 4310;

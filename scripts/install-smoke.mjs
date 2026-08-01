@@ -11,6 +11,14 @@ const root = process.cwd();
 const EXPECTED_NAME = '@zimmonai/z-s-control-plane';
 const EXPECTED_VERSION = '0.5.0';
 const EXPECTED_REGISTRY = 'https://npm.pkg.github.com';
+const npmExecPath = process.env.npm_execpath;
+
+function npmCommand(args, options) {
+  if (npmExecPath === undefined || npmExecPath.trim() === '') {
+    throw new Error('npm_execpath is required for package smoke checks');
+  }
+  return execFileAsync(process.execPath, [npmExecPath, ...args], options);
+}
 
 function parseArguments(argv) {
   const options = { spec: null, registry: null, evidence: null };
@@ -58,8 +66,7 @@ try {
   let localPackIntegrity = null;
 
   if (!installSpec) {
-    const packResult = await execFileAsync(
-      'npm',
+    const packResult = await npmCommand(
       ['pack', '--json', '--silent', '--pack-destination', packDirectory],
       { cwd: root },
     );
@@ -91,7 +98,7 @@ try {
   if (options.registry) installArguments.push('--registry', options.registry);
   installArguments.push(installSpec);
 
-  await execFileAsync('npm', installArguments, {
+  await npmCommand(installArguments, {
     cwd: consumerDirectory,
     env: { ...process.env, npm_config_update_notifier: 'false' },
   });

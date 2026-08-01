@@ -14,7 +14,7 @@ The package provides the server-side control-plane, durable registry, and bounde
 - provider-attempt, provider-copy, storage-object, and intent state persistence; and
 - targeted retry of only a failed provider role.
 
-It does not contain credential values, reusable upload authority, caller-selected provider destinations, browser code, live database state, deployment configuration, or consumer business logic.
+It does not contain credential values, reusable upload authority, caller-selected provider destinations, live database state, deployment configuration, or consumer business logic.
 
 ## Source package identity
 
@@ -29,6 +29,12 @@ The only direct runtime dependency is the exact registry package `@aws-sdk/clien
 The in-process runtime recognizes:
 
 ```text
+GET    /
+GET    /login
+POST   /admin/session
+DELETE /admin/session
+GET    /admin/storage
+POST   /admin/storage/plans
 GET    /healthz
 GET    /readyz
 POST   /v1/object-write-intents
@@ -41,6 +47,8 @@ HEAD   /v1/storage-objects/{storageObjectId}/content
 ```
 
 `POST /v1/object-write-intents` creates one durable object identity, one write intent, and exactly two pending provider-copy rows under resolved server-side authority.
+
+The browser control routes are operator-gated by `Z_S_CONTROL_ADMIN_PASSWORD` and `Z_S_CONTROL_SESSION_SIGNING_KEY`. They serve a minimal storage vault planner for client vaults, provider roles, retention policy, asset-class routing, and image-only resize derivatives. The planner returns a safe preview only; raw provider endpoints, access keys, secret access keys, and bearer/client tokens are not returned.
 
 `PUT /v1/object-write-intents/{objectWriteIntentId}/content`, when composed with `DualProviderObjectIngestAdapter`, performs this bounded sequence:
 
@@ -143,7 +151,9 @@ The harness emits exactly one compact safe JSON line containing the run ID, scen
 
 Public responses and safe diagnostics exclude provider endpoints, bucket names, internal locators, object keys, credential values, credential-reference identifiers, connection strings, bearer tokens, upload-completion tokens, raw provider responses, and consumer business payloads.
 
-Real deployment, package publication, provider provisioning, future schema changes, technical deletion, broad reconciliation scheduling, browser behavior, and consumer adoption remain separate governed work.
+Real deployment, package publication, provider provisioning, technical deletion, broad reconciliation scheduling, and consumer adoption remain separate governed work.
+
+Source migration `0004_z_s_storage_control_vaults.sql` adds the pending storage-control schema for browser-managed client vault setup: `storage_control_clients`, `storage_control_vaults`, `storage_control_route_rules`, `storage_control_image_derivative_rules`, and `storage_control_client_tokens`. It is additive and guarded, but not asserted here as live-applied.
 
 ## Short-lived object read delivery
 

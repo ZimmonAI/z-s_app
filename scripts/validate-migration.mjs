@@ -5,17 +5,22 @@ const runtimeFile = 'db/migrations/0002_z_s_runtime_registry.sql';
 const runtimeRollbackFile = 'db/migrations/0002_z_s_runtime_registry.down.sql';
 const readFilePath = 'db/migrations/0003_z_s_read_delivery.sql';
 const readRollbackFile = 'db/migrations/0003_z_s_read_delivery.down.sql';
+const vaultFilePath = 'db/migrations/0004_z_s_storage_control_vaults.sql';
+const vaultRollbackFile = 'db/migrations/0004_z_s_storage_control_vaults.down.sql';
 const baselineSql = await readFile(baselineFile, 'utf8');
 const runtimeSql = await readFile(runtimeFile, 'utf8');
 const runtimeRollbackSql = await readFile(runtimeRollbackFile, 'utf8');
 const readSql = await readFile(readFilePath, 'utf8');
 const readRollbackSql = await readFile(readRollbackFile, 'utf8');
+const vaultSql = await readFile(vaultFilePath, 'utf8');
+const vaultRollbackSql = await readFile(vaultRollbackFile, 'utf8');
 const baselineReference =
   'z-kn/08-execution/zimspace-storage-server-dev/tasks/in-progress/storage-platform-development/02a-package-z-s-core-control-plane-and-provider-capability-baseline.md';
 const runtimeReference =
   'z-kn/08-execution/zimspace-storage-server-dev/tasks/in-progress/storage-platform-development/02b-04-package-runtime-storage-registry-and-schema.md';
 const readReference =
   'z-kn/08-execution/zimspace-storage-server-dev/tasks/in-progress/storage-platform-development/02b-07-package-read-grant-delivery-fallback-and-range.md';
+const vaultReference = 'z-kn/06-db-schema/project/z-s/main.md#pending-source-migration-0004';
 
 const baselineTables = {
   managed_apps: ['id', 'app_id', 'environment', 'status', 'created_at', 'updated_at'],
@@ -73,6 +78,13 @@ const readColumns = [
   'created_at',
   'updated_at',
   'row_version',
+];
+const vaultTables = [
+  'storage_control_clients',
+  'storage_control_vaults',
+  'storage_control_route_rules',
+  'storage_control_image_derivative_rules',
+  'storage_control_client_tokens',
 ];
 
 const errors = [];
@@ -132,13 +144,52 @@ if (!/DROP TABLE public\.object_read_grants;/i.test(readRollbackSql)) {
   errors.push('read rollback missing object_read_grants');
 }
 
+for (const table of vaultTables) {
+  if (!new RegExp(`CREATE TABLE public\\.${table}\\s*\\(`, 'i').test(vaultSql)) {
+    errors.push(`missing storage-control table ${table}`);
+  }
+  const tableComment = vaultSql.match(
+    new RegExp(`COMMENT ON TABLE public\\.${table} IS '([^']*)'`, 'i'),
+  );
+  if (!tableComment) errors.push(`missing storage-control table comment ${table}`);
+  else if (!tableComment[1]?.includes(vaultReference)) {
+    errors.push(`storage-control table comment missing reference ${table}`);
+  }
+  if (!new RegExp(`DROP TABLE public\\.${table};`, 'i').test(vaultRollbackSql)) {
+    errors.push(`storage-control rollback missing table ${table}`);
+  }
+}
+
+for (const pattern of [
+  /0004 preflight missing baseline table/i,
+  /provider_type IN \('minio', 'r2', 's3-compatible'\)/i,
+  /provider_role IN \('canonical', 'hot', 'derivative'\)/i,
+  /retention_policy IN \('permanent', 'hot-cache-short', 'custom'\)/i,
+  /UNIQUE \(storage_control_client_id, id\)/i,
+  /FOREIGN KEY \(storage_control_client_id, primary_vault_id\)/i,
+  /FOREIGN KEY \(storage_control_client_id, target_vault_id\)/i,
+  /retention_policy IN \('hot-cache-short', 'custom'\) AND delete_after_days IS NOT NULL/i,
+  /asset_class IN \('raw-image', 'raw-video', 'image-derivative', 'document'\)/i,
+  /asset_class = 'raw-image' OR derivative_vault_id IS NULL/i,
+  /token_digest text NOT NULL UNIQUE/i,
+  /token_digest ~ '\^\[a-f0-9\]\{64\}\$'/i,
+  /jsonb_typeof\(resize_widths\) = 'array'/i,
+  /jsonb_array_length\(resize_widths\) BETWEEN 1 AND 8/i,
+  /COMMENT ON COLUMN public\.%I\.%I/i,
+  /0004 rollback blocked/i,
+]) {
+  if (!pattern.test(`${vaultSql}\n${vaultRollbackSql}`)) {
+    errors.push(`missing storage-control migration requirement ${pattern}`);
+  }
+}
+
 const prohibitedColumns = [
   'credential', 'endpoint', 'account_id', 'connection_string', 'signed_url', 'object_key',
   'bearer_token', 'upload_completion_token', 'read_grant_token', 'project_id', 'series_id',
   'video_id', 'scene_id', 'slot_id', 'user_id', 'title', 'prompt',
 ];
 for (const prohibited of prohibitedColumns) {
-  if (new RegExp(`^\\s*${prohibited}\\s+`, 'im').test(`${runtimeSql}\n${readSql}`)) {
+  if (new RegExp(`^\\s*${prohibited}\\s+`, 'im').test(`${runtimeSql}\n${readSql}\n${vaultSql}`)) {
     errors.push(`prohibited runtime column ${prohibited}`);
   }
 }
@@ -218,13 +269,13 @@ for (const index of [
   }
 }
 
-if (/CREATE EXTENSION/i.test(`${runtimeSql}\n${readSql}`)) {
+if (/CREATE EXTENSION/i.test(`${runtimeSql}\n${readSql}\n${vaultSql}`)) {
   errors.push('runtime migrations must not add PostgreSQL extensions');
 }
-if (/INSERT INTO public\.(?:object_write_intents|storage_objects|storage_object_copies|storage_provider_attempts|storage_operation_events|storage_reconciliation_issues|storage_idempotency_records|object_read_grants)/i.test(`${runtimeSql}\n${readSql}`)) {
+if (/INSERT INTO public\.(?:object_write_intents|storage_objects|storage_object_copies|storage_provider_attempts|storage_operation_events|storage_reconciliation_issues|storage_idempotency_records|object_read_grants|storage_control_clients|storage_control_vaults|storage_control_route_rules|storage_control_image_derivative_rules|storage_control_client_tokens)/i.test(`${runtimeSql}\n${readSql}\n${vaultSql}`)) {
   errors.push('runtime migrations must not seed runtime rows');
 }
-if (!/row_total <> 0/i.test(runtimeRollbackSql) || !/row_total <> 0/i.test(readRollbackSql)) {
+if (!/row_total <> 0/i.test(runtimeRollbackSql) || !/row_total <> 0/i.test(readRollbackSql) || !/row_total <> 0/i.test(vaultRollbackSql)) {
   errors.push('rollbacks must reject adopted runtime rows');
 }
 

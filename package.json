@@ -49,7 +49,9 @@
     "db/migrations/0002_z_s_runtime_registry.sql",
     "db/migrations/0002_z_s_runtime_registry.down.sql",
     "db/migrations/0003_z_s_read_delivery.sql",
-    "db/migrations/0003_z_s_read_delivery.down.sql"
+    "db/migrations/0003_z_s_read_delivery.down.sql",
+    "db/migrations/0004_z_s_storage_control_vaults.sql",
+    "db/migrations/0004_z_s_storage_control_vaults.down.sql"
   ],
   "scripts": {
     "clean": "node scripts/clean.mjs",

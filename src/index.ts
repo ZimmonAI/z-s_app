@@ -1,4 +1,5 @@
 export * from './capability-registry.js';
+export * from './control-plane-ui.js';
 export * from './domain.js';
 export * from './errors.js';
 export * from './fingerprint.js';
