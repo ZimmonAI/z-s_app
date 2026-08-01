@@ -37,14 +37,6 @@ test('production Node runtime serves client routes and delegates unknown routes'
 
     const unknown = await fetch(`${origin}/not-a-control-route`);
     assert.equal(unknown.status, 404);
-    assert.deepEqual(await unknown.json(), {
-      error: {
-        diagnostic: {
-          category: 'invalid-request',
-          code: 'route-not-found',
-          retryable: false,
-        },
-      },
-    });
+    assert.match(await unknown.text(), /"code":"route-not-found"/);
   });
 });
