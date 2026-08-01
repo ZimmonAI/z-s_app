@@ -11,10 +11,23 @@ on:
       - src/runtime-contract.ts
       - src/runtime-read-delivery.ts
       - src/runtime-read-grant.ts
+      - src/client-control-auth.ts
+      - src/client-control-composition.ts
+      - src/client-control-pages.ts
+      - src/control-plane-session.ts
+      - src/control-plane-ui-abuse.ts
+      - src/control-plane-ui-request.ts
+      - src/control-plane-ui.ts
+      - src/node-http-adapter.ts
+      - src/runtime-control-composition.ts
       - tests/runtime-service.test.ts
       - tests/runtime-read-delivery.test.ts
       - tests/runtime-read-grant.test.ts
       - tests/runtime-read-grant.integration.test.ts
+      - tests/client-control-auth.test.ts
+      - tests/control-plane-client-login.test.ts
+      - tests/control-plane-ui-abuse.test.ts
+      - scripts/bootstrap-client-login.mjs
       - scripts/install-smoke.mjs
       - scripts/local-readiness.mjs
       - scripts/validate-migration.mjs
@@ -71,7 +84,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          allowed='^(package\.json|package-lock\.json|README\.md|docs/runtime-contract\.md|src/(index|runtime-contract|runtime-read-delivery|runtime-read-grant)\.ts|tests/(runtime-service|runtime-read-delivery|runtime-read-grant|runtime-read-grant\.integration)\.test\.ts|scripts/(install-smoke|local-readiness|validate-migration|verify-package-artifact)\.mjs|db/migrations/0003_z_s_read_delivery(\.down)?\.sql|\.github/workflows/(2b-05-write-intent-ingest-validation|2b-06-dual-provider-media-validation|2b-07-read-delivery-validation)\.yml)$'
+          allowed='^(package\.json|package-lock\.json|README\.md|docs/runtime-contract\.md|src/(index|runtime-contract|runtime-read-delivery|runtime-read-grant|client-control-auth|client-control-composition|client-control-pages|control-plane-session|control-plane-ui-abuse|control-plane-ui-request|control-plane-ui|node-http-adapter|runtime-control-composition)\.ts|tests/(runtime-service|runtime-read-delivery|runtime-read-grant|runtime-read-grant\.integration|client-control-auth|control-plane-client-login|control-plane-ui-abuse)\.test\.ts|scripts/(bootstrap-client-login|install-smoke|local-readiness|validate-migration|verify-package-artifact)\.mjs|db/migrations/0003_z_s_read_delivery(\.down)?\.sql|\.github/workflows/(2b-05-write-intent-ingest-validation|2b-06-dual-provider-media-validation|2b-07-read-delivery-validation)\.yml)$'
           git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" | while IFS= read -r file; do
             if [[ ! "$file" =~ $allowed ]]; then
               echo "out-of-scope path: $file" >&2
