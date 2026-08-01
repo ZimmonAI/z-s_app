@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -28,44 +28,41 @@ const EXPECTED_PACKAGE_FILES = [
   'db/migrations/0002_z_s_runtime_registry.down.sql',
   'db/migrations/0003_z_s_read_delivery.sql',
   'db/migrations/0003_z_s_read_delivery.down.sql',
+  'db/migrations/0004_z_s_storage_control_vaults.sql',
+  'db/migrations/0004_z_s_storage_control_vaults.down.sql',
 ];
-const APPROVED_DIST_MODULES = [
-  'capability-registry',
-  'domain',
-  'errors',
-  'fingerprint',
-  'index',
-  'integrity',
-  'prefix-authorizer',
-  'profile-registry',
-  'runtime-contract',
-  'runtime-dual-provider',
-  'runtime-ingest',
-  'runtime-media-verification',
-  'runtime-read-delivery',
-  'runtime-read-grant',
-  'runtime-s3-provider',
-  'runtime-service',
-  'runtime-storage-registry',
-  'runtime-storage-registry-duplicate',
-  'runtime-storage-registry-object',
-  'runtime-storage-registry-support',
-  'runtime-storage-registry-types',
-  'runtime-upload-token',
-  'service',
+const EXPECTED_STATIC_ARTIFACT_FILES = [
+  'README.md',
+  'docs/runtime-contract.md',
+  'package.json',
+  'db/migrations/0002_z_s_runtime_registry.sql',
+  'db/migrations/0002_z_s_runtime_registry.down.sql',
+  'db/migrations/0003_z_s_read_delivery.sql',
+  'db/migrations/0003_z_s_read_delivery.down.sql',
+  'db/migrations/0004_z_s_storage_control_vaults.sql',
+  'db/migrations/0004_z_s_storage_control_vaults.down.sql',
 ];
 
-function expectedFiles() {
-  const files = [
-    'README.md',
-    'docs/runtime-contract.md',
-    'package.json',
-    'db/migrations/0002_z_s_runtime_registry.sql',
-    'db/migrations/0002_z_s_runtime_registry.down.sql',
-    'db/migrations/0003_z_s_read_delivery.sql',
-    'db/migrations/0003_z_s_read_delivery.down.sql',
-  ];
-  for (const moduleName of APPROVED_DIST_MODULES) {
+async function sourceModuleNames(directory, prefix = '') {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const modules = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const relativePath = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) {
+      modules.push(...await sourceModuleNames(path.join(directory, entry.name), relativePath));
+      continue;
+    }
+    if (entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) {
+      modules.push(relativePath.slice(0, -3));
+    }
+  }
+  return modules;
+}
+
+async function expectedFiles() {
+  const files = [...EXPECTED_STATIC_ARTIFACT_FILES];
+  const moduleNames = await sourceModuleNames(path.join(root, 'src'));
+  for (const moduleName of moduleNames) {
     files.push(
       `dist/${moduleName}.d.ts`,
       `dist/${moduleName}.d.ts.map`,
@@ -149,7 +146,7 @@ try {
   assert.match(artifact.shasum, /^[a-f0-9]{40}$/);
 
   const files = (artifact.files ?? []).map((entry) => entry.path).sort();
-  assert.deepEqual(files, expectedFiles(), 'package file list differs from the approved allowlist');
+  assert.deepEqual(files, await expectedFiles(), 'package file list differs from the source-derived allowlist');
 
   const tarballRoot = options.tarballRoot
     ? path.resolve(root, options.tarballRoot)

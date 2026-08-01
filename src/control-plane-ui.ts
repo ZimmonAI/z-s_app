@@ -1,37 +1,49 @@
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import type { ClientCredentialAuthenticator } from './client-control-auth.js';
+import { createUnavailableClientCredentialAuthenticator } from './client-control-auth.js';
+import { clientLoginPage, clientStoragePage, type ClientAccountView } from './client-control-pages.js';
+import { createControlLoginAttemptLimiter } from './control-plane-ui-abuse.js';
+import {
+  ControlPlaneUiError,
+  readClientCredential,
+  readPassword,
+  readPlanPayload,
+  wantsJson,
+} from './control-plane-ui-request.js';
+import {
+  issueSignedSession,
+  readSignedSessionClaims,
+  safeEquals,
+  sessionCookie,
+  validSignedSession,
+} from './control-plane-session.js';
 import type { HttpStorageRuntime } from './runtime-contract.js';
-import { storageControlFormErrorCode, storageControlPlanInputFromForm } from './storage-control-form.js';
+import { storageControlFormErrorCode } from './storage-control-form.js';
 import { buildStorageControlPlan, storageControlPlanErrorCode } from './storage-control-plan.js';
 import { loginPage, storagePlannerPage, storagePlanResultPage } from './storage-control-pages.js';
 
 const SESSION_COOKIE = 'zs_control_session';
 const SESSION_SUBJECT = 'z-s-control';
+const CLIENT_SESSION_COOKIE = 'zs_client_session';
+const CLIENT_SESSION_SUBJECT_PREFIX = 'z-s-client:';
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
+const CLIENT_ID_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
 
 export interface ControlPlaneUiOptions {
   readonly adminPassword?: string;
   readonly sessionSigningKey?: string;
+  readonly clientCredentialAuthenticator?: ClientCredentialAuthenticator;
   readonly now?: () => Date;
 }
 
-class ControlPlaneUiError extends Error {
-  readonly status: number;
-  readonly code: string;
-
-  constructor(status: number, code: string) {
-    super(code);
-    this.name = 'ControlPlaneUiError';
-    this.status = status;
-    this.code = code;
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function configured(options: Readonly<ControlPlaneUiOptions>): boolean {
+function operatorConfigured(options: Readonly<ControlPlaneUiOptions>): boolean {
   return options.adminPassword !== undefined && options.sessionSigningKey !== undefined;
+}
+
+function clientConfigured(
+  options: Readonly<ControlPlaneUiOptions>,
+  authenticator: ClientCredentialAuthenticator,
+): boolean {
+  return authenticator.configured && options.sessionSigningKey !== undefined;
 }
 
 function html(body: string, status = 200, headers?: HeadersInit): Response {
@@ -56,10 +68,6 @@ function json(body: unknown, status = 200, headers?: HeadersInit): Response {
   });
 }
 
-function wantsJson(request: Request): boolean {
-  return (request.headers.get('content-type') ?? '').toLowerCase().startsWith('application/json');
-}
-
 function redirect(location: string, headers?: HeadersInit): Response {
   return new Response(null, {
     status: 302,
@@ -71,112 +79,45 @@ function redirect(location: string, headers?: HeadersInit): Response {
   });
 }
 
-function safeEquals(left: string, right: string): boolean {
-  const leftDigest = createHash('sha256').update(left, 'utf8').digest();
-  const rightDigest = createHash('sha256').update(right, 'utf8').digest();
-  return timingSafeEqual(leftDigest, rightDigest);
+function loginAttemptKey(request: Request): string {
+  const forwarded = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
+  if (forwarded !== undefined && forwarded !== '') return forwarded;
+  const direct = request.headers.get('x-real-ip')?.trim();
+  return direct === undefined || direct === '' ? 'unknown-client' : direct;
 }
 
-function sign(payload: string, signingKey: string): string {
-  return createHmac('sha256', signingKey).update(payload, 'utf8').digest('base64url');
-}
-
-function issueSession(signingKey: string, now: Date): string {
-  const claims = {
-    sub: SESSION_SUBJECT,
-    exp: now.getTime() + SESSION_TTL_SECONDS * 1000,
-  };
-  const payload = Buffer.from(JSON.stringify(claims), 'utf8').toString('base64url');
-  return `${payload}.${sign(payload, signingKey)}`;
-}
-
-function cookieValue(request: Request): string | undefined {
-  const raw = request.headers.get('cookie');
-  if (raw === null) return undefined;
-  for (const part of raw.split(';')) {
-    const trimmed = part.trim();
-    const separator = trimmed.indexOf('=');
-    if (separator < 1) continue;
-    const name = trimmed.slice(0, separator);
-    if (name === SESSION_COOKIE) return trimmed.slice(separator + 1);
-  }
-  return undefined;
-}
-
-function sessionCookie(request: Request, value: string, maxAge: number): string {
-  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
-  return `${SESSION_COOKIE}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${secure}`;
-}
-
-function validSession(
+function operatorAuthenticated(
   request: Request,
   options: Readonly<ControlPlaneUiOptions>,
   now: Date,
 ): boolean {
-  if (options.sessionSigningKey === undefined) return false;
-  const token = cookieValue(request);
-  if (token === undefined) return false;
-  const parts = token.split('.');
-  const payload = parts[0];
-  const signature = parts[1];
-  if (payload === undefined || signature === undefined || parts.length !== 2) return false;
-  if (!safeEquals(sign(payload, options.sessionSigningKey), signature)) return false;
-  try {
-    const claims: unknown = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    if (!isRecord(claims)) return false;
-    const expiresAt = claims.exp;
-    return (
-      claims.sub === SESSION_SUBJECT &&
-      typeof expiresAt === 'number' &&
-      Number.isSafeInteger(expiresAt) &&
-      expiresAt > now.getTime()
-    );
-  } catch (error) {
-    if (error instanceof Error) return false;
-    return false;
-  }
+  if (!operatorConfigured(options)) return false;
+  return validSignedSession(request, {
+    cookieName: SESSION_COOKIE,
+    subject: SESSION_SUBJECT,
+    ttlSeconds: SESSION_TTL_SECONDS,
+    signingKey: options.sessionSigningKey ?? '',
+  }, now);
 }
 
-async function readJson(request: Request): Promise<unknown> {
-  try {
-    return await request.json();
-  } catch (error) {
-    if (error instanceof SyntaxError || error instanceof TypeError) {
-      throw new ControlPlaneUiError(400, 'invalid-json');
-    }
-    throw error;
-  }
-}
-
-async function readPassword(request: Request): Promise<string> {
-  const contentType = request.headers.get('content-type') ?? '';
-  if (contentType.toLowerCase().startsWith('application/json')) {
-    const payload = await readJson(request);
-    if (isRecord(payload) && typeof payload.password === 'string') return payload.password;
-    throw new ControlPlaneUiError(400, 'invalid-password');
-  }
-  const params = new URLSearchParams(await request.text());
-  const password = params.get('operatorPassphrase');
-  if (password === null) throw new ControlPlaneUiError(400, 'invalid-password');
-  return password;
-}
-
-async function readPlanPayload(request: Request): Promise<unknown> {
-  if (wantsJson(request)) return readJson(request);
-  const params = new URLSearchParams(await request.text());
-  const payload = params.get('payload');
-  if (payload === null) return storageControlPlanInputFromForm(params);
-  try {
-    const parsed: unknown = JSON.parse(payload);
-    return parsed;
-  } catch (error) {
-    if (error instanceof SyntaxError) throw new ControlPlaneUiError(400, 'invalid-json');
-    throw error;
-  }
-}
-
-function authenticated(request: Request, options: Readonly<ControlPlaneUiOptions>, now: Date): boolean {
-  return configured(options) && validSession(request, options, now);
+function clientSessionAccount(
+  request: Request,
+  options: Readonly<ControlPlaneUiOptions>,
+  now: Date,
+  labels: ReadonlyMap<string, string>,
+): Readonly<ClientAccountView> | null {
+  if (options.sessionSigningKey === undefined) return null;
+  const claims = readSignedSessionClaims(request, {
+    cookieName: CLIENT_SESSION_COOKIE,
+    signingKey: options.sessionSigningKey,
+  }, now);
+  if (claims === null || !claims.subject.startsWith(CLIENT_SESSION_SUBJECT_PREFIX)) return null;
+  const clientId = claims.subject.slice(CLIENT_SESSION_SUBJECT_PREFIX.length);
+  if (!CLIENT_ID_PATTERN.test(clientId)) return null;
+  return Object.freeze({
+    clientId,
+    displayLabel: labels.get(clientId) ?? clientId,
+  });
 }
 
 export function createControlPlaneUiRuntime(
@@ -184,28 +125,47 @@ export function createControlPlaneUiRuntime(
   options: ControlPlaneUiOptions = {},
 ): HttpStorageRuntime {
   const now = options.now ?? (() => new Date());
+  const clientAuthenticator =
+    options.clientCredentialAuthenticator ?? createUnavailableClientCredentialAuthenticator();
+  const operatorLoginLimiter = createControlLoginAttemptLimiter();
+  const clientLoginLimiter = createControlLoginAttemptLimiter('client-login-rate-limited');
+  const clientLabels = new Map<string, string>();
 
   async function handle(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const snapshot = now();
     try {
       if (request.method === 'GET' && url.pathname === '/') {
-        return redirect(authenticated(request, options, snapshot) ? '/admin/storage' : '/login');
+        return redirect(operatorAuthenticated(request, options, snapshot) ? '/admin/storage' : '/login');
       }
       if (request.method === 'GET' && url.pathname === '/login') {
-        return html(loginPage(configured(options)));
+        return html(loginPage(operatorConfigured(options)));
       }
       if (request.method === 'GET' && url.pathname === '/favicon.ico') {
-        return new Response(null, { status: 204, headers: { 'cache-control': 'public, max-age=86400' } });
+        return new Response(null, {
+          status: 204,
+          headers: { 'cache-control': 'public, max-age=86400' },
+        });
       }
       if (request.method === 'POST' && url.pathname === '/admin/session') {
-        if (!configured(options)) throw new ControlPlaneUiError(503, 'control-login-not-configured');
+        if (!operatorConfigured(options)) {
+          throw new ControlPlaneUiError(503, 'control-login-not-configured');
+        }
+        const attemptKey = loginAttemptKey(request);
+        operatorLoginLimiter.assertAllowed(attemptKey, snapshot);
         const password = await readPassword(request);
         if (!safeEquals(password, options.adminPassword ?? '')) {
+          operatorLoginLimiter.recordFailure(attemptKey, snapshot);
           throw new ControlPlaneUiError(401, 'invalid-control-password');
         }
-        const token = issueSession(options.sessionSigningKey ?? '', snapshot);
-        const cookie = sessionCookie(request, token, SESSION_TTL_SECONDS);
+        operatorLoginLimiter.recordSuccess(attemptKey);
+        const token = issueSignedSession({
+          cookieName: SESSION_COOKIE,
+          subject: SESSION_SUBJECT,
+          ttlSeconds: SESSION_TTL_SECONDS,
+          signingKey: options.sessionSigningKey ?? '',
+        }, snapshot);
+        const cookie = sessionCookie(request, SESSION_COOKIE, token, SESSION_TTL_SECONDS);
         if (wantsJson(request)) {
           return new Response(null, { status: 204, headers: { 'set-cookie': cookie } });
         }
@@ -214,31 +174,91 @@ export function createControlPlaneUiRuntime(
       if (request.method === 'DELETE' && url.pathname === '/admin/session') {
         return new Response(null, {
           status: 204,
-          headers: { 'set-cookie': sessionCookie(request, '', 0) },
+          headers: { 'set-cookie': sessionCookie(request, SESSION_COOKIE, '', 0) },
         });
       }
       if (request.method === 'GET' && url.pathname === '/admin/storage') {
-        if (!authenticated(request, options, snapshot)) return redirect('/login');
+        if (!operatorAuthenticated(request, options, snapshot)) return redirect('/login');
         return html(storagePlannerPage());
       }
       if (request.method === 'POST' && url.pathname === '/admin/storage/plans') {
-        if (!authenticated(request, options, snapshot)) return json({ error: { code: 'login-required' } }, 401);
-        const plan = buildStorageControlPlan(await readPlanPayload(request));
-        if (wantsJson(request)) {
-          return json({ result: plan });
+        if (!operatorAuthenticated(request, options, snapshot)) {
+          return json({ error: { code: 'login-required' } }, 401);
         }
+        const plan = buildStorageControlPlan(await readPlanPayload(request));
+        if (wantsJson(request)) return json({ result: plan });
         return html(storagePlanResultPage(plan));
+      }
+      if (request.method === 'GET' && url.pathname === '/client') {
+        const account = clientSessionAccount(request, options, snapshot, clientLabels);
+        return redirect(account === null ? '/client/login' : '/client/storage');
+      }
+      if (request.method === 'GET' && url.pathname === '/client/login') {
+        return html(clientLoginPage(clientConfigured(options, clientAuthenticator)));
+      }
+      if (request.method === 'POST' && url.pathname === '/client/session') {
+        if (!clientConfigured(options, clientAuthenticator)) {
+          throw new ControlPlaneUiError(503, 'client-login-not-configured');
+        }
+        const attemptKey = loginAttemptKey(request);
+        clientLoginLimiter.assertAllowed(attemptKey, snapshot);
+        const credential = await readClientCredential(request);
+        const result = await clientAuthenticator.authenticate({ ...credential, now: snapshot });
+        if (result.kind === 'not-configured') {
+          throw new ControlPlaneUiError(503, 'client-login-not-configured');
+        }
+        if (result.kind === 'disabled') {
+          clientLoginLimiter.recordFailure(attemptKey, snapshot);
+          throw new ControlPlaneUiError(403, 'client-disabled');
+        }
+        if (result.kind === 'invalid') {
+          clientLoginLimiter.recordFailure(attemptKey, snapshot);
+          throw new ControlPlaneUiError(401, 'invalid-client-credential');
+        }
+        clientLoginLimiter.recordSuccess(attemptKey);
+        clientLabels.set(result.clientId, result.displayLabel);
+        const token = issueSignedSession({
+          cookieName: CLIENT_SESSION_COOKIE,
+          subject: `${CLIENT_SESSION_SUBJECT_PREFIX}${result.clientId}`,
+          ttlSeconds: SESSION_TTL_SECONDS,
+          signingKey: options.sessionSigningKey ?? '',
+        }, snapshot);
+        const cookie = sessionCookie(
+          request,
+          CLIENT_SESSION_COOKIE,
+          token,
+          SESSION_TTL_SECONDS,
+        );
+        if (wantsJson(request)) {
+          return new Response(null, { status: 204, headers: { 'set-cookie': cookie } });
+        }
+        return redirect('/client/storage', { 'set-cookie': cookie });
+      }
+      if (request.method === 'DELETE' && url.pathname === '/client/session') {
+        return new Response(null, {
+          status: 204,
+          headers: { 'set-cookie': sessionCookie(request, CLIENT_SESSION_COOKIE, '', 0) },
+        });
+      }
+      if (request.method === 'GET' && url.pathname === '/client/storage') {
+        const account = clientSessionAccount(request, options, snapshot, clientLabels);
+        if (account === null) return redirect('/client/login');
+        return html(clientStoragePage(account));
       }
       return storageRuntime.handle(request);
     } catch (error) {
       if (error instanceof ControlPlaneUiError) {
-        if (wantsJson(request)) {
-          return json({ error: { code: error.code } }, error.status);
-        }
+        if (wantsJson(request)) return json({ error: { code: error.code } }, error.status);
         if (url.pathname === '/admin/storage/plans') {
           return html(storagePlannerPage(error.code), error.status);
         }
-        return html(loginPage(configured(options), error.code), error.status);
+        if (url.pathname.startsWith('/client')) {
+          return html(
+            clientLoginPage(clientConfigured(options, clientAuthenticator), error.code),
+            error.status,
+          );
+        }
+        return html(loginPage(operatorConfigured(options), error.code), error.status);
       }
       const formCode = storageControlFormErrorCode(error);
       const code = formCode === 'internal-error' ? storageControlPlanErrorCode(error) : formCode;
