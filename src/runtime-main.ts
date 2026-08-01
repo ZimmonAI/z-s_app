@@ -1,6 +1,4 @@
-import { createServer } from 'node:http';
-import { createNodeHttpHandler } from './node-http-adapter.js';
-import { createVideoMakerControlRuntimeComposition as createVideoMakerRuntimeComposition } from './runtime-control-composition.js';
+import { createVideoMakerNodeRuntimeServer } from './runtime-node-server.js';
 
 const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_PORT = 4310;
@@ -15,12 +13,11 @@ function readPort(): number {
   return port;
 }
 
-const composition = createVideoMakerRuntimeComposition();
-const server = createServer(createNodeHttpHandler(composition.runtime));
+const runtimeServer = createVideoMakerNodeRuntimeServer();
 const host = process.env.Z_S_RUNTIME_HOST?.trim() || DEFAULT_HOST;
 const port = readPort();
 
-server.listen(port, host, () => {
+runtimeServer.server.listen(port, host, () => {
   console.log(JSON.stringify({ service: 'z-s', host, port, state: 'listening' }));
 });
 
@@ -28,11 +25,7 @@ let shutdownStarted = false;
 async function shutdown(): Promise<void> {
   if (shutdownStarted) return;
   shutdownStarted = true;
-  await new Promise<void>((resolve) => {
-    server.close(() => resolve());
-    server.closeIdleConnections();
-  });
-  await composition.close();
+  await runtimeServer.close();
 }
 
 function requestShutdown(): void {
