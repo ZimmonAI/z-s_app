@@ -46,7 +46,7 @@ jobs:
             --pack-json package-output/pack.json \
             --tarball-root package-output \
             --output evidence/package-artifact.json
-          node scripts/install-smoke.mjs --evidence evidence/local-install.json
+          npm run pack:check -- --evidence evidence/local-install.json
       - name: Retain non-secret package evidence
         uses: actions/upload-artifact@v4
         with:
