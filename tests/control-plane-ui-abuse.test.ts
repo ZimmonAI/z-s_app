@@ -12,7 +12,7 @@ import { createNodeHttpHandler } from '../src/node-http-adapter.js';
 import type { HttpStorageRuntime } from '../src/runtime-contract.js';
 
 const SIGNING_KEY = 'control-session-signing-key-2026';
-const ADMIN_PASSWORD = 'operator-passphrase';
+const ADMIN_PASSPHRASE = 'operator-passphrase';
 
 const storageRuntime: HttpStorageRuntime = Object.freeze({
   async handle(): Promise<Response> {
@@ -127,7 +127,7 @@ test('Node adapter rejects oversized client session bodies without content-lengt
 
 test('client login throttling is separate from operator login throttling', async () => {
   const runtime = createControlPlaneUiRuntime(storageRuntime, {
-    adminPassword: ADMIN_PASSWORD,
+    adminPassword: ADMIN_PASSPHRASE,
     sessionSigningKey: SIGNING_KEY,
     clientCredentialAuthenticator: new RejectingClientAuthenticator(),
   });
@@ -159,7 +159,7 @@ test('client login throttling is separate from operator login throttling', async
       'content-type': 'application/json',
       'x-forwarded-for': '203.0.113.10',
     },
-    body: JSON.stringify({ password: ADMIN_PASSWORD }),
+    body: JSON.stringify({ password: ADMIN_PASSPHRASE }),
   }));
   assert.equal(operator.status, 204);
   assert.ok(operator.headers.get('set-cookie')?.startsWith('zs_control_session='));
