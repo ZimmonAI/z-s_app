@@ -55,6 +55,7 @@
   ],
   "scripts": {
     "clean": "node scripts/clean.mjs",
+    "client-login:bootstrap": "node scripts/bootstrap-client-login.mjs",
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:compile": "node scripts/clean-test.mjs && tsc -p tsconfig.test.json",
