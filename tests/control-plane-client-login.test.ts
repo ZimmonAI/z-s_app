@@ -10,7 +10,7 @@ import type { HttpStorageRuntime } from '../src/runtime-contract.js';
 import { createVideoMakerControlRuntimeComposition } from '../src/runtime-control-composition.js';
 
 const CLIENT_CREDENTIAL = 'fixture-browser-credential';
-const ADMIN_PASSWORD = 'operator-passphrase';
+const ADMIN_PASSPHRASE = 'operator-passphrase';
 const SIGNING_KEY = 'control-session-signing-key-2026';
 const NOW = new Date('2026-08-01T00:00:00.000Z');
 
@@ -63,7 +63,7 @@ class FakeClientAuthenticator implements ClientCredentialAuthenticator {
 
 function runtime(): HttpStorageRuntime {
   return createControlPlaneUiRuntime(storageRuntime, {
-    adminPassword: ADMIN_PASSWORD,
+    adminPassword: ADMIN_PASSPHRASE,
     sessionSigningKey: SIGNING_KEY,
     clientCredentialAuthenticator: new FakeClientAuthenticator(),
     now: () => NOW,
@@ -134,7 +134,7 @@ test('client session cannot authorize admin storage and operator session cannot 
   const operatorSession = await ui.handle(new Request('https://z-s.zimmon.ai/admin/session', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: ADMIN_PASSWORD }),
+    body: JSON.stringify({ password: ADMIN_PASSPHRASE }),
   }));
   const operatorCookie = operatorSession.headers.get('set-cookie');
   assert.ok(operatorCookie !== null);
