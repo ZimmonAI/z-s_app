@@ -191,6 +191,9 @@ function parseRoute(value: unknown): StorageControlRoutePlan {
     typeof derivativeVaultId === 'string' && derivativeVaultId.trim() !== ''
       ? requiredString(value, 'derivativeVaultId', IDENTIFIER_PATTERN)
       : undefined;
+  if (derivative !== undefined && route.assetClass !== 'raw-image') {
+    throw new StorageControlPlanError('invalid-derivativeVaultId');
+  }
   return Object.freeze({
     ...route,
     ...(replica === undefined ? {} : { replicaVaultId: replica }),

@@ -16,7 +16,7 @@ export function controlPage(title: string, body: string): string {
   <meta name="description" content="Z-s storage control login and vault planner">
   <title>${escapeHtml(title)}</title>
   <style>
-    :root { color-scheme: light dark; --surface-primary: Canvas; --surface-panel: color-mix(in srgb, CanvasText 4%, Canvas); --surface-subtle: color-mix(in srgb, CanvasText 8%, Canvas); --text-primary: CanvasText; --text-secondary: color-mix(in srgb, CanvasText 68%, Canvas); --border-default: color-mix(in srgb, CanvasText 18%, Canvas); --accent-primary: LinkText; --status-error: Mark; --space-2: .5rem; --space-3: .75rem; --space-4: 1rem; --space-6: 1.5rem; --space-8: 2rem; --space-12: 3rem; }
+    :root { color-scheme: light dark; --surface-primary: Canvas; --surface-panel: color-mix(in srgb, CanvasText 4%, Canvas); --surface-subtle: color-mix(in srgb, CanvasText 8%, Canvas); --text-primary: CanvasText; --text-secondary: color-mix(in srgb, CanvasText 68%, Canvas); --border-default: color-mix(in srgb, CanvasText 18%, Canvas); --accent-primary: LinkText; --status-error-surface: Mark; --status-error-text: MarkText; --space-2: .5rem; --space-3: .75rem; --space-4: 1rem; --space-6: 1.5rem; --space-8: 2rem; --space-12: 3rem; }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--surface-primary); color: var(--text-primary); font: 16px/1.6 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     main { width: min(1120px, calc(100% - 2rem)); margin: 0 auto; padding: var(--space-12) 0; }
@@ -37,7 +37,7 @@ export function controlPage(title: string, body: string): string {
     .grid, .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: var(--space-4); }
     .stack, .planner-form { display: grid; gap: var(--space-4); }
     .option-line { display: flex; align-items: center; gap: var(--space-3); font-weight: 700; }
-    .error { color: var(--status-error); font-weight: 700; }
+    .error { border: 1px solid var(--border-default); border-radius: .75rem; padding: var(--space-3); background: var(--status-error-surface); color: var(--status-error-text); font-weight: 700; }
     .caption, .help { font-size: .875rem; color: var(--text-secondary); }
     pre { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--border-default); border-radius: .75rem; padding: var(--space-4); background: var(--surface-subtle); }
   </style>
