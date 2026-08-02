@@ -2,8 +2,24 @@ import { readFile } from 'node:fs/promises';
 
 const upPath = 'db/migrations/0005_z_s_client_storage_configuration.sql';
 const downPath = 'db/migrations/0005_z_s_client_storage_configuration.down.sql';
+const cleanupUpPath = 'db/migrations/0006_z_s_configuration_audit_cleanup.sql';
+const cleanupDownPath = 'db/migrations/0006_z_s_configuration_audit_cleanup.down.sql';
+const childCleanupUpPath = 'db/migrations/0007_z_s_configuration_child_cleanup.sql';
+const childCleanupDownPath = 'db/migrations/0007_z_s_configuration_child_cleanup.down.sql';
+const auditNullificationUpPath = 'db/migrations/0008_z_s_configuration_audit_nullification.sql';
+const auditNullificationDownPath = 'db/migrations/0008_z_s_configuration_audit_nullification.down.sql';
+const childFkDeferralUpPath = 'db/migrations/0009_z_s_configuration_child_fk_deferral.sql';
+const childFkDeferralDownPath = 'db/migrations/0009_z_s_configuration_child_fk_deferral.down.sql';
 const up = await readFile(upPath, 'utf8');
 const down = await readFile(downPath, 'utf8');
+const cleanupUp = await readFile(cleanupUpPath, 'utf8');
+const cleanupDown = await readFile(cleanupDownPath, 'utf8');
+const childCleanupUp = await readFile(childCleanupUpPath, 'utf8');
+const childCleanupDown = await readFile(childCleanupDownPath, 'utf8');
+const auditNullificationUp = await readFile(auditNullificationUpPath, 'utf8');
+const auditNullificationDown = await readFile(auditNullificationDownPath, 'utf8');
+const childFkDeferralUp = await readFile(childFkDeferralUpPath, 'utf8');
+const childFkDeferralDown = await readFile(childFkDeferralDownPath, 'utf8');
 const errors = [];
 const taskReference =
   'z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/01-online-configuration-platform-coding.md';
@@ -82,6 +98,66 @@ if (/INSERT INTO public\.storage_control_/i.test(up)) {
 }
 if (!/row_total <> 0/i.test(down)) {
   errors.push('configuration rollback must reject adopted rows');
+}
+for (const pattern of [
+  /DROP CONSTRAINT storage_control_configuration_aud_configuration_version_id_fkey/i,
+  /DROP CONSTRAINT storage_control_configuration_audit_e_integration_token_id_fkey/i,
+  /FOREIGN KEY \(configuration_version_id\)[\s\S]*ON DELETE SET NULL/i,
+  /FOREIGN KEY \(integration_token_id\)[\s\S]*ON DELETE SET NULL/i,
+  /Audit history survives draft cleanup/i,
+  /Audit history survives integration-token metadata cleanup/i,
+]) {
+  if (!pattern.test(cleanupUp)) {
+    errors.push(`missing configuration audit cleanup migration requirement ${pattern}`);
+  }
+}
+for (const pattern of [
+  /FOREIGN KEY \(configuration_version_id\)[\s\S]*ON DELETE RESTRICT/i,
+  /FOREIGN KEY \(integration_token_id\)[\s\S]*ON DELETE RESTRICT/i,
+]) {
+  if (!pattern.test(cleanupDown)) {
+    errors.push(`missing configuration audit cleanup rollback requirement ${pattern}`);
+  }
+}
+for (const pattern of [
+  /CREATE OR REPLACE FUNCTION public\.storage_control_configuration_child_guard\(\)/i,
+  /version_state IS NULL AND TG_OP = 'DELETE'/i,
+  /Allows draft-version cascade cleanup/i,
+]) {
+  if (!pattern.test(childCleanupUp)) {
+    errors.push(`missing configuration child cleanup migration requirement ${pattern}`);
+  }
+}
+if (/version_state IS NULL AND TG_OP = 'DELETE'/i.test(childCleanupDown)) {
+  errors.push('configuration child cleanup rollback must restore strict guard');
+}
+for (const pattern of [
+  /pg_trigger_depth\(\) > 1/i,
+  /OLD\.configuration_version_id IS NOT NULL AND NEW\.configuration_version_id IS NULL/i,
+  /OLD\.integration_token_id IS NOT NULL AND NEW\.integration_token_id IS NULL/i,
+  /NEW\.safe_summary IS NOT DISTINCT FROM OLD\.safe_summary/i,
+  /FK-triggered nullification/i,
+]) {
+  if (!pattern.test(auditNullificationUp)) {
+    errors.push(`missing audit nullification migration requirement ${pattern}`);
+  }
+}
+if (!/configuration audit events are append-only/i.test(auditNullificationDown)) {
+  errors.push('audit nullification rollback must restore append-only rejection');
+}
+for (const pattern of [
+  /DEFERRABLE INITIALLY DEFERRED/i,
+  /whole-draft cleanup can delete all children atomically/i,
+  /storage_control_configuratio_storage_control_client_id_co_fkey2/i,
+  /storage_control_configuratio_storage_control_client_id_co_fkey4/i,
+  /storage_control_configuratio_storage_control_client_id_co_fkey6/i,
+]) {
+  if (!pattern.test(childFkDeferralUp)) {
+    errors.push(`missing child FK deferral migration requirement ${pattern}`);
+  }
+}
+if (/DEFERRABLE INITIALLY DEFERRED/i.test(childFkDeferralDown)) {
+  errors.push('child FK deferral rollback must restore immediate references');
 }
 
 if (errors.length > 0) {

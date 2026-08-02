@@ -53,7 +53,15 @@
     "db/migrations/0004_z_s_storage_control_vaults.sql",
     "db/migrations/0004_z_s_storage_control_vaults.down.sql",
     "db/migrations/0005_z_s_client_storage_configuration.sql",
-    "db/migrations/0005_z_s_client_storage_configuration.down.sql"
+    "db/migrations/0005_z_s_client_storage_configuration.down.sql",
+    "db/migrations/0006_z_s_configuration_audit_cleanup.sql",
+    "db/migrations/0006_z_s_configuration_audit_cleanup.down.sql",
+    "db/migrations/0007_z_s_configuration_child_cleanup.sql",
+    "db/migrations/0007_z_s_configuration_child_cleanup.down.sql",
+    "db/migrations/0008_z_s_configuration_audit_nullification.sql",
+    "db/migrations/0008_z_s_configuration_audit_nullification.down.sql",
+    "db/migrations/0009_z_s_configuration_child_fk_deferral.sql",
+    "db/migrations/0009_z_s_configuration_child_fk_deferral.down.sql"
   ],
   "scripts": {
     "clean": "node scripts/clean.mjs",
@@ -63,7 +71,7 @@
     "test:compile": "node scripts/clean-test.mjs && tsc -p tsconfig.test.json",
     "test:focused": "npm run test:compile && node --test .test-dist/tests/control-plane.test.js .test-dist/tests/integrity.test.js .test-dist/tests/runtime-service.test.js .test-dist/tests/runtime-ingest.test.js .test-dist/tests/runtime-dual-provider.test.js .test-dist/tests/runtime-media-verification.test.js .test-dist/tests/runtime-read-grant.test.js .test-dist/tests/runtime-read-delivery.test.js .test-dist/tests/client-storage-configuration.test.js .test-dist/tests/control-plane-client-storage.test.js .test-dist/tests/storage-configuration-migration.test.js",
     "test:runtime-boundary": "npm run test:compile && node --test .test-dist/tests/runtime-node-boundary.test.js",
-    "test:registry": "npm run test:compile && node --test .test-dist/tests/runtime-storage-registry.integration.test.js && node --test .test-dist/tests/runtime-read-grant.integration.test.js && node --test .test-dist/tests/client-storage-configuration.integration.test.js",
+    "test:registry": "npm run test:compile && node --test .test-dist/tests/runtime-storage-registry.integration.test.js && node --test .test-dist/tests/runtime-read-grant.integration.test.js && node --test .test-dist/tests/client-storage-configuration.integration.test.js && node --test .test-dist/tests/client-storage-configuration-cleanup.integration.test.js",
     "test": "npm run test:compile && node --test .test-dist/tests/*.test.js",
     "lint": "node scripts/lint.mjs",
     "start": "npm run local:start",
