@@ -4,45 +4,63 @@ on:
   pull_request:
     paths:
       - '.github/workflows/package-distribution-validation.yml'
+      - '.github/workflows/package-publish.yml'
+      - '.npmrc'
+      - 'package.json'
+      - 'src/index.ts'
+      - 'src/runtime-contract.ts'
+      - 'src/runtime-storage-registry*.ts'
+      - 'src/runtime-read-delivery*.ts'
+      - 'src/runtime-read-grant*.ts'
+      - 'src/client-storage-configuration*.ts'
+      - 'tests/runtime-read-delivery*.test.ts'
+      - 'tests/runtime-read-grant*.test.ts'
+      - 'tests/client-storage-configuration*.test.ts'
+      - 'tests/control-plane-client-storage.test.ts'
+      - 'tests/storage-configuration-migration.test.ts'
+      - 'scripts/install-smoke.mjs'
+      - 'scripts/local-readiness.mjs'
+      - 'scripts/verify-package-artifact.mjs'
+      - 'scripts/validate-client-storage-configuration.mjs'
+      - 'README.md'
+      - 'docs/runtime-contract.md'
+      - 'docs/runtime-storage-registry.md'
+      - 'db/migrations/0002_z_s_runtime_registry.sql'
+      - 'db/migrations/0002_z_s_runtime_registry.down.sql'
+      - 'db/migrations/0003_z_s_read_delivery.sql'
+      - 'db/migrations/0003_z_s_read_delivery.down.sql'
+      - 'db/migrations/0004_z_s_storage_control_vaults.sql'
+      - 'db/migrations/0004_z_s_storage_control_vaults.down.sql'
+      - 'db/migrations/0005_z_s_client_storage_configuration.sql'
+      - 'db/migrations/0005_z_s_client_storage_configuration.down.sql'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-clone-document:
-    if: github.event_name == 'pull_request' && github.actor != 'github-actions[bot]'
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-      - name: Apply clone metadata fix
-        shell: bash
+          node-version: 22
+      - run: npm install --ignore-scripts
+      - run: npm run validate
+      - name: Build exact package artifact evidence
         run: |
-          set -euo pipefail
-          python <<'PY'
-          from pathlib import Path
-
-          source_path = Path('src/client-storage-configuration.ts')
-          source = source_path.read_text()
-          start_marker = 'function cloneDocument('
-          end_marker = '\n\nfunction publicTokenMetadata('
-          start = source.index(start_marker)
-          end = source.index(end_marker, start)
-          replacement = """function cloneDocument(input: Readonly<ConfigurationDraftDocument>): ConfigurationDraftDocument {
-            return structuredClone({
-              providerConnections: input.providerConnections,
-              vaults: input.vaults,
-              routes: input.routes,
-              imagePresets: input.imagePresets,
-            }) as ConfigurationDraftDocument;
-          }"""
-          source_path.write_text(source[:start] + replacement + source[end:])
-          PY
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/client-storage-configuration.ts
-          git commit -m 'fix: clone configuration document fields only'
-          git push origin HEAD:${{ github.head_ref }}
+          mkdir -p package-output evidence
+          npm pack --json --silent --pack-destination package-output > package-output/pack.json
+          node scripts/verify-package-artifact.mjs \
+            --pack-json package-output/pack.json \
+            --tarball-root package-output \
+            --output evidence/package-artifact.json
+          npm run pack:check -- --evidence evidence/local-install.json
+      - name: Retain non-secret package evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: z-s-package-distribution-validation
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30
