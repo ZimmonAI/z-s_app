@@ -18,6 +18,17 @@ jobs:
         with:
           ref: agent/t2-h03-generic-runtime-routing
           fetch-depth: 0
+      - name: Record apply run
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tmp
+          printf '%s\n' '${{ github.run_id }}' > tmp/h03-apply-run-id.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tmp/h03-apply-run-id.txt
+          git commit -m 'chore: record H03 apply run [skip ci]'
+          git push origin HEAD:agent/t2-h03-generic-runtime-routing
       - name: Verify and apply implementation patch
         shell: bash
         run: |
@@ -40,6 +51,7 @@ jobs:
             .github/workflows/h03-source-export.yml \
             tmp/h03-patch \
             tmp/h03-run-id.txt \
+            tmp/h03-apply-run-id.txt \
             tmp/h03-chunks \
             tmp/h03-source.tgz.b64
       - name: Publish implementation
