@@ -69,7 +69,7 @@
     "start": "npm run local:start",
     "local:start": "npm run build && node --enable-source-maps dist/runtime-main.js",
     "local:readiness": "node scripts/local-readiness.mjs",
-    "validate:migration": "node scripts/validate-migration.mjs",
+    "validate:migration": "node scripts/validate-migration.mjs && node scripts/validate-client-storage-configuration.mjs",
     "validate:seed": "node scripts/validate-seed.mjs",
     "validate:secrets": "node scripts/scan-secrets.mjs",
     "validate:legacy-id": "node scripts/validate-no-legacy-delivery-id.mjs",
