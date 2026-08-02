@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/t2-h03-generic-runtime-routing
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
