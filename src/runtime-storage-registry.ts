@@ -1,10 +1,14 @@
 import type {
   ObjectUploadCompletionOperationResult,
+  SafeConfiguredTargetCopyResult,
   SafeDiagnostic,
   SafeProviderCopyResult,
   StorageObjectResultState,
 } from './runtime-contract.js';
 import type {
+  ConfiguredProviderAttemptReservation,
+  ConfiguredProviderStorageTruth,
+  ConfiguredTargetedRetryReservation,
   DualProviderAttemptReservation,
   DualProviderStorageTruth,
   DualProviderWriteOutcome,
@@ -13,6 +17,7 @@ import type {
 import { PostgresRuntimeStorageRegistryObjectCore } from './runtime-storage-registry-object.js';
 import {
   RuntimeStorageRegistryError,
+  type ConfiguredProviderCopyExecutionContext,
   type DurableDuplicateResultCodec,
   type DurableDuplicateResultReference,
   type PostgresQueryable,
@@ -106,26 +111,16 @@ export function createRuntimeStorageDuplicateResultCodec(): DurableDuplicateResu
           object_protection_stage: string;
           registry_state: 'reserved' | 'active' | 'degraded';
           safe_technical_metadata: Record<string, unknown>;
-          hot_copy_state: 'pending' | 'verified' | 'failed';
-          canonical_copy_state: 'pending' | 'verified' | 'failed';
         }>(
           `SELECT intent.object_write_intent_id, intent.storage_object_id, intent.state,
                   object_record.expected_checksum_sha256,
                   object_record.expected_byte_length,
                   object_record.object_protection_stage,
                   object_record.registry_state,
-                  object_record.safe_technical_metadata,
-                  hot_copy.copy_state AS hot_copy_state,
-                  canonical_copy.copy_state AS canonical_copy_state
+                  object_record.safe_technical_metadata
              FROM public.object_write_intents AS intent
              JOIN public.storage_objects AS object_record
                ON object_record.storage_object_id = intent.storage_object_id
-             JOIN public.storage_object_copies AS hot_copy
-               ON hot_copy.storage_object_id = intent.storage_object_id
-              AND hot_copy.provider_role = 'hot'
-             JOIN public.storage_object_copies AS canonical_copy
-               ON canonical_copy.storage_object_id = intent.storage_object_id
-              AND canonical_copy.provider_role = 'canonical'
             WHERE intent.object_write_intent_id = $1
               AND intent.storage_object_id = $2`,
           [writeIntentId, storageObjectId],
@@ -160,12 +155,14 @@ export function createRuntimeStorageDuplicateResultCodec(): DurableDuplicateResu
         if (!isRecord(completion) ||
             (completion.storageState !== 'ready' &&
              completion.storageState !== 'degraded' &&
-             completion.storageState !== 'unavailable') ||
-            !isRecord(completion.copies)) {
+             completion.storageState !== 'unavailable')) {
           throw new RuntimeStorageRegistryError('internal', 'idempotency-completion-result-missing', 500);
         }
         const completionCopies = completion.copies;
         const parseCopy = (role: 'hot' | 'canonical'): Readonly<SafeProviderCopyResult> => {
+          if (!isRecord(completionCopies)) {
+            throw new RuntimeStorageRegistryError('internal', 'idempotency-copy-result-missing', 500);
+          }
           const value = completionCopies[role];
           if (!isRecord(value) ||
               (value.state !== 'verified' && value.state !== 'failed') ||
@@ -182,14 +179,46 @@ export function createRuntimeStorageDuplicateResultCodec(): DurableDuplicateResu
              typeof safeDiagnostic.retryable !== 'boolean')) {
           throw new RuntimeStorageRegistryError('internal', 'idempotency-diagnostic-result-invalid', 500);
         }
+        const diagnosticResult = safeDiagnostic === undefined
+          ? {}
+          : { safeDiagnostic: Object.freeze({ ...safeDiagnostic }) };
+        if (Array.isArray(completion.targetCopies)) {
+          const targetCopies = Object.freeze(completion.targetCopies.map(
+            (value): Readonly<SafeConfiguredTargetCopyResult> => {
+              if (!isRecord(value) ||
+                  (value.role !== 'primary' && value.role !== 'replica') ||
+                  typeof value.order !== 'number' || !Number.isSafeInteger(value.order) ||
+                  (value.role === 'primary' ? value.order !== 0 : value.order <= 0) ||
+                  (value.state !== 'verified' && value.state !== 'failed') ||
+                  typeof value.retryable !== 'boolean') {
+                throw new RuntimeStorageRegistryError(
+                  'internal',
+                  'idempotency-configured-copy-result-missing',
+                  500,
+                );
+              }
+              return Object.freeze({
+                role: value.role,
+                order: value.order,
+                state: value.state,
+                retryable: value.retryable,
+              });
+            },
+          ));
+          return Object.freeze({
+            ...base,
+            storageState: completion.storageState,
+            verifiedMedia: Object.freeze({ ...media }),
+            targetCopies,
+            ...diagnosticResult,
+          });
+        }
         return Object.freeze({
           ...base,
           storageState: completion.storageState,
           verifiedMedia: Object.freeze({ ...media }),
           copies: Object.freeze({ hot: parseCopy('hot'), canonical: parseCopy('canonical') }),
-          ...(safeDiagnostic === undefined
-            ? {}
-            : { safeDiagnostic: Object.freeze({ ...safeDiagnostic }) }),
+          ...diagnosticResult,
         });
       }
       if (reference.resultKind === 'object-write-intent-cancel') {
@@ -276,6 +305,412 @@ function safeOutcomeDiagnostic(
 }
 
 export class PostgresRuntimeStorageRegistry extends PostgresRuntimeStorageRegistryObjectCore {
+  async beginConfiguredProviderWrite(input: {
+    objectWriteIntentId: string;
+    storageObjectId: string;
+    expectedIntentRowVersion: number;
+    expectedObjectRowVersion: number;
+    expectedChecksumSha256: string;
+    expectedByteLength: number;
+    copies: readonly Readonly<ConfiguredProviderCopyExecutionContext>[];
+  }): Promise<Readonly<ConfiguredProviderAttemptReservation>> {
+    requireUuid(input.objectWriteIntentId, 'configured-provider-write-intent');
+    requireUuid(input.storageObjectId, 'configured-provider-storage-object');
+    return this.scope.run(async (client) => {
+      const locked = await client.query<{
+        intent_row_version: number; object_row_version: number;
+        expected_checksum_sha256: string; expected_byte_length: string | number;
+      }>(
+        `SELECT intent.row_version AS intent_row_version, object_record.row_version AS object_row_version,
+                object_record.expected_checksum_sha256, object_record.expected_byte_length
+           FROM public.object_write_intents AS intent
+           JOIN public.storage_objects AS object_record
+             ON object_record.storage_object_id = intent.storage_object_id
+          WHERE intent.object_write_intent_id = $1 AND intent.storage_object_id = $2
+            AND intent.configuration_version_id IS NOT NULL AND intent.state = 'uploading'
+          FOR UPDATE OF intent, object_record`,
+        [input.objectWriteIntentId, input.storageObjectId],
+      );
+      const row = locked.rows[0];
+      if (row === undefined || row.intent_row_version !== input.expectedIntentRowVersion ||
+          row.object_row_version !== input.expectedObjectRowVersion ||
+          row.expected_checksum_sha256 !== input.expectedChecksumSha256 ||
+          asNumber(row.expected_byte_length) !== input.expectedByteLength) {
+        throw new RuntimeStorageRegistryError('duplicate-conflict', 'configured-provider-start-conflict', 409);
+      }
+      const attempts: Array<Readonly<{
+        configurationRouteTargetId: string; providerAttemptId: string;
+        storageObjectCopyId: string; expectedCopyRowVersion: number;
+      }>> = [];
+      const now = this.now();
+      for (const copy of input.copies) {
+        const copyResult = await client.query<{ storage_object_copy_id: string }>(
+          `SELECT storage_object_copy_id
+             FROM public.storage_object_copies
+            WHERE storage_object_copy_id = $1 AND storage_object_id = $2
+              AND configuration_route_target_id = $3 AND configuration_vault_id = $4
+              AND provider_connection_id = $5 AND target_role = $6 AND target_order = $7
+              AND internal_locator = $8 AND copy_state = 'pending' AND row_version = $9
+            FOR UPDATE`,
+          [copy.storageObjectCopyId, input.storageObjectId, copy.configurationRouteTargetId,
+           copy.configurationVaultId, copy.providerConnectionId, copy.role, copy.order,
+           copy.internalLocator, copy.rowVersion],
+        );
+        if (copyResult.rows[0] === undefined) {
+          throw new RuntimeStorageRegistryError('duplicate-conflict', 'configured-provider-copy-start-conflict', 409);
+        }
+        const providerAttemptId = this.createId();
+        await client.query(
+          `INSERT INTO public.storage_provider_attempts (
+             storage_provider_attempt_id, storage_object_copy_id, storage_object_id,
+             operation, operation_reference, attempt_number, state, retryable,
+             expected_checksum_sha256, expected_byte_length, started_at, created_at, updated_at
+           ) VALUES ($1, $2, $3, 'write', $4, 1, 'in_progress', false, $5, $6, $7, $7, $7)`,
+          [providerAttemptId, copy.storageObjectCopyId, input.storageObjectId,
+           `configuration-write:${input.objectWriteIntentId}:${copy.configurationRouteTargetId}`,
+           input.expectedChecksumSha256, input.expectedByteLength, now],
+        );
+        attempts.push(Object.freeze({
+          configurationRouteTargetId: copy.configurationRouteTargetId,
+          providerAttemptId, storageObjectCopyId: copy.storageObjectCopyId,
+          expectedCopyRowVersion: copy.rowVersion,
+        }));
+      }
+      return Object.freeze({
+        objectWriteIntentId: input.objectWriteIntentId, storageObjectId: input.storageObjectId,
+        expectedIntentRowVersion: input.expectedIntentRowVersion,
+        expectedObjectRowVersion: input.expectedObjectRowVersion,
+        attempts: Object.freeze(attempts),
+      });
+    });
+  }
+
+  async completeConfiguredProviderWrite(input: {
+    reservation: Readonly<ConfiguredProviderAttemptReservation>;
+    checksumSha256: string;
+    byteLength: number;
+    verifiedMedia: Readonly<import('./runtime-contract.js').VerifiedMediaMetadata>;
+    outcomes: readonly Readonly<{
+      configurationRouteTargetId: string;
+      outcome: Readonly<DualProviderWriteOutcome>;
+    }>[];
+  }): Promise<Readonly<ObjectUploadCompletionOperationResult>> {
+    return this.scope.run(async (client) => {
+      const now = this.now();
+      const outcomeByTarget = new Map(input.outcomes.map((entry) => [entry.configurationRouteTargetId, entry.outcome]));
+      for (const attempt of input.reservation.attempts) {
+        const outcome = outcomeByTarget.get(attempt.configurationRouteTargetId);
+        if (outcome === undefined) {
+          await client.query(
+            `UPDATE public.storage_provider_attempts
+                SET state = 'failed', retryable = true,
+                    safe_diagnostic_category = 'dependency-unavailable',
+                    safe_diagnostic_code = 'configuration-primary-write-required',
+                    finished_at = $4, updated_at = $4
+              WHERE storage_provider_attempt_id = $1 AND storage_object_copy_id = $2
+                AND storage_object_id = $3 AND state = 'in_progress'`,
+            [attempt.providerAttemptId, attempt.storageObjectCopyId, input.reservation.storageObjectId, now],
+          );
+          continue;
+        }
+        const attemptResult = await client.query(
+          `UPDATE public.storage_provider_attempts
+              SET state = $4, retryable = $5, observed_checksum_sha256 = $6,
+                  observed_byte_length = $7, safe_diagnostic_category = $8,
+                  safe_diagnostic_code = $9,
+                  verified_at = CASE WHEN $4 = 'succeeded' THEN $10::timestamptz ELSE NULL END,
+                  finished_at = $10, updated_at = $10
+            WHERE storage_provider_attempt_id = $1 AND storage_object_copy_id = $2
+              AND storage_object_id = $3 AND state = 'in_progress'`,
+          [attempt.providerAttemptId, attempt.storageObjectCopyId, input.reservation.storageObjectId,
+           outcome.state === 'verified' ? 'succeeded' : 'failed', outcome.retryable,
+           outcome.observedChecksumSha256 ?? null, outcome.observedByteLength ?? null,
+           outcome.diagnostic?.category ?? null, outcome.diagnostic?.code ?? null, now],
+        );
+        if (attemptResult.rowCount !== 1) {
+          throw new RuntimeStorageRegistryError('duplicate-conflict', 'configured-provider-attempt-finish-conflict', 409);
+        }
+        const copyResult = await client.query(
+          `UPDATE public.storage_object_copies
+              SET copy_state = $4, observed_checksum_sha256 = $5, observed_byte_length = $6,
+                  latest_verified_at = CASE WHEN $4 = 'verified' THEN $7 ELSE latest_verified_at END,
+                  updated_at = $7, row_version = row_version + 1
+            WHERE storage_object_copy_id = $1 AND storage_object_id = $2
+              AND copy_state = 'pending' AND row_version = $3`,
+          [attempt.storageObjectCopyId, input.reservation.storageObjectId,
+           attempt.expectedCopyRowVersion, outcome.state, outcome.observedChecksumSha256 ?? null,
+           outcome.observedByteLength ?? null, now],
+        );
+        if (copyResult.rowCount !== 1) {
+          throw new RuntimeStorageRegistryError('duplicate-conflict', 'configured-provider-copy-finish-conflict', 409);
+        }
+      }
+      const statesResult = await client.query<{
+        configuration_route_target_id: string; target_role: 'primary' | 'replica';
+        target_order: number; copy_state: 'pending' | 'verified' | 'failed';
+      }>(
+        `SELECT configuration_route_target_id, target_role, target_order, copy_state
+           FROM public.storage_object_copies
+          WHERE storage_object_id = $1 AND configuration_route_target_id IS NOT NULL
+          ORDER BY CASE target_role WHEN 'primary' THEN 0 ELSE 1 END, target_order`,
+        [input.reservation.storageObjectId],
+      );
+      const primaryStates = statesResult.rows.filter((row) => row.target_role === 'primary');
+      const primaryVerified = primaryStates.length === 1 && primaryStates[0]?.copy_state === 'verified';
+      const replicasReady = statesResult.rows
+        .filter((row) => row.target_role === 'replica')
+        .every((row) => row.copy_state === 'verified');
+      const storageState: StorageObjectResultState = !primaryVerified
+        ? 'unavailable'
+        : replicasReady ? 'ready' : 'degraded';
+      const registryState = storageState === 'ready' ? 'active' : storageState === 'degraded' ? 'degraded' : 'reserved';
+      const objectProtectionStage = storageState === 'ready'
+        ? 'configuration-primary-and-replicas-verified'
+        : storageState === 'degraded'
+          ? 'configuration-replica-repair-required'
+          : 'configuration-primary-write-failed';
+      const targetCopies = Object.freeze(statesResult.rows.map((row) => Object.freeze({
+        role: row.target_role, order: row.target_order,
+        state: row.copy_state === 'verified' ? 'verified' as const : 'failed' as const,
+        retryable: row.copy_state !== 'verified',
+      })));
+      const diagnostic = storageState === 'ready' ? undefined : Object.freeze({
+        category: 'dependency-unavailable' as const,
+        code: storageState === 'degraded' ? 'configuration-provider-write-degraded' : 'configuration-primary-write-failed',
+        retryable: true,
+      });
+      const metadata = Object.freeze({
+        media: input.verifiedMedia,
+        completion: Object.freeze({
+          storageState, targetCopies,
+          ...(diagnostic === undefined ? {} : { safeDiagnostic: diagnostic }),
+        }),
+      });
+      assertSafeJsonObject(metadata, 'safe-technical-metadata');
+      const objectResult = await client.query(
+        `UPDATE public.storage_objects
+            SET registry_state = $3, object_protection_stage = $4,
+                verified_checksum_sha256 = $5, verified_byte_length = $6,
+                safe_technical_metadata = safe_technical_metadata || $7::jsonb,
+                activated_at = CASE WHEN $3 IN ('active', 'degraded')
+                                    THEN COALESCE(activated_at, $8) ELSE activated_at END,
+                updated_at = $8, row_version = row_version + 1
+          WHERE storage_object_id = $1 AND row_version = $2
+            AND expected_checksum_sha256 = $5 AND expected_byte_length = $6`,
+        [input.reservation.storageObjectId, input.reservation.expectedObjectRowVersion,
+         registryState, objectProtectionStage, input.checksumSha256, input.byteLength,
+         JSON.stringify(metadata), now],
+      );
+      if (objectResult.rowCount !== 1) {
+        throw new RuntimeStorageRegistryError('duplicate-conflict', 'configured-provider-object-finish-conflict', 409);
+      }
+      const intentResult = await client.query(
+        `UPDATE public.object_write_intents
+            SET state = $3, terminal_at = $4, updated_at = $4, row_version = row_version + 1
+          WHERE object_write_intent_id = $1 AND state = 'uploading' AND row_version = $2`,
+        [input.reservation.objectWriteIntentId, input.reservation.expectedIntentRowVersion,
+         primaryVerified ? 'completed' : 'failed', now],
+      );
+      if (intentResult.rowCount !== 1) {
+        throw new RuntimeStorageRegistryError('duplicate-conflict', 'configured-provider-intent-finish-conflict', 409);
+      }
+      return Object.freeze({
+        storageObjectId: input.reservation.storageObjectId,
+        writeIntentId: input.reservation.objectWriteIntentId, state: 'recorded' as const,
+        checksumSha256: input.checksumSha256, byteLength: input.byteLength,
+        integrityVerification: Object.freeze({
+          verified: true as const, checksumVerified: true as const, sizeVerified: true,
+          sizeVerificationDisposition: 'matched' as const,
+        }),
+        objectProtectionStage, storageState, verifiedMedia: input.verifiedMedia, targetCopies,
+        ...(diagnostic === undefined ? {} : { safeDiagnostic: diagnostic }),
+      });
+    });
+  }
+
+  async abortConfiguredProviderWrite(input: {
+    reservation: Readonly<ConfiguredProviderAttemptReservation>;
+    diagnostic: Readonly<SafeDiagnostic>;
+  }): Promise<void> {
+    await this.scope.run(async (client) => {
+      const now = this.now();
+      for (const attempt of input.reservation.attempts) {
+        await client.query(
+          `UPDATE public.storage_provider_attempts
+              SET state = 'failed', retryable = $4, safe_diagnostic_category = $5,
+                  safe_diagnostic_code = $6, finished_at = $7, updated_at = $7
+            WHERE storage_provider_attempt_id = $1 AND storage_object_copy_id = $2
+              AND storage_object_id = $3 AND state = 'in_progress'`,
+          [attempt.providerAttemptId, attempt.storageObjectCopyId, input.reservation.storageObjectId,
+           input.diagnostic.retryable, input.diagnostic.category, input.diagnostic.code, now],
+        );
+      }
+    });
+  }
+
+  async reserveConfiguredTargetRetry(input: {
+    clientId: string; storageObjectId: string; configurationRouteTargetId: string; expectedFailedCopyVersion: number;
+  }): Promise<Readonly<ConfiguredTargetedRetryReservation>> {
+    requireUuid(input.storageObjectId, 'configured-retry-storage-object');
+    requireUuid(input.configurationRouteTargetId, 'configured-retry-route-target');
+    return this.scope.run(async (client) => {
+      const result = await client.query<{
+        storage_object_copy_id: string; configuration_vault_id: string; provider_connection_id: string;
+        target_role: 'primary' | 'replica'; target_order: number; internal_locator: string;
+        provider_type: 'minio' | 'r2' | 's3-compatible'; bucket_label: string;
+        prefix_template: string; secret_reference_id: string; object_row_version: number;
+        expected_checksum_sha256: string; expected_byte_length: string | number;
+      }>(
+        `SELECT copy.storage_object_copy_id, copy.configuration_vault_id, copy.provider_connection_id,
+                copy.target_role, copy.target_order, copy.internal_locator, connection.provider_type,
+                vault.bucket_label, vault.prefix_template, connection.secret_reference_id,
+                object_record.row_version AS object_row_version,
+                object_record.expected_checksum_sha256, object_record.expected_byte_length
+           FROM public.storage_object_copies AS copy
+           JOIN public.storage_objects AS object_record ON object_record.storage_object_id = copy.storage_object_id
+           JOIN public.storage_control_clients AS client
+             ON client.id = object_record.storage_control_client_id
+           JOIN public.storage_control_configuration_vaults AS vault ON vault.id = copy.configuration_vault_id
+           JOIN public.storage_control_provider_connections AS connection ON connection.id = copy.provider_connection_id
+          WHERE copy.storage_object_id = $1 AND copy.configuration_route_target_id = $2
+            AND copy.copy_state = 'failed' AND copy.row_version = $3
+            AND client.client_id = $4 AND client.status = 'active'
+          FOR UPDATE OF copy, object_record`,
+        [input.storageObjectId, input.configurationRouteTargetId, input.expectedFailedCopyVersion, input.clientId],
+      );
+      const row = result.rows[0];
+      if (row === undefined) {
+        throw new RuntimeStorageRegistryError('duplicate-conflict', 'configured-targeted-retry-copy-conflict', 409);
+      }
+      const attemptNumberResult = await client.query<{ attempt_number: number }>(
+        `SELECT COALESCE(MAX(attempt_number), 0) + 1 AS attempt_number
+           FROM public.storage_provider_attempts
+          WHERE storage_object_copy_id = $1 AND operation IN ('write', 'repair')`,
+        [row.storage_object_copy_id],
+      );
+      const attemptNumber = attemptNumberResult.rows[0]?.attempt_number;
+      if (!Number.isSafeInteger(attemptNumber) || attemptNumber === undefined || attemptNumber <= 1) {
+        throw new RuntimeStorageRegistryError('internal', 'configured-targeted-retry-attempt-number-invalid', 500);
+      }
+      const now = this.now();
+      const providerAttemptId = this.createId();
+      await client.query(
+        `INSERT INTO public.storage_provider_attempts (
+           storage_provider_attempt_id, storage_object_copy_id, storage_object_id, operation,
+           operation_reference, attempt_number, state, retryable, expected_checksum_sha256,
+           expected_byte_length, started_at, created_at, updated_at
+         ) VALUES ($1, $2, $3, 'repair', $4, $5, 'in_progress', false, $6, $7, $8, $8, $8)`,
+        [providerAttemptId, row.storage_object_copy_id, input.storageObjectId,
+         `configuration-targeted-retry:${input.configurationRouteTargetId}`, attemptNumber,
+         row.expected_checksum_sha256, row.expected_byte_length, now],
+      );
+      const copyUpdate = await client.query(
+        `UPDATE public.storage_object_copies SET copy_state = 'pending', updated_at = $4,
+                row_version = row_version + 1
+          WHERE storage_object_copy_id = $1 AND copy_state = 'failed' AND row_version = $2
+            AND storage_object_id = $3`,
+        [row.storage_object_copy_id, input.expectedFailedCopyVersion, input.storageObjectId, now],
+      );
+      if (copyUpdate.rowCount !== 1) {
+        throw new RuntimeStorageRegistryError('duplicate-conflict', 'configured-targeted-retry-copy-conflict', 409);
+      }
+      return Object.freeze({
+        storageObjectId: input.storageObjectId, providerAttemptId,
+        expectedPendingCopyVersion: input.expectedFailedCopyVersion + 1,
+        expectedObjectRowVersion: row.object_row_version, checksumSha256: row.expected_checksum_sha256,
+        byteLength: asNumber(row.expected_byte_length),
+        target: Object.freeze({
+          storageObjectCopyId: row.storage_object_copy_id,
+          configurationRouteTargetId: input.configurationRouteTargetId,
+          configurationVaultId: row.configuration_vault_id, providerConnectionId: row.provider_connection_id,
+          role: row.target_role, order: row.target_order, providerType: row.provider_type,
+          bucketLabel: row.bucket_label, prefixTemplate: row.prefix_template,
+          secretReferenceId: row.secret_reference_id, internalLocator: row.internal_locator,
+          state: 'pending' as const, rowVersion: input.expectedFailedCopyVersion + 1,
+        }),
+      });
+    });
+  }
+
+  async completeConfiguredTargetRetry(input: {
+    reservation: Readonly<ConfiguredTargetedRetryReservation>;
+    outcome: Readonly<DualProviderWriteOutcome>;
+  }): Promise<Readonly<ConfiguredProviderStorageTruth>> {
+    return this.scope.run(async (client) => {
+      const now = this.now();
+      const attemptResult = await client.query(
+        `UPDATE public.storage_provider_attempts
+            SET state = $4, retryable = $5, observed_checksum_sha256 = $6,
+                observed_byte_length = $7, safe_diagnostic_category = $8,
+                safe_diagnostic_code = $9,
+                verified_at = CASE WHEN $4 = 'succeeded' THEN $10::timestamptz ELSE NULL END,
+                finished_at = $10, updated_at = $10
+          WHERE storage_provider_attempt_id = $1 AND storage_object_copy_id = $2
+            AND storage_object_id = $3 AND state = 'in_progress'`,
+        [input.reservation.providerAttemptId, input.reservation.target.storageObjectCopyId,
+         input.reservation.storageObjectId, input.outcome.state === 'verified' ? 'succeeded' : 'failed',
+         input.outcome.retryable, input.outcome.observedChecksumSha256 ?? null,
+         input.outcome.observedByteLength ?? null, input.outcome.diagnostic?.category ?? null,
+         input.outcome.diagnostic?.code ?? null, now],
+      );
+      if (attemptResult.rowCount !== 1) {
+        throw new RuntimeStorageRegistryError('duplicate-conflict', 'configured-targeted-retry-attempt-conflict', 409);
+      }
+      const copyResult = await client.query(
+        `UPDATE public.storage_object_copies
+            SET copy_state = $4, observed_checksum_sha256 = $5, observed_byte_length = $6,
+                latest_verified_at = CASE WHEN $4 = 'verified' THEN $7 ELSE latest_verified_at END,
+                updated_at = $7, row_version = row_version + 1
+          WHERE storage_object_copy_id = $1 AND storage_object_id = $2
+            AND copy_state = 'pending' AND row_version = $3`,
+        [input.reservation.target.storageObjectCopyId, input.reservation.storageObjectId,
+         input.reservation.expectedPendingCopyVersion, input.outcome.state,
+         input.outcome.observedChecksumSha256 ?? null, input.outcome.observedByteLength ?? null, now],
+      );
+      if (copyResult.rowCount !== 1) {
+        throw new RuntimeStorageRegistryError('duplicate-conflict', 'configured-targeted-retry-copy-conflict', 409);
+      }
+      const statesResult = await client.query<{
+        target_role: 'primary' | 'replica'; target_order: number; copy_state: 'pending' | 'verified' | 'failed';
+      }>(
+        `SELECT target_role, target_order, copy_state FROM public.storage_object_copies
+          WHERE storage_object_id = $1 AND configuration_route_target_id IS NOT NULL
+          ORDER BY CASE target_role WHEN 'primary' THEN 0 ELSE 1 END, target_order`,
+        [input.reservation.storageObjectId],
+      );
+      const primary = statesResult.rows.filter((row) => row.target_role === 'primary');
+      const primaryVerified = primary.length === 1 && primary[0]?.copy_state === 'verified';
+      const replicasReady = statesResult.rows.filter((row) => row.target_role === 'replica')
+        .every((row) => row.copy_state === 'verified');
+      const storageState: StorageObjectResultState = !primaryVerified ? 'unavailable' : replicasReady ? 'ready' : 'degraded';
+      const registryState = storageState === 'ready' ? 'active' : storageState === 'degraded' ? 'degraded' : 'reserved';
+      const objectProtectionStage = storageState === 'ready'
+        ? 'configuration-primary-and-replicas-verified'
+        : storageState === 'degraded' ? 'configuration-replica-repair-required'
+          : 'configuration-primary-write-failed';
+      const objectResult = await client.query(
+        `UPDATE public.storage_objects SET registry_state = $3, object_protection_stage = $4,
+                activated_at = CASE WHEN $3 IN ('active', 'degraded')
+                                    THEN COALESCE(activated_at, $5) ELSE activated_at END,
+                updated_at = $5, row_version = row_version + 1
+          WHERE storage_object_id = $1 AND row_version = $2`,
+        [input.reservation.storageObjectId, input.reservation.expectedObjectRowVersion,
+         registryState, objectProtectionStage, now],
+      );
+      if (objectResult.rowCount !== 1) {
+        throw new RuntimeStorageRegistryError('duplicate-conflict', 'configured-targeted-retry-object-conflict', 409);
+      }
+      return Object.freeze({
+        storageObjectId: input.reservation.storageObjectId, storageState, objectProtectionStage,
+        targetCopies: Object.freeze(statesResult.rows.map((row) => Object.freeze({
+          role: row.target_role, order: row.target_order,
+          state: row.copy_state === 'verified' ? 'verified' as const : 'failed' as const,
+          retryable: row.copy_state !== 'verified',
+        }))),
+      });
+    });
+  }
+
   async beginDualProviderWrite(input: {
     objectWriteIntentId: string;
     storageObjectId: string;

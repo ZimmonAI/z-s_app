@@ -32,6 +32,16 @@ const EXPECTED_PACKAGE_FILES = [
   'db/migrations/0004_z_s_storage_control_vaults.down.sql',
   'db/migrations/0005_z_s_client_storage_configuration.sql',
   'db/migrations/0005_z_s_client_storage_configuration.down.sql',
+  'db/migrations/0006_z_s_configuration_audit_cleanup.sql',
+  'db/migrations/0006_z_s_configuration_audit_cleanup.down.sql',
+  'db/migrations/0007_z_s_configuration_child_cleanup.sql',
+  'db/migrations/0007_z_s_configuration_child_cleanup.down.sql',
+  'db/migrations/0008_z_s_configuration_audit_nullification.sql',
+  'db/migrations/0008_z_s_configuration_audit_nullification.down.sql',
+  'db/migrations/0009_z_s_configuration_child_fk_deferral.sql',
+  'db/migrations/0009_z_s_configuration_child_fk_deferral.down.sql',
+  'db/migrations/0010_z_s_runtime_configuration_routing.sql',
+  'db/migrations/0010_z_s_runtime_configuration_routing.down.sql',
 ];
 const EXPECTED_STATIC_ARTIFACT_FILES = [
   'README.md',
@@ -45,6 +55,16 @@ const EXPECTED_STATIC_ARTIFACT_FILES = [
   'db/migrations/0004_z_s_storage_control_vaults.down.sql',
   'db/migrations/0005_z_s_client_storage_configuration.sql',
   'db/migrations/0005_z_s_client_storage_configuration.down.sql',
+  'db/migrations/0006_z_s_configuration_audit_cleanup.sql',
+  'db/migrations/0006_z_s_configuration_audit_cleanup.down.sql',
+  'db/migrations/0007_z_s_configuration_child_cleanup.sql',
+  'db/migrations/0007_z_s_configuration_child_cleanup.down.sql',
+  'db/migrations/0008_z_s_configuration_audit_nullification.sql',
+  'db/migrations/0008_z_s_configuration_audit_nullification.down.sql',
+  'db/migrations/0009_z_s_configuration_child_fk_deferral.sql',
+  'db/migrations/0009_z_s_configuration_child_fk_deferral.down.sql',
+  'db/migrations/0010_z_s_runtime_configuration_routing.sql',
+  'db/migrations/0010_z_s_runtime_configuration_routing.down.sql',
 ];
 
 async function sourceModuleNames(directory, prefix = '') {

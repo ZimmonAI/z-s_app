@@ -8,10 +8,15 @@ import {
   type HttpStorageRuntime,
   type ObjectReadGrantRequest,
   type ObjectReadGrantResult,
+  type RuntimeAuthenticatedCaller,
   type ObjectReadGrantRevocationResult,
   type SafeDiagnostic,
   type StorageRuntimeOptions,
 } from './runtime-contract.js';
+import {
+  requireRuntimeIntegrationScope,
+  type RuntimeIntegrationPrincipal,
+} from './runtime-integration-token-auth.js';
 import {
   createHttpStorageRuntime,
   createSafeDiagnostic,
@@ -89,7 +94,8 @@ export class ObjectReadGrantTokenError extends Error {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const SAFE_CALLER_PATTERN = /^[a-z0-9][a-z0-9_-]{0,95}$/;
+const SAFE_CALLER_APP_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
+const SAFE_CALLER_SERVICE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,95}$/;
 const SAFE_FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,179}$/;
 
 function rejectToken(): never {
@@ -134,12 +140,12 @@ function normalizeTokenClaims(value: unknown): Readonly<ObjectReadGrantTokenClai
   const callerServiceId =
     record.callerServiceId === undefined
       ? undefined
-      : normalizeSafeId(record.callerServiceId, SAFE_CALLER_PATTERN);
+      : normalizeSafeId(record.callerServiceId, SAFE_CALLER_SERVICE_PATTERN);
   const claims: ObjectReadGrantTokenClaims = {
     tokenPurpose: OBJECT_READ_GRANT_TOKEN_PURPOSE,
     objectReadGrantId: normalizeUuid(record.objectReadGrantId),
     storageObjectId: normalizeUuid(record.storageObjectId),
-    callerAppId: normalizeSafeId(record.callerAppId, SAFE_CALLER_PATTERN),
+    callerAppId: normalizeSafeId(record.callerAppId, SAFE_CALLER_APP_PATTERN),
     purpose: normalizeSafeId(record.purpose),
     allowedMethods: normalizeAllowedMethods(record.allowedMethods, rejectToken),
     allowRange: record.allowRange,
@@ -399,6 +405,21 @@ export class PostgresObjectReadRegistry
     this.#idempotencyReservationTtlMs = options.idempotencyReservationTtlMs ?? 5 * 60_000;
   }
 
+  async #configurationRoutingSchemaAvailable(queryable: PostgresQueryable): Promise<boolean> {
+    const result = await queryable.query<{ available: boolean }>(
+      `SELECT to_regclass('public.storage_control_clients') IS NOT NULL
+              AND to_regclass('public.storage_control_configuration_versions') IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                  FROM information_schema.columns
+                 WHERE table_schema = 'public'
+                   AND table_name = 'storage_objects'
+                   AND column_name = 'configuration_version_id'
+              ) AS available`,
+    );
+    return result.rows[0]?.available === true;
+  }
+
   async execute<T>(input: {
     scope: string;
     key: string;
@@ -587,34 +608,100 @@ export class PostgresObjectReadRegistry
     requireUuid(input.storageObjectId, 'storage-object-id');
     requireSha256(input.tokenDigest, 'read-grant-token-digest');
     return this.#scope.run(async (client) => {
-      const authority = await client.query<{
-        managed_app_id: string;
-        caller_app_id: string;
-        managed_app_status: string;
-        profile_status: string;
-        registry_state: string;
-        verified_checksum_sha256: string | null;
-        verified_byte_length: string | number | null;
-        usable_copy_count: string | number;
-      }>(
-        `SELECT object_record.managed_app_id, managed_app.app_id AS caller_app_id,
-                managed_app.status AS managed_app_status, profile.status AS profile_status,
-                object_record.registry_state, object_record.verified_checksum_sha256,
-                object_record.verified_byte_length,
-                (SELECT count(*) FROM public.storage_object_copies AS copy
-                  WHERE copy.storage_object_id = object_record.storage_object_id
-                    AND copy.copy_state = 'verified'
-                    AND copy.observed_checksum_sha256 = object_record.verified_checksum_sha256
-                    AND copy.observed_byte_length = object_record.verified_byte_length) AS usable_copy_count
-           FROM public.storage_objects AS object_record
-           JOIN public.managed_apps AS managed_app ON managed_app.id = object_record.managed_app_id
-           JOIN public.storage_profiles AS profile ON profile.id = object_record.storage_profile_id
-          WHERE object_record.storage_object_id = $1
-          FOR SHARE OF object_record, managed_app, profile`,
-        [input.storageObjectId],
-      );
+      const configurationRoutingAvailable = await this.#configurationRoutingSchemaAvailable(client);
+      const authority = configurationRoutingAvailable
+        ? await client.query<{
+            managed_app_id: string;
+            caller_app_id: string;
+            managed_app_status: string;
+            profile_status: string;
+            registry_state: string;
+            verified_checksum_sha256: string | null;
+            verified_byte_length: string | number | null;
+            usable_copy_count: string | number;
+          }>(
+            `SELECT COALESCE(
+            object_record.managed_app_id,
+            configured_app_by_id.id,
+            configured_app_by_identity.id
+          ) AS managed_app_id,
+          COALESCE(control_client.client_id, legacy_app.app_id) AS caller_app_id,
+          CASE
+            WHEN object_record.configuration_version_id IS NOT NULL THEN control_client.status
+            ELSE legacy_app.status
+          END AS managed_app_status,
+                    CASE
+                      WHEN object_record.configuration_version_id IS NOT NULL THEN
+                        CASE
+                          WHEN configuration.validation_state = 'valid'
+                           AND configuration.state IN ('active', 'superseded')
+                          THEN 'active'
+                          ELSE 'not-ready'
+                        END
+                      ELSE profile.status
+                    END AS profile_status,
+                    object_record.registry_state, object_record.verified_checksum_sha256,
+                    object_record.verified_byte_length,
+                    (SELECT count(*) FROM public.storage_object_copies AS copy
+                      WHERE copy.storage_object_id = object_record.storage_object_id
+                        AND copy.copy_state = 'verified'
+                        AND copy.observed_checksum_sha256 = object_record.verified_checksum_sha256
+                        AND copy.observed_byte_length = object_record.verified_byte_length) AS usable_copy_count
+               FROM public.storage_objects AS object_record
+               LEFT JOIN public.managed_apps AS legacy_app
+                 ON legacy_app.id = object_record.managed_app_id
+               LEFT JOIN public.storage_profiles AS profile
+                 ON profile.id = object_record.storage_profile_id
+               LEFT JOIN public.storage_control_clients AS control_client
+                 ON control_client.id = object_record.storage_control_client_id
+               LEFT JOIN public.storage_control_configuration_versions AS configuration
+                 ON configuration.storage_control_client_id = object_record.storage_control_client_id
+                AND configuration.id = object_record.configuration_version_id
+               LEFT JOIN public.managed_apps AS configured_app_by_id
+       ON configured_app_by_id.id = object_record.storage_control_client_id
+     LEFT JOIN public.managed_apps AS configured_app_by_identity
+       ON configured_app_by_id.id IS NULL
+      AND configured_app_by_identity.app_id = control_client.client_id
+      AND configured_app_by_identity.environment = CASE configuration.environment
+            WHEN 'staging' THEN 'stg'
+            ELSE configuration.environment
+          END
+              WHERE object_record.storage_object_id = $1
+              FOR SHARE OF object_record`,
+            [input.storageObjectId],
+          )
+        : await client.query<{
+            managed_app_id: string;
+            caller_app_id: string;
+            managed_app_status: string;
+            profile_status: string;
+            registry_state: string;
+            verified_checksum_sha256: string | null;
+            verified_byte_length: string | number | null;
+            usable_copy_count: string | number;
+          }>(
+            `SELECT object_record.managed_app_id, managed_app.app_id AS caller_app_id,
+                    managed_app.status AS managed_app_status, profile.status AS profile_status,
+                    object_record.registry_state, object_record.verified_checksum_sha256,
+                    object_record.verified_byte_length,
+                    (SELECT count(*) FROM public.storage_object_copies AS copy
+                      WHERE copy.storage_object_id = object_record.storage_object_id
+                        AND copy.copy_state = 'verified'
+                        AND copy.observed_checksum_sha256 = object_record.verified_checksum_sha256
+                        AND copy.observed_byte_length = object_record.verified_byte_length) AS usable_copy_count
+               FROM public.storage_objects AS object_record
+               JOIN public.managed_apps AS managed_app
+                 ON managed_app.id = object_record.managed_app_id
+               JOIN public.storage_profiles AS profile
+                 ON profile.id = object_record.storage_profile_id
+              WHERE object_record.storage_object_id = $1
+              FOR SHARE OF object_record`,
+            [input.storageObjectId],
+          );
       const row = authority.rows[0];
-      if (row === undefined) throw registryError('not-ready', 'storage-object-not-found', 404);
+      if (row === undefined || row.managed_app_id === null || row.caller_app_id === null) {
+        throw registryError('not-ready', 'storage-object-not-found', 404);
+      }
       if (row.caller_app_id !== input.callerAppId) {
         throw registryError('unauthorized', 'storage-object-scope-mismatch', 403);
       }
@@ -777,140 +864,241 @@ export class PostgresObjectReadRegistry
   }): Promise<Readonly<ObjectReadDeliverySnapshot> | null> {
     requireUuid(input.storageObjectId, 'storage-object-id');
     return this.#scope.run(async (client) => {
-      const result = await client.query<{
-        storage_object_id: string;
-        caller_app_id: string;
-        registry_state: ObjectReadDeliverySnapshot['registryState'];
-        object_protection_stage: string;
-        verified_checksum_sha256: string | null;
-        verified_byte_length: string | number | null;
-        expected_content_type: string;
-        hot_storage_object_copy_id: string;
-        hot_copy_state: ObjectReadDeliverySnapshot['copies']['hot']['state'];
-        hot_observed_checksum_sha256: string | null;
-        hot_observed_byte_length: string | number | null;
-        hot_latest_verified_at: Date | string | null;
-        hot_provider_id: string;
-        hot_bucket_label: string;
-        hot_internal_locator: string;
-        hot_secret_reference_id: string;
-        canonical_storage_object_copy_id: string;
-        canonical_copy_state: ObjectReadDeliverySnapshot['copies']['canonical']['state'];
-        canonical_observed_checksum_sha256: string | null;
-        canonical_observed_byte_length: string | number | null;
-        canonical_latest_verified_at: Date | string | null;
-        canonical_provider_id: string;
-        canonical_bucket_label: string;
-        canonical_internal_locator: string;
-        canonical_secret_reference_id: string;
+      const configurationRoutingAvailable = await this.#configurationRoutingSchemaAvailable(client);
+      const baseResult = configurationRoutingAvailable
+        ? await client.query<{
+            storage_object_id: string;
+            caller_app_id: string;
+            configuration_route_id: string | null;
+            registry_state: ObjectReadDeliverySnapshot['registryState'];
+            object_protection_stage: string;
+            verified_checksum_sha256: string | null;
+            verified_byte_length: string | number | null;
+            expected_content_type: string;
+          }>(
+            `SELECT object_record.storage_object_id,
+                    COALESCE(control_client.client_id, managed_app.app_id) AS caller_app_id,
+                    object_record.configuration_route_id,
+                    object_record.registry_state,
+                    object_record.object_protection_stage,
+                    object_record.verified_checksum_sha256,
+                    object_record.verified_byte_length,
+                    object_record.expected_content_type
+               FROM public.storage_objects AS object_record
+               LEFT JOIN public.managed_apps AS managed_app
+                 ON managed_app.id = object_record.managed_app_id
+               LEFT JOIN public.storage_control_clients AS control_client
+                 ON control_client.id = object_record.storage_control_client_id
+              WHERE object_record.storage_object_id = $1
+                AND COALESCE(control_client.client_id, managed_app.app_id) = $2`,
+            [input.storageObjectId, input.callerAppId],
+          )
+        : await client.query<{
+            storage_object_id: string;
+            caller_app_id: string;
+            configuration_route_id: string | null;
+            registry_state: ObjectReadDeliverySnapshot['registryState'];
+            object_protection_stage: string;
+            verified_checksum_sha256: string | null;
+            verified_byte_length: string | number | null;
+            expected_content_type: string;
+          }>(
+            `SELECT object_record.storage_object_id, managed_app.app_id AS caller_app_id,
+                    NULL::uuid AS configuration_route_id, object_record.registry_state,
+                    object_record.object_protection_stage,
+                    object_record.verified_checksum_sha256,
+                    object_record.verified_byte_length,
+                    object_record.expected_content_type
+               FROM public.storage_objects AS object_record
+               JOIN public.managed_apps AS managed_app
+                 ON managed_app.id = object_record.managed_app_id
+              WHERE object_record.storage_object_id = $1
+                AND managed_app.app_id = $2`,
+            [input.storageObjectId, input.callerAppId],
+          );
+      const base = baseResult.rows[0];
+      if (base === undefined) return null;
+
+      const common = {
+        storageObjectId: base.storage_object_id,
+        callerAppId: base.caller_app_id,
+        registryState: base.registry_state,
+        objectProtectionStage: base.object_protection_stage,
+        ...(base.verified_checksum_sha256 === null
+          ? {}
+          : { verifiedChecksumSha256: base.verified_checksum_sha256 }),
+        ...(base.verified_byte_length === null
+          ? {}
+          : { verifiedByteLength: asNumber(base.verified_byte_length) }),
+        verifiedContentType: base.expected_content_type,
+      };
+
+      if (base.configuration_route_id !== null) {
+        const configuredResult = await client.query<{
+          storage_object_copy_id: string;
+          copy_state: 'pending' | 'verified' | 'failed' | 'missing' | 'delete_pending' | 'deleted';
+          observed_checksum_sha256: string | null;
+          observed_byte_length: string | number | null;
+          latest_verified_at: Date | string | null;
+          target_role: 'primary' | 'replica';
+          target_order: number;
+          connection_id: string;
+          bucket_label: string;
+          internal_locator: string;
+          secret_reference_id: string;
+        }>(
+          `SELECT copy.storage_object_copy_id,
+                  copy.copy_state,
+                  copy.observed_checksum_sha256,
+                  copy.observed_byte_length,
+                  copy.latest_verified_at,
+                  copy.target_role,
+                  copy.target_order,
+                  connection.connection_id,
+                  vault.bucket_label,
+                  copy.internal_locator,
+                  connection.secret_reference_id
+             FROM public.storage_object_copies AS copy
+             JOIN public.storage_control_configuration_vaults AS vault
+               ON vault.id = copy.configuration_vault_id
+             JOIN public.storage_control_provider_connections AS connection
+               ON connection.id = copy.provider_connection_id
+            WHERE copy.storage_object_id = $1
+              AND copy.configuration_route_target_id IS NOT NULL
+            ORDER BY
+              CASE copy.target_role WHEN 'replica' THEN 0 ELSE 1 END,
+              copy.target_order,
+              copy.storage_object_copy_id`,
+          [input.storageObjectId],
+        );
+        const configuredCopies = Object.freeze(configuredResult.rows.map((row) => Object.freeze({
+          storageObjectCopyId: row.storage_object_copy_id,
+          role: row.target_role,
+          order: row.target_order,
+          state: row.copy_state,
+          ...(row.observed_checksum_sha256 === null
+            ? {}
+            : { observedChecksumSha256: row.observed_checksum_sha256 }),
+          ...(row.observed_byte_length === null
+            ? {}
+            : { observedByteLength: asNumber(row.observed_byte_length) }),
+          ...(row.latest_verified_at === null
+            ? {}
+            : { latestVerifiedAt: asIso(row.latest_verified_at) }),
+          target: Object.freeze({
+            providerRole: row.target_role,
+            providerId: row.connection_id,
+            bucketLabel: row.bucket_label,
+            internalLocator: row.internal_locator,
+            credentialSecretReferenceId: row.secret_reference_id,
+          }),
+        })));
+        const primary = configuredCopies.find((copy) => copy.role === 'primary');
+        if (primary === undefined) {
+          throw registryError(
+            'dependency-unavailable',
+            'configuration-primary-target-not-ready',
+            503,
+          );
+        }
+        const firstReplica = configuredCopies.find((copy) => copy.role === 'replica') ?? primary;
+        const compatibilityCopy = (
+          copy: (typeof configuredCopies)[number],
+          providerRole: 'hot' | 'canonical',
+        ) => Object.freeze({
+          storageObjectCopyId: copy.storageObjectCopyId,
+          providerRole,
+          state: copy.state,
+          ...(copy.observedChecksumSha256 === undefined
+            ? {}
+            : { observedChecksumSha256: copy.observedChecksumSha256 }),
+          ...(copy.observedByteLength === undefined
+            ? {}
+            : { observedByteLength: copy.observedByteLength }),
+          ...(copy.latestVerifiedAt === undefined
+            ? {}
+            : { latestVerifiedAt: copy.latestVerifiedAt }),
+          target: Object.freeze({
+            ...copy.target,
+            providerRole,
+          }),
+        });
+        return Object.freeze({
+          ...common,
+          copies: Object.freeze({
+            hot: compatibilityCopy(firstReplica, 'hot'),
+            canonical: compatibilityCopy(primary, 'canonical'),
+          }),
+          configuredCopies,
+        });
+      }
+
+      const legacyResult = await client.query<{
+        storage_object_copy_id: string;
+        provider_role: 'hot' | 'canonical';
+        copy_state: ObjectReadDeliverySnapshot['copies']['hot']['state'];
+        observed_checksum_sha256: string | null;
+        observed_byte_length: string | number | null;
+        latest_verified_at: Date | string | null;
+        provider_id: string;
+        bucket_label: string;
+        internal_locator: string;
+        secret_reference_id: string;
       }>(
-        `SELECT object_record.storage_object_id, managed_app.app_id AS caller_app_id,
-                object_record.registry_state, object_record.object_protection_stage,
-                object_record.verified_checksum_sha256, object_record.verified_byte_length,
-                object_record.expected_content_type,
-                hot_copy.storage_object_copy_id AS hot_storage_object_copy_id,
-                hot_copy.copy_state AS hot_copy_state,
-                hot_copy.observed_checksum_sha256 AS hot_observed_checksum_sha256,
-                hot_copy.observed_byte_length AS hot_observed_byte_length,
-                hot_copy.latest_verified_at AS hot_latest_verified_at,
-                hot_provider.provider_id AS hot_provider_id,
-                hot_binding.bucket_label AS hot_bucket_label,
-                hot_copy.internal_locator AS hot_internal_locator,
-                hot_provider.secret_reference_id AS hot_secret_reference_id,
-                canonical_copy.storage_object_copy_id AS canonical_storage_object_copy_id,
-                canonical_copy.copy_state AS canonical_copy_state,
-                canonical_copy.observed_checksum_sha256 AS canonical_observed_checksum_sha256,
-                canonical_copy.observed_byte_length AS canonical_observed_byte_length,
-                canonical_copy.latest_verified_at AS canonical_latest_verified_at,
-                canonical_provider.provider_id AS canonical_provider_id,
-                canonical_binding.bucket_label AS canonical_bucket_label,
-                canonical_copy.internal_locator AS canonical_internal_locator,
-                canonical_provider.secret_reference_id AS canonical_secret_reference_id
-           FROM public.storage_objects AS object_record
-           JOIN public.managed_apps AS managed_app ON managed_app.id = object_record.managed_app_id
-           JOIN public.storage_object_copies AS hot_copy
-             ON hot_copy.storage_object_id = object_record.storage_object_id
-            AND hot_copy.provider_role = 'hot'
-           JOIN public.storage_profile_provider_bindings AS hot_binding
-             ON hot_binding.id = hot_copy.storage_profile_provider_binding_id
-           JOIN public.storage_providers AS hot_provider
-             ON hot_provider.id = hot_binding.storage_provider_id AND hot_provider.status = 'active'
-           JOIN public.storage_object_copies AS canonical_copy
-             ON canonical_copy.storage_object_id = object_record.storage_object_id
-            AND canonical_copy.provider_role = 'canonical'
-           JOIN public.storage_profile_provider_bindings AS canonical_binding
-             ON canonical_binding.id = canonical_copy.storage_profile_provider_binding_id
-           JOIN public.storage_providers AS canonical_provider
-             ON canonical_provider.id = canonical_binding.storage_provider_id
-            AND canonical_provider.status = 'active'
-          WHERE object_record.storage_object_id = $1 AND managed_app.app_id = $2`,
-        [input.storageObjectId, input.callerAppId],
+        `SELECT copy.storage_object_copy_id,
+                copy.provider_role,
+                copy.copy_state,
+                copy.observed_checksum_sha256,
+                copy.observed_byte_length,
+                copy.latest_verified_at,
+                provider.provider_id,
+                binding.bucket_label,
+                copy.internal_locator,
+                provider.secret_reference_id
+           FROM public.storage_object_copies AS copy
+           JOIN public.storage_profile_provider_bindings AS binding
+             ON binding.id = copy.storage_profile_provider_binding_id
+           JOIN public.storage_providers AS provider
+             ON provider.id = binding.storage_provider_id
+            AND provider.status = 'active'
+          WHERE copy.storage_object_id = $1
+            AND copy.provider_role IN ('hot', 'canonical')
+          ORDER BY copy.provider_role`,
+        [input.storageObjectId],
       );
-      const row = result.rows[0];
-      if (row === undefined) return null;
-      const copy = (
-        role: 'hot' | 'canonical',
-        values: {
-          id: string;
-          state: ObjectReadDeliverySnapshot['copies']['hot']['state'];
-          checksum: string | null;
-          length: string | number | null;
-          verifiedAt: Date | string | null;
-          providerId: string;
-          bucketLabel: string;
-          locator: string;
-          secretReferenceId: string;
-        },
-      ) => Object.freeze({
-        storageObjectCopyId: values.id,
-        providerRole: role,
-        state: values.state,
-        ...(values.checksum === null ? {} : { observedChecksumSha256: values.checksum }),
-        ...(values.length === null ? {} : { observedByteLength: asNumber(values.length) }),
-        ...(values.verifiedAt === null ? {} : { latestVerifiedAt: asIso(values.verifiedAt) }),
-        target: Object.freeze({
+      const legacy = new Map(legacyResult.rows.map((row) => [row.provider_role, row]));
+      const legacyCopy = (role: 'hot' | 'canonical') => {
+        const row = legacy.get(role);
+        if (row === undefined) {
+          throw registryError('dependency-unavailable', 'storage-object-copy-missing', 503);
+        }
+        return Object.freeze({
+          storageObjectCopyId: row.storage_object_copy_id,
           providerRole: role,
-          providerId: values.providerId,
-          bucketLabel: values.bucketLabel,
-          internalLocator: values.locator,
-          credentialSecretReferenceId: values.secretReferenceId,
-        }),
-      });
+          state: row.copy_state,
+          ...(row.observed_checksum_sha256 === null
+            ? {}
+            : { observedChecksumSha256: row.observed_checksum_sha256 }),
+          ...(row.observed_byte_length === null
+            ? {}
+            : { observedByteLength: asNumber(row.observed_byte_length) }),
+          ...(row.latest_verified_at === null
+            ? {}
+            : { latestVerifiedAt: asIso(row.latest_verified_at) }),
+          target: Object.freeze({
+            providerRole: role,
+            providerId: row.provider_id,
+            bucketLabel: row.bucket_label,
+            internalLocator: row.internal_locator,
+            credentialSecretReferenceId: row.secret_reference_id,
+          }),
+        });
+      };
       return Object.freeze({
-        storageObjectId: row.storage_object_id,
-        callerAppId: row.caller_app_id,
-        registryState: row.registry_state,
-        objectProtectionStage: row.object_protection_stage,
-        ...(row.verified_checksum_sha256 === null
-          ? {}
-          : { verifiedChecksumSha256: row.verified_checksum_sha256 }),
-        ...(row.verified_byte_length === null
-          ? {}
-          : { verifiedByteLength: asNumber(row.verified_byte_length) }),
-        verifiedContentType: row.expected_content_type,
+        ...common,
         copies: Object.freeze({
-          hot: copy('hot', {
-            id: row.hot_storage_object_copy_id,
-            state: row.hot_copy_state,
-            checksum: row.hot_observed_checksum_sha256,
-            length: row.hot_observed_byte_length,
-            verifiedAt: row.hot_latest_verified_at,
-            providerId: row.hot_provider_id,
-            bucketLabel: row.hot_bucket_label,
-            locator: row.hot_internal_locator,
-            secretReferenceId: row.hot_secret_reference_id,
-          }),
-          canonical: copy('canonical', {
-            id: row.canonical_storage_object_copy_id,
-            state: row.canonical_copy_state,
-            checksum: row.canonical_observed_checksum_sha256,
-            length: row.canonical_observed_byte_length,
-            verifiedAt: row.canonical_latest_verified_at,
-            providerId: row.canonical_provider_id,
-            bucketLabel: row.canonical_bucket_label,
-            locator: row.canonical_internal_locator,
-            secretReferenceId: row.canonical_secret_reference_id,
-          }),
+          hot: legacyCopy('hot'),
+          canonical: legacyCopy('canonical'),
         }),
       });
     });
@@ -1256,34 +1444,54 @@ function bearerToken(request: Request): string {
   return match[1].trim();
 }
 
-function normalizeCaller(value: unknown): Readonly<CallerIdentity> {
+function normalizeCaller(value: unknown): Readonly<RuntimeAuthenticatedCaller> {
   if (!isRecord(value)) throw new ObjectReadHttpError('unauthenticated', 'authentication-required', 401);
-  const appId = requireString(value.appId, 'invalid-caller', {
-    max: 96,
-    pattern: SAFE_CALLER_PATTERN,
+  const callerValue = isRecord(value.caller) ? value.caller : value;
+  const appId = requireString(callerValue.appId, 'invalid-caller', {
+    max: 128,
+    pattern: SAFE_CALLER_APP_PATTERN,
   });
-  if (value.serviceId === undefined || value.serviceId === null) return Object.freeze({ appId });
-  return Object.freeze({
-    appId,
-    serviceId: requireString(value.serviceId, 'invalid-caller', {
+  const caller: CallerIdentity = { appId };
+  if (callerValue.serviceId !== undefined && callerValue.serviceId !== null) {
+    caller.serviceId = requireString(callerValue.serviceId, 'invalid-caller', {
       max: 96,
-      pattern: SAFE_CALLER_PATTERN,
-    }),
-  });
+      pattern: SAFE_CALLER_SERVICE_PATTERN,
+    });
+  }
+  if (value.integrationPrincipal !== undefined) {
+    const principal = value.integrationPrincipal;
+    if (!isRecord(principal) || principal.clientId !== appId || !Array.isArray(principal.scopes)) {
+      throw new ObjectReadHttpError('unauthenticated', 'integration-token-invalid', 401);
+    }
+    return Object.freeze({
+      caller: Object.freeze(caller),
+      integrationPrincipal: principal as Readonly<RuntimeIntegrationPrincipal>,
+    });
+  }
+  return Object.freeze({ caller: Object.freeze(caller) });
 }
 
 async function authenticateAndAuthorize(
   request: Request,
   options: StorageRuntimeOptions,
-): Promise<Readonly<CallerIdentity>> {
-  let caller: Readonly<CallerIdentity>;
+): Promise<Readonly<RuntimeAuthenticatedCaller>> {
+  let authenticated: Readonly<RuntimeAuthenticatedCaller>;
   try {
-    caller = normalizeCaller(await options.authenticate(bearerToken(request)));
+    authenticated = normalizeCaller(await options.authenticate(bearerToken(request)));
   } catch (error) {
     if (error instanceof ObjectReadHttpError) throw error;
+    if (isRecord(error) && typeof error.code === 'string' && typeof error.status === 'number') {
+      throw new ObjectReadHttpError(
+        error.category === 'unauthorized' ? 'unauthorized' : 'unauthenticated',
+        error.code,
+        error.status,
+        error.retryable === true,
+      );
+    }
     throw new ObjectReadHttpError('unauthenticated', 'authentication-failed', 401);
   }
-  const claimedApp = requiredHeader(request, 'x-zs-caller-app', 'invalid-caller', 96);
+  const caller = authenticated.caller;
+  const claimedApp = requiredHeader(request, 'x-zs-caller-app', 'invalid-caller', 128);
   if (claimedApp !== caller.appId) {
     throw new ObjectReadHttpError('unauthorized', 'invalid-caller', 403);
   }
@@ -1294,7 +1502,7 @@ async function authenticateAndAuthorize(
     allowed = false;
   }
   if (!allowed) throw new ObjectReadHttpError('unauthorized', 'invalid-caller', 403);
-  return caller;
+  return authenticated;
 }
 
 function duplicateKey(request: Request): string {
@@ -1433,7 +1641,11 @@ export function createReadEnabledHttpStorageRuntime(
 
   async function issueGrant(request: Request): Promise<Response> {
     const version = contractVersion(request);
-    const caller = await authenticateAndAuthorize(request, options);
+    const authenticated = await authenticateAndAuthorize(request, options);
+    const caller = authenticated.caller;
+    if (authenticated.integrationPrincipal !== undefined) {
+      requireRuntimeIntegrationScope(authenticated.integrationPrincipal, 'object:read');
+    }
     const key = duplicateKey(request);
     const appCorrelationReference = correlationReference(request);
     const payload = parseGrantRequest(await readJson(request));
@@ -1517,7 +1729,11 @@ export function createReadEnabledHttpStorageRuntime(
   async function revokeGrant(request: Request, objectReadGrantId: string): Promise<Response> {
     requireHttpUuid(objectReadGrantId, 'invalid-object-read-grant-id');
     contractVersion(request);
-    const caller = await authenticateAndAuthorize(request, options);
+    const authenticated = await authenticateAndAuthorize(request, options);
+    const caller = authenticated.caller;
+    if (authenticated.integrationPrincipal !== undefined) {
+      requireRuntimeIntegrationScope(authenticated.integrationPrincipal, 'object:read');
+    }
     const key = duplicateKey(request);
     const appCorrelationReference = correlationReference(request);
     const duplicate = await options.objectReadGrantRegistry.execute({
@@ -1554,7 +1770,11 @@ export function createReadEnabledHttpStorageRuntime(
   ): Promise<Response> {
     requireHttpUuid(storageObjectId, 'invalid-storage-object-id');
     const version = contractVersion(request);
-    const caller = await authenticateAndAuthorize(request, options);
+    const authenticated = await authenticateAndAuthorize(request, options);
+    const caller = authenticated.caller;
+    if (authenticated.integrationPrincipal !== undefined) {
+      requireRuntimeIntegrationScope(authenticated.integrationPrincipal, 'object:read');
+    }
     const appCorrelationReference = correlationReference(request);
     const token = requiredHeader(
       request,

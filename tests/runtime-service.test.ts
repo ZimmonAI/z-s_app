@@ -187,6 +187,78 @@ test('invalid caller claims and unauthorized callers fail closed', async () => {
   assert.equal(diagnosticCode(await responseBody(deniedResponse)), 'invalid-caller');
 });
 
+test('integration-token authority ignores caller-selected storage profile routing', async () => {
+  let resolvedRequest: Readonly<ObjectWriteIntentRequest['storageProfile']> | undefined;
+  let resolvedMediaType: string | undefined;
+  let operationProfileId: string | undefined;
+  const runtime = createHttpStorageRuntime(runtimeOptions({
+    authenticate: () => ({
+      caller: { appId: 'client.alpha', serviceId: 'integration-token' },
+      integrationPrincipal: {
+        clientId: 'client.alpha',
+        environment: 'prod',
+        tokenId: 'runtime-write',
+        scopes: ['object:write'] as const,
+      },
+    }),
+    authorizeCaller: ({ appId }) => appId === 'client.alpha',
+    resolveStorageProfile: (request, context) => {
+      resolvedRequest = request;
+      resolvedMediaType = context.mediaType;
+      return {
+        profileId: 'server-selected-route',
+        profileVersion: 7,
+        environment: 'prod',
+        active: true,
+        ready: true,
+        safeFingerprint: 'configured-authority-fingerprint',
+        capabilityPolicy: CAPABILITY_POLICY,
+        capabilities: {
+          objectWriteIntent: true,
+          objectReadGrant: true,
+          objectDeleteRequest: false,
+          objectRepairOperation: false,
+        },
+        protectionStages: ['write-intent-created'],
+        writePolicy: {
+          uploadMode: 'server-streamed-single-object',
+          allowedMediaTypes: ['image/png'],
+          maxByteLength: 4 * 1024 * 1024,
+          intentTtlSeconds: 900,
+        },
+      };
+    },
+    createObjectWriteIntent: ({ resolvedProfile }) => {
+      operationProfileId = resolvedProfile.profileId;
+      return {
+        writeIntentId: WRITE_INTENT_ID,
+        storageObjectId: STORAGE_OBJECT_ID,
+        state: 'accepted',
+        expiresAt: '2026-07-15T16:15:00.000Z',
+        objectProtectionStage: 'write-intent-created',
+      };
+    },
+  }));
+  const payload: ObjectWriteIntentRequest = {
+    ...VALID_PAYLOAD,
+    storageProfile: {
+      profileId: 'caller-selected-provider-vault',
+      profileVersion: 999,
+      environment: 'dev',
+    },
+  };
+  const runtimeBearer = ['integration', 'token', 'value'].join('-');
+  const response = await runtime.handle(writeRequest({
+    caller: 'client.alpha',
+    token: runtimeBearer,
+    payload,
+  }));
+  assert.equal(response.status, 200);
+  assert.deepEqual(resolvedRequest, payload.storageProfile);
+  assert.equal(resolvedMediaType, 'image/png');
+  assert.equal(operationProfileId, 'server-selected-route');
+});
+
 test('safe diagnostics serialize only bounded categories, codes and correlation', () => {
   assert.deepEqual(createSafeDiagnostic('not-ready', 'storage-profile-not-ready', true, 'ref-01'), {
     category: 'not-ready',
