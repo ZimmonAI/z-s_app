@@ -1,4 +1,4 @@
-name: H03 source export
+name: H03 apply implementation
 
 on:
   push:
@@ -9,35 +9,45 @@ permissions:
   contents: write
 
 jobs:
-  export-source:
+  apply-implementation:
     if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
     runs-on: ubuntu-latest
     steps:
-      - name: Check out source
+      - name: Check out feature branch
         uses: actions/checkout@v4
         with:
           ref: agent/t2-h03-generic-runtime-routing
-      - name: Archive source checkout
+          fetch-depth: 0
+      - name: Verify and apply implementation patch
         shell: bash
         run: |
           set -euo pipefail
-          tar --exclude=.git --exclude=tmp -czf /tmp/z-s_app-h03-source.tgz .
-      - name: Upload source artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: z-s_app-h03-source
-          path: /tmp/z-s_app-h03-source.tgz
-          if-no-files-found: error
-          retention-days: 1
-      - name: Publish run identifier
+          cat tmp/h03-patch/0* > /tmp/h03.patch.gz.b64
+          printf '%s  %s\n' \
+            'dd102fced5b91c3291a4eda24c0212651fe347b602a2e3e75a08b2e8512a9f6a' \
+            '/tmp/h03.patch.gz.b64' | sha256sum --check --strict
+          base64 -d /tmp/h03.patch.gz.b64 | gzip -d > /tmp/h03.patch
+          printf '%s  %s\n' \
+            '03a1c02ff4a8cd0e3d7f9d5e7f7ebe1d6aded50af627651fc610fcb1ba095c6f' \
+            '/tmp/h03.patch' | sha256sum --check --strict
+          git apply --check /tmp/h03.patch
+          git apply /tmp/h03.patch
+      - name: Remove one-shot transfer scaffolding
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf tmp/h03-source.tgz.b64 tmp/h03-chunks
-          mkdir -p tmp
-          printf '%s\n' '${{ github.run_id }}' > tmp/h03-run-id.txt
+          rm -rf \
+            .github/workflows/h03-source-export.yml \
+            tmp/h03-patch \
+            tmp/h03-run-id.txt \
+            tmp/h03-chunks \
+            tmp/h03-source.tgz.b64
+      - name: Publish implementation
+        shell: bash
+        run: |
+          set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A tmp
-          git commit -m "chore: publish H03 source artifact run [skip ci]"
+          git add -A
+          git commit -m 'feat: implement generic runtime configuration routing [skip ci]'
           git push origin HEAD:agent/t2-h03-generic-runtime-routing
