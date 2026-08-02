@@ -4,25 +4,28 @@ on:
   push:
     branches:
       - agent/t2-h03-generic-runtime-routing
-  pull_request:
-    branches:
-      - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   export-source:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
         uses: actions/checkout@v4
-      - name: Archive source checkout
-        run: tar --exclude=.git -czf /tmp/z-s_app-h03-source.tgz .
-      - name: Upload source archive
-        uses: actions/upload-artifact@v4
         with:
-          name: z-s_app-h03-source
-          path: /tmp/z-s_app-h03-source.tgz
-          if-no-files-found: error
-          retention-days: 1
+          ref: agent/t2-h03-generic-runtime-routing
+      - name: Commit one-shot source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tmp
+          tar --exclude=.git --exclude=tmp/h03-source.tgz.b64 -czf /tmp/z-s_app-h03-source.tgz .
+          base64 -w0 /tmp/z-s_app-h03-source.tgz > tmp/h03-source.tgz.b64
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tmp/h03-source.tgz.b64
+          git commit -m "chore: export H03 source [skip ci]"
+          git push origin HEAD:agent/t2-h03-generic-runtime-routing
