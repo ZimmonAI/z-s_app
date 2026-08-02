@@ -662,7 +662,9 @@ export class PostgresRuntimeStorageRegistryObjectCore extends PostgresRuntimeSto
     lock: boolean,
   ): Promise<RuntimeObjectWriteIntentExecutionContext | null> {
     const authority = await client.query<{ configuration_version_id: string | null }>(
-      'SELECT configuration_version_id FROM public.object_write_intents WHERE object_write_intent_id = $1',
+      `SELECT to_jsonb(intent)->>'configuration_version_id' AS configuration_version_id
+         FROM public.object_write_intents AS intent
+        WHERE intent.object_write_intent_id = $1`,
       [id],
     );
     const authorityRow = authority.rows[0];
@@ -869,12 +871,15 @@ export class PostgresRuntimeStorageRegistryObjectCore extends PostgresRuntimeSto
     id: string,
   ): Promise<StorageObjectSnapshot> {
     const objectResult = await client.query<StorageObjectRow>(
-      `SELECT storage_object_id, configuration_route_id, registry_state, object_protection_stage,
-              expected_checksum_sha256, expected_byte_length, expected_content_type,
-              verified_checksum_sha256, verified_byte_length, safe_technical_metadata, row_version,
-              created_at, updated_at
-         FROM public.storage_objects
-        WHERE storage_object_id = $1`,
+      `SELECT object_record.storage_object_id,
+              to_jsonb(object_record)->>'configuration_route_id' AS configuration_route_id,
+              object_record.registry_state, object_record.object_protection_stage,
+              object_record.expected_checksum_sha256, object_record.expected_byte_length,
+              object_record.expected_content_type, object_record.verified_checksum_sha256,
+              object_record.verified_byte_length, object_record.safe_technical_metadata,
+              object_record.row_version, object_record.created_at, object_record.updated_at
+         FROM public.storage_objects AS object_record
+        WHERE object_record.storage_object_id = $1`,
       [id],
     );
     const objectRow = objectResult.rows[0];
@@ -882,14 +887,19 @@ export class PostgresRuntimeStorageRegistryObjectCore extends PostgresRuntimeSto
       throw new RuntimeStorageRegistryError('internal', 'storage-object-missing', 500);
     }
     const copyResult = await client.query<RuntimeCopyRow>(
-      `SELECT storage_object_copy_id, storage_object_id, provider_role,
-              configuration_route_target_id, target_role, target_order, copy_state,
-              observed_checksum_sha256, observed_byte_length, latest_verified_at,
-              row_version, updated_at
-         FROM public.storage_object_copies
-        WHERE storage_object_id = $1
-        ORDER BY CASE target_role WHEN 'replica' THEN 0 WHEN 'primary' THEN 1 ELSE 2 END,
-                 target_order, provider_role`,
+      `SELECT copy.storage_object_copy_id, copy.storage_object_id, copy.provider_role,
+              to_jsonb(copy)->>'configuration_route_target_id' AS configuration_route_target_id,
+              to_jsonb(copy)->>'target_role' AS target_role,
+              (to_jsonb(copy)->>'target_order')::smallint AS target_order,
+              copy.copy_state, copy.observed_checksum_sha256, copy.observed_byte_length,
+              copy.latest_verified_at, copy.row_version, copy.updated_at
+         FROM public.storage_object_copies AS copy
+        WHERE copy.storage_object_id = $1
+        ORDER BY CASE to_jsonb(copy)->>'target_role'
+                   WHEN 'replica' THEN 0 WHEN 'primary' THEN 1 ELSE 2
+                 END,
+                 (to_jsonb(copy)->>'target_order')::smallint,
+                 copy.provider_role`,
       [id],
     );
     const configuredRows = copyResult.rows.filter((row) => row.configuration_route_target_id !== null);

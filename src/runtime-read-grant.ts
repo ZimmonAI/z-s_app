@@ -405,6 +405,21 @@ export class PostgresObjectReadRegistry
     this.#idempotencyReservationTtlMs = options.idempotencyReservationTtlMs ?? 5 * 60_000;
   }
 
+  async #configurationRoutingSchemaAvailable(queryable: PostgresQueryable): Promise<boolean> {
+    const result = await queryable.query<{ available: boolean }>(
+      `SELECT to_regclass('public.storage_control_clients') IS NOT NULL
+              AND to_regclass('public.storage_control_configuration_versions') IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                  FROM information_schema.columns
+                 WHERE table_schema = 'public'
+                   AND table_name = 'storage_objects'
+                   AND column_name = 'configuration_version_id'
+              ) AS available`,
+    );
+    return result.rows[0]?.available === true;
+  }
+
   async execute<T>(input: {
     scope: string;
     key: string;
@@ -593,50 +608,80 @@ export class PostgresObjectReadRegistry
     requireUuid(input.storageObjectId, 'storage-object-id');
     requireSha256(input.tokenDigest, 'read-grant-token-digest');
     return this.#scope.run(async (client) => {
-      const authority = await client.query<{
-        managed_app_id: string;
-        caller_app_id: string;
-        managed_app_status: string;
-        profile_status: string;
-        registry_state: string;
-        verified_checksum_sha256: string | null;
-        verified_byte_length: string | number | null;
-        usable_copy_count: string | number;
-      }>(
-        `SELECT COALESCE(object_record.managed_app_id, configured_app.id) AS managed_app_id,
-                COALESCE(control_client.client_id, legacy_app.app_id) AS caller_app_id,
-                COALESCE(configured_app.status, legacy_app.status) AS managed_app_status,
-                CASE
-                  WHEN object_record.configuration_version_id IS NOT NULL THEN configuration.state
-                  ELSE profile.status
-                END AS profile_status,
-                object_record.registry_state, object_record.verified_checksum_sha256,
-                object_record.verified_byte_length,
-                (SELECT count(*) FROM public.storage_object_copies AS copy
-                  WHERE copy.storage_object_id = object_record.storage_object_id
-                    AND copy.copy_state = 'verified'
-                    AND copy.observed_checksum_sha256 = object_record.verified_checksum_sha256
-                    AND copy.observed_byte_length = object_record.verified_byte_length) AS usable_copy_count
-           FROM public.storage_objects AS object_record
-           LEFT JOIN public.managed_apps AS legacy_app
-             ON legacy_app.id = object_record.managed_app_id
-           LEFT JOIN public.storage_profiles AS profile
-             ON profile.id = object_record.storage_profile_id
-           LEFT JOIN public.storage_control_clients AS control_client
-             ON control_client.id = object_record.storage_control_client_id
-           LEFT JOIN public.storage_control_configuration_versions AS configuration
-             ON configuration.storage_control_client_id = object_record.storage_control_client_id
-            AND configuration.id = object_record.configuration_version_id
-           LEFT JOIN public.managed_apps AS configured_app
-             ON configured_app.app_id = control_client.client_id
-            AND configured_app.environment = CASE configuration.environment
-                  WHEN 'staging' THEN 'stg'
-                  ELSE configuration.environment
-                END
-          WHERE object_record.storage_object_id = $1
-          FOR SHARE OF object_record`,
-        [input.storageObjectId],
-      );
+      const configurationRoutingAvailable = await this.#configurationRoutingSchemaAvailable(client);
+      const authority = configurationRoutingAvailable
+        ? await client.query<{
+            managed_app_id: string;
+            caller_app_id: string;
+            managed_app_status: string;
+            profile_status: string;
+            registry_state: string;
+            verified_checksum_sha256: string | null;
+            verified_byte_length: string | number | null;
+            usable_copy_count: string | number;
+          }>(
+            `SELECT COALESCE(object_record.managed_app_id, configured_app.id) AS managed_app_id,
+                    COALESCE(control_client.client_id, legacy_app.app_id) AS caller_app_id,
+                    COALESCE(configured_app.status, legacy_app.status) AS managed_app_status,
+                    CASE
+                      WHEN object_record.configuration_version_id IS NOT NULL THEN configuration.state
+                      ELSE profile.status
+                    END AS profile_status,
+                    object_record.registry_state, object_record.verified_checksum_sha256,
+                    object_record.verified_byte_length,
+                    (SELECT count(*) FROM public.storage_object_copies AS copy
+                      WHERE copy.storage_object_id = object_record.storage_object_id
+                        AND copy.copy_state = 'verified'
+                        AND copy.observed_checksum_sha256 = object_record.verified_checksum_sha256
+                        AND copy.observed_byte_length = object_record.verified_byte_length) AS usable_copy_count
+               FROM public.storage_objects AS object_record
+               LEFT JOIN public.managed_apps AS legacy_app
+                 ON legacy_app.id = object_record.managed_app_id
+               LEFT JOIN public.storage_profiles AS profile
+                 ON profile.id = object_record.storage_profile_id
+               LEFT JOIN public.storage_control_clients AS control_client
+                 ON control_client.id = object_record.storage_control_client_id
+               LEFT JOIN public.storage_control_configuration_versions AS configuration
+                 ON configuration.storage_control_client_id = object_record.storage_control_client_id
+                AND configuration.id = object_record.configuration_version_id
+               LEFT JOIN public.managed_apps AS configured_app
+                 ON configured_app.app_id = control_client.client_id
+                AND configured_app.environment = CASE configuration.environment
+                      WHEN 'staging' THEN 'stg'
+                      ELSE configuration.environment
+                    END
+              WHERE object_record.storage_object_id = $1
+              FOR SHARE OF object_record`,
+            [input.storageObjectId],
+          )
+        : await client.query<{
+            managed_app_id: string;
+            caller_app_id: string;
+            managed_app_status: string;
+            profile_status: string;
+            registry_state: string;
+            verified_checksum_sha256: string | null;
+            verified_byte_length: string | number | null;
+            usable_copy_count: string | number;
+          }>(
+            `SELECT object_record.managed_app_id, managed_app.app_id AS caller_app_id,
+                    managed_app.status AS managed_app_status, profile.status AS profile_status,
+                    object_record.registry_state, object_record.verified_checksum_sha256,
+                    object_record.verified_byte_length,
+                    (SELECT count(*) FROM public.storage_object_copies AS copy
+                      WHERE copy.storage_object_id = object_record.storage_object_id
+                        AND copy.copy_state = 'verified'
+                        AND copy.observed_checksum_sha256 = object_record.verified_checksum_sha256
+                        AND copy.observed_byte_length = object_record.verified_byte_length) AS usable_copy_count
+               FROM public.storage_objects AS object_record
+               JOIN public.managed_apps AS managed_app
+                 ON managed_app.id = object_record.managed_app_id
+               JOIN public.storage_profiles AS profile
+                 ON profile.id = object_record.storage_profile_id
+              WHERE object_record.storage_object_id = $1
+              FOR SHARE OF object_record`,
+            [input.storageObjectId],
+          );
       const row = authority.rows[0];
       if (row === undefined || row.managed_app_id === null || row.caller_app_id === null) {
         throw registryError('not-ready', 'storage-object-not-found', 404);
@@ -803,33 +848,58 @@ export class PostgresObjectReadRegistry
   }): Promise<Readonly<ObjectReadDeliverySnapshot> | null> {
     requireUuid(input.storageObjectId, 'storage-object-id');
     return this.#scope.run(async (client) => {
-      const baseResult = await client.query<{
-        storage_object_id: string;
-        caller_app_id: string;
-        configuration_route_id: string | null;
-        registry_state: ObjectReadDeliverySnapshot['registryState'];
-        object_protection_stage: string;
-        verified_checksum_sha256: string | null;
-        verified_byte_length: string | number | null;
-        expected_content_type: string;
-      }>(
-        `SELECT object_record.storage_object_id,
-                COALESCE(control_client.client_id, managed_app.app_id) AS caller_app_id,
-                object_record.configuration_route_id,
-                object_record.registry_state,
-                object_record.object_protection_stage,
-                object_record.verified_checksum_sha256,
-                object_record.verified_byte_length,
-                object_record.expected_content_type
-           FROM public.storage_objects AS object_record
-           LEFT JOIN public.managed_apps AS managed_app
-             ON managed_app.id = object_record.managed_app_id
-           LEFT JOIN public.storage_control_clients AS control_client
-             ON control_client.id = object_record.storage_control_client_id
-          WHERE object_record.storage_object_id = $1
-            AND COALESCE(control_client.client_id, managed_app.app_id) = $2`,
-        [input.storageObjectId, input.callerAppId],
-      );
+      const configurationRoutingAvailable = await this.#configurationRoutingSchemaAvailable(client);
+      const baseResult = configurationRoutingAvailable
+        ? await client.query<{
+            storage_object_id: string;
+            caller_app_id: string;
+            configuration_route_id: string | null;
+            registry_state: ObjectReadDeliverySnapshot['registryState'];
+            object_protection_stage: string;
+            verified_checksum_sha256: string | null;
+            verified_byte_length: string | number | null;
+            expected_content_type: string;
+          }>(
+            `SELECT object_record.storage_object_id,
+                    COALESCE(control_client.client_id, managed_app.app_id) AS caller_app_id,
+                    object_record.configuration_route_id,
+                    object_record.registry_state,
+                    object_record.object_protection_stage,
+                    object_record.verified_checksum_sha256,
+                    object_record.verified_byte_length,
+                    object_record.expected_content_type
+               FROM public.storage_objects AS object_record
+               LEFT JOIN public.managed_apps AS managed_app
+                 ON managed_app.id = object_record.managed_app_id
+               LEFT JOIN public.storage_control_clients AS control_client
+                 ON control_client.id = object_record.storage_control_client_id
+              WHERE object_record.storage_object_id = $1
+                AND COALESCE(control_client.client_id, managed_app.app_id) = $2`,
+            [input.storageObjectId, input.callerAppId],
+          )
+        : await client.query<{
+            storage_object_id: string;
+            caller_app_id: string;
+            configuration_route_id: string | null;
+            registry_state: ObjectReadDeliverySnapshot['registryState'];
+            object_protection_stage: string;
+            verified_checksum_sha256: string | null;
+            verified_byte_length: string | number | null;
+            expected_content_type: string;
+          }>(
+            `SELECT object_record.storage_object_id, managed_app.app_id AS caller_app_id,
+                    NULL::uuid AS configuration_route_id, object_record.registry_state,
+                    object_record.object_protection_stage,
+                    object_record.verified_checksum_sha256,
+                    object_record.verified_byte_length,
+                    object_record.expected_content_type
+               FROM public.storage_objects AS object_record
+               JOIN public.managed_apps AS managed_app
+                 ON managed_app.id = object_record.managed_app_id
+              WHERE object_record.storage_object_id = $1
+                AND managed_app.app_id = $2`,
+            [input.storageObjectId, input.callerAppId],
+          );
       const base = baseResult.rows[0];
       if (base === undefined) return null;
 
