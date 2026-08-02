@@ -417,7 +417,12 @@ export function digestIntegrationToken(token: string): string {
 }
 
 function cloneDocument(input: Readonly<ConfigurationDraftDocument>): ConfigurationDraftDocument {
-  return structuredClone(input) as ConfigurationDraftDocument;
+  return structuredClone({
+    providerConnections: input.providerConnections,
+    vaults: input.vaults,
+    routes: input.routes,
+    imagePresets: input.imagePresets,
+  }) as ConfigurationDraftDocument;
 }
 
 function publicTokenMetadata(
