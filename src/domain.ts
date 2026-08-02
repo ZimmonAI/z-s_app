@@ -1,4 +1,4 @@
-export type Environment = 'dev' | 'stg' | 'prod';
+export type Environment = 'dev' | 'stg' | 'staging' | 'prod';
 export type ActiveStatus = 'active' | 'disabled';
 export type ProfileStatus = 'draft' | 'active' | 'disabled';
 export type ProviderType = 'minio' | 'r2' | 's3-compatible';

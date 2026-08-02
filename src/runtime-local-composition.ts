@@ -8,6 +8,7 @@ import type {
   StorageCapabilityResult,
 } from './domain.js';
 import { InMemoryStorageProfileRegistry } from './profile-registry.js';
+import { PostgresClientStorageConfigurationStore } from './client-storage-configuration-postgres.js';
 import type {
   CallerIdentity,
   DependencyReadiness,
@@ -17,11 +18,20 @@ import type {
   StorageProfileRequest,
   StorageRuntimeOptions,
 } from './runtime-contract.js';
+import {
+  deriveRuntimeAssetClass,
+  PostgresActiveConfigurationResolver,
+  type ResolvedActiveConfiguration,
+} from './runtime-active-configuration.js';
 import { DualProviderObjectIngestAdapter } from './runtime-dual-provider.js';
 import {
   createObjectIngestRuntime,
   type ResolvedObjectWriteAuthority,
 } from './runtime-ingest.js';
+import {
+  ConfigurationStoreRuntimeIntegrationTokenAuthenticator,
+  RuntimeIntegrationTokenAuthenticationError,
+} from './runtime-integration-token-auth.js';
 import { BoundedMediaVerifier } from './runtime-media-verification.js';
 import {
   ObjectReadDeliveryCoordinator,
@@ -54,26 +64,27 @@ import {
   type UploadCompletionTokenService,
 } from './runtime-upload-token.js';
 
-const VIDEO_MAKER_APP = 'video-maker_app';
-const Z_X_APP = 'z-x_app';
-const CALLER_SERVICE = 'api';
-const DEVELOPMENT_ENVIRONMENT = 'dev' as const;
-const PROFILE_ALIAS = 'video-maker-dev-default';
-const PROFILE_VERSION = 1;
-const HOT_PROVIDER_ALIAS = 'r2_video_maker_dev_01';
-const CANONICAL_PROVIDER_ALIAS = 'minio_zimspace_local_pc_01';
-const PREFIX_CLASS_ALIAS = 'video-maker-user-resource';
-const NORMALIZED_PREFIX_PATTERN = 'video-maker/user-resources/*';
+/** Explicit compatibility adapter for historical profile-based tests and deployments. */
+const LEGACY_VIDEO_MAKER_APP = 'video-maker_app';
+const LEGACY_Z_X_APP = 'z-x_app';
+const LEGACY_CALLER_SERVICE = 'api';
+const LEGACY_DEVELOPMENT_ENVIRONMENT = 'dev' as const;
+const LEGACY_PROFILE_ALIAS = 'video-maker-dev-default';
+const LEGACY_PROFILE_VERSION = 1;
+const LEGACY_HOT_PROVIDER_ALIAS = 'r2_video_maker_dev_01';
+const LEGACY_CANONICAL_PROVIDER_ALIAS = 'minio_zimspace_local_pc_01';
+const LEGACY_PREFIX_CLASS_ALIAS = 'video-maker-user-resource';
+const LEGACY_NORMALIZED_PREFIX_PATTERN = 'video-maker/user-resources/*';
 const DEFAULT_MAX_OBJECT_BYTE_LENGTH = 32 * 1024 * 1024;
 
-const VIDEO_MAKER_CALLER: Readonly<CallerIdentity> = Object.freeze({
-  appId: VIDEO_MAKER_APP,
-  serviceId: CALLER_SERVICE,
+const LEGACY_VIDEO_MAKER_CALLER: Readonly<CallerIdentity> = Object.freeze({
+  appId: LEGACY_VIDEO_MAKER_APP,
+  serviceId: LEGACY_CALLER_SERVICE,
 });
-const EXACT_PROFILE_REQUEST: Readonly<StorageProfileRequest> = Object.freeze({
-  profileId: PROFILE_ALIAS,
-  profileVersion: PROFILE_VERSION,
-  environment: DEVELOPMENT_ENVIRONMENT,
+const LEGACY_EXACT_PROFILE_REQUEST: Readonly<StorageProfileRequest> = Object.freeze({
+  profileId: LEGACY_PROFILE_ALIAS,
+  profileVersion: LEGACY_PROFILE_VERSION,
+  environment: LEGACY_DEVELOPMENT_ENVIRONMENT,
 });
 
 class RuntimeCompositionError extends Error {
@@ -264,24 +275,27 @@ function authenticate(
   configuration: Readonly<RuntimeConfiguration>,
   token: string,
 ): Readonly<CallerIdentity> | null {
-  if (tokenMatches(token, configuration.videoMakerBearerToken)) return VIDEO_MAKER_CALLER;
+  if (tokenMatches(token, configuration.videoMakerBearerToken)) return LEGACY_VIDEO_MAKER_CALLER;
   if (tokenMatches(token, configuration.zXBearerToken)) {
-    return Object.freeze({ appId: Z_X_APP, serviceId: CALLER_SERVICE });
+    return Object.freeze({ appId: LEGACY_Z_X_APP, serviceId: LEGACY_CALLER_SERVICE });
   }
   return null;
 }
 
 function authorizeCaller(caller: Readonly<CallerIdentity>): boolean {
+  if (caller.serviceId === 'integration-token') {
+    return /^[a-z0-9][a-z0-9._:-]{0,127}$/.test(caller.appId);
+  }
   return (
-    (caller.appId === VIDEO_MAKER_APP || caller.appId === Z_X_APP) &&
-    caller.serviceId === CALLER_SERVICE
+    (caller.appId === LEGACY_VIDEO_MAKER_APP || caller.appId === LEGACY_Z_X_APP) &&
+    caller.serviceId === LEGACY_CALLER_SERVICE
   );
 }
 
 export function isObjectReadGrantCallerAllowed(caller: Readonly<CallerIdentity>): boolean {
-  return (
-    (caller.appId === VIDEO_MAKER_APP || caller.appId === Z_X_APP) &&
-    caller.serviceId === CALLER_SERVICE
+  return caller.serviceId === 'integration-token' || (
+    (caller.appId === LEGACY_VIDEO_MAKER_APP || caller.appId === LEGACY_Z_X_APP) &&
+    caller.serviceId === LEGACY_CALLER_SERVICE
   );
 }
 
@@ -489,17 +503,17 @@ function validateAuthorityRows(
   }
   for (const row of rows) {
     if (
-      row.app_id !== VIDEO_MAKER_APP ||
-      row.environment !== DEVELOPMENT_ENVIRONMENT ||
+      row.app_id !== LEGACY_VIDEO_MAKER_APP ||
+      row.environment !== LEGACY_DEVELOPMENT_ENVIRONMENT ||
       row.managed_app_status !== 'active' ||
-      row.profile_id !== PROFILE_ALIAS ||
-      row.profile_version !== PROFILE_VERSION ||
+      row.profile_id !== LEGACY_PROFILE_ALIAS ||
+      row.profile_version !== LEGACY_PROFILE_VERSION ||
       row.profile_status !== 'active' ||
       timestamp(row.effective_at) > now.getTime() ||
       (row.retired_at !== null && timestamp(row.retired_at) <= now.getTime()) ||
-      row.prefix_class_id !== PREFIX_CLASS_ALIAS ||
+      row.prefix_class_id !== LEGACY_PREFIX_CLASS_ALIAS ||
       row.operation_class !== 'user-upload' ||
-      row.normalized_prefix_pattern !== NORMALIZED_PREFIX_PATTERN ||
+      row.normalized_prefix_pattern !== LEGACY_NORMALIZED_PREFIX_PATTERN ||
       row.prefix_status !== 'active' ||
       row.binding_required !== true ||
       row.provider_status !== 'active'
@@ -513,7 +527,7 @@ function validateAuthorityRows(
     }
     providerType(row.provider_type);
   }
-  if (hot.provider_id !== HOT_PROVIDER_ALIAS || canonical.provider_id !== CANONICAL_PROVIDER_ALIAS) {
+  if (hot.provider_id !== LEGACY_HOT_PROVIDER_ALIAS || canonical.provider_id !== LEGACY_CANONICAL_PROVIDER_ALIAS) {
     throw new RuntimeCompositionError(
       'dependency-unavailable',
       'provider-authority-mismatch',
@@ -556,13 +570,13 @@ class DevelopmentAuthorityResolver {
     request: Readonly<StorageProfileRequest>,
     caller: Readonly<CallerIdentity>,
   ): Promise<Readonly<AuthoritySnapshot>> {
-    if (caller.appId !== VIDEO_MAKER_APP || caller.serviceId !== CALLER_SERVICE) {
+    if (caller.appId !== LEGACY_VIDEO_MAKER_APP || caller.serviceId !== LEGACY_CALLER_SERVICE) {
       throw new RuntimeCompositionError('unauthorized', 'storage-authority-caller-mismatch', 403);
     }
     if (
-      request.profileId !== PROFILE_ALIAS ||
-      request.profileVersion !== PROFILE_VERSION ||
-      request.environment !== DEVELOPMENT_ENVIRONMENT
+      request.profileId !== LEGACY_PROFILE_ALIAS ||
+      request.profileVersion !== LEGACY_PROFILE_VERSION ||
+      request.environment !== LEGACY_DEVELOPMENT_ENVIRONMENT
     ) {
       throw new RuntimeCompositionError('unauthorized', 'storage-authority-request-mismatch', 403);
     }
@@ -584,9 +598,9 @@ class DevelopmentAuthorityResolver {
     providerBindingId: string;
     internalLocator: string;
   }): Promise<Readonly<ResolvedProviderWriteTarget>> {
-    const snapshot = await this.resolve(EXACT_PROFILE_REQUEST, VIDEO_MAKER_CALLER);
+    const snapshot = await this.resolve(LEGACY_EXACT_PROFILE_REQUEST, LEGACY_VIDEO_MAKER_CALLER);
     const provider = snapshot.providers[input.providerRole];
-    const prefix = NORMALIZED_PREFIX_PATTERN.slice(0, -1);
+    const prefix = LEGACY_NORMALIZED_PREFIX_PATTERN.slice(0, -1);
     if (
       provider.providerBindingId !== input.providerBindingId ||
       !input.internalLocator.startsWith(prefix) ||
@@ -602,7 +616,7 @@ class DevelopmentAuthorityResolver {
       providerId: provider.providerId,
       bucketLabel: provider.bucketLabel,
       internalLocator: input.internalLocator,
-      normalizedPrefixPattern: NORMALIZED_PREFIX_PATTERN,
+      normalizedPrefixPattern: LEGACY_NORMALIZED_PREFIX_PATTERN,
       capabilityPolicy: snapshot.profile.capabilityPolicy,
       credentialSecretReferenceId: provider.secretReferenceId,
     });
@@ -635,12 +649,12 @@ class DevelopmentAuthorityResolver {
           AND binding.provider_role IN ('hot', 'canonical')
         ORDER BY binding.provider_role`,
       [
-        VIDEO_MAKER_APP,
-        DEVELOPMENT_ENVIRONMENT,
-        PROFILE_ALIAS,
-        PROFILE_VERSION,
-        PREFIX_CLASS_ALIAS,
-        NORMALIZED_PREFIX_PATTERN,
+        LEGACY_VIDEO_MAKER_APP,
+        LEGACY_DEVELOPMENT_ENVIRONMENT,
+        LEGACY_PROFILE_ALIAS,
+        LEGACY_PROFILE_VERSION,
+        LEGACY_PREFIX_CLASS_ALIAS,
+        LEGACY_NORMALIZED_PREFIX_PATTERN,
       ],
     );
     const { hot, canonical } = validateAuthorityRows(authorityResult.rows, this.#now());
@@ -715,21 +729,21 @@ class DevelopmentAuthorityResolver {
       })),
     };
     const assignment = await new InMemoryStorageProfileRegistry(data, this.#now).resolve({
-      appId: VIDEO_MAKER_APP,
-      environment: DEVELOPMENT_ENVIRONMENT,
-      profileId: PROFILE_ALIAS,
+      appId: LEGACY_VIDEO_MAKER_APP,
+      environment: LEGACY_DEVELOPMENT_ENVIRONMENT,
+      profileId: LEGACY_PROFILE_ALIAS,
       operationClass: 'user-upload',
       expectedConfiguration: {
-        hotProviderId: HOT_PROVIDER_ALIAS,
+        hotProviderId: LEGACY_HOT_PROVIDER_ALIAS,
         hotBucket: hot.bucket_label,
-        canonicalProviderId: CANONICAL_PROVIDER_ALIAS,
+        canonicalProviderId: LEGACY_CANONICAL_PROVIDER_ALIAS,
         canonicalBucket: canonical.bucket_label,
-        normalizedPrefixPattern: NORMALIZED_PREFIX_PATTERN,
+        normalizedPrefixPattern: LEGACY_NORMALIZED_PREFIX_PATTERN,
       },
     });
     if (
-      assignment.profileVersion !== PROFILE_VERSION ||
-      assignment.prefixClassId !== PREFIX_CLASS_ALIAS ||
+      assignment.profileVersion !== LEGACY_PROFILE_VERSION ||
+      assignment.prefixClassId !== LEGACY_PREFIX_CLASS_ALIAS ||
       assignment.capabilityPolicy.rangeRead !== 'required'
     ) {
       throw new RuntimeCompositionError(
@@ -749,9 +763,9 @@ class DevelopmentAuthorityResolver {
       intentTtlSeconds: 900 as const,
     });
     const profile: SafeResolvedStorageProfile = Object.freeze({
-      profileId: PROFILE_ALIAS,
-      profileVersion: PROFILE_VERSION,
-      environment: DEVELOPMENT_ENVIRONMENT,
+      profileId: LEGACY_PROFILE_ALIAS,
+      profileVersion: LEGACY_PROFILE_VERSION,
+      environment: LEGACY_DEVELOPMENT_ENVIRONMENT,
       active: true,
       ready: true,
       safeFingerprint: assignment.safeFingerprint,
@@ -772,12 +786,12 @@ class DevelopmentAuthorityResolver {
     });
     const writeAuthority: ResolvedObjectWriteAuthority = Object.freeze({
       managedAppId: hot.managed_app_id,
-      callerServiceId: CALLER_SERVICE,
+      callerServiceId: LEGACY_CALLER_SERVICE,
       storageProfileId: hot.storage_profile_id,
-      storageProfileVersion: PROFILE_VERSION,
+      storageProfileVersion: LEGACY_PROFILE_VERSION,
       storageProfileFingerprint: assignment.safeFingerprint,
       storagePrefixClassId: hot.storage_prefix_class_id,
-      normalizedPrefixPattern: NORMALIZED_PREFIX_PATTERN,
+      normalizedPrefixPattern: LEGACY_NORMALIZED_PREFIX_PATTERN,
       hotProviderBindingId: hot.provider_binding_id,
       canonicalProviderBindingId: canonical.provider_binding_id,
       writePolicy,
@@ -803,6 +817,81 @@ class DevelopmentAuthorityResolver {
       }),
     });
   }
+}
+
+function configuredWritePolicy(
+  assetClass: 'image' | 'video' | 'document',
+  maximumObjectByteLength: number,
+): Readonly<import('./runtime-contract.js').ResolvedObjectWritePolicy> {
+  const allowedMediaTypes = assetClass === 'image'
+    ? ['image/png', 'image/jpeg', 'image/webp']
+    : assetClass === 'video'
+      ? ['video/mp4', 'video/webm']
+      : ['application/pdf', 'application/octet-stream', 'text/plain'];
+  return Object.freeze({
+    uploadMode: 'server-streamed-single-object',
+    allowedMediaTypes: Object.freeze(allowedMediaTypes),
+    maxByteLength: maximumObjectByteLength,
+    intentTtlSeconds: 900,
+  });
+}
+
+function configuredProfile(
+  configuration: Readonly<ResolvedActiveConfiguration>,
+  maximumObjectByteLength: number,
+): Readonly<SafeResolvedStorageProfile> {
+  const writePolicy = configuredWritePolicy(configuration.assetClass, maximumObjectByteLength);
+  return Object.freeze({
+    profileId: configuration.routeId,
+    profileVersion: configuration.versionNumber,
+    environment: configuration.environment,
+    active: true,
+    ready: true,
+    safeFingerprint: configuration.configurationFingerprint,
+    capabilityPolicy: Object.freeze({
+      checksumVerification: 'required',
+      sizeVerification: 'required-when-supported',
+      headContentLength: 'required',
+      rangeRead: 'optional',
+    }),
+    capabilities: Object.freeze({
+      objectWriteIntent: true, objectReadGrant: true,
+      objectDeleteRequest: false, objectRepairOperation: true,
+    }),
+    protectionStages: Object.freeze([
+      'write-intent-created', 'configuration-primary-and-replicas-verified',
+      'configuration-replica-repair-required', 'configuration-primary-write-failed',
+    ]),
+    writePolicy,
+  });
+}
+
+function configuredWriteAuthority(
+  configuration: Readonly<ResolvedActiveConfiguration>,
+  maximumObjectByteLength: number,
+): Readonly<ResolvedObjectWriteAuthority> {
+  return Object.freeze({
+    authorityKind: 'configuration' as const,
+    callerServiceId: 'integration-token',
+    storageControlClientId: configuration.storageControlClientId,
+    clientId: configuration.clientId,
+    environment: configuration.environment,
+    configurationVersionId: configuration.configurationVersionId,
+    configurationVersionNumber: configuration.versionNumber,
+    configurationFingerprint: configuration.configurationFingerprint,
+    configurationRouteId: configuration.configurationRouteId,
+    routeId: configuration.routeId,
+    assetClass: configuration.assetClass,
+    targets: Object.freeze(configuration.targets.map((target) => Object.freeze({
+      configurationRouteTargetId: target.configurationRouteTargetId,
+      configurationVaultId: target.configurationVaultId,
+      providerConnectionId: target.providerConnectionId,
+      role: target.role, order: target.order, providerType: target.providerType,
+      bucketLabel: target.bucketLabel, prefixTemplate: target.prefixTemplate,
+      secretReferenceId: target.secretReferenceId,
+    }))),
+    writePolicy: configuredWritePolicy(configuration.assetClass, maximumObjectByteLength),
+  });
 }
 
 function readinessCode(error: unknown, fallback: string): string {
@@ -858,24 +947,56 @@ export function createVideoMakerRuntimeComposition(
   const credentialResolver = createRuntimeProviderCredentialResolver(
     configuration.providerCredentialBindingsJson,
   );
-  const authority = new DevelopmentAuthorityResolver({
+  const legacyAuthority = new DevelopmentAuthorityResolver({
     pool,
     maximumObjectByteLength: configuration.maximumObjectByteLength,
   });
-  const authenticateCaller: StorageRuntimeOptions['authenticate'] = (token) =>
-    authenticate(configuration, token);
-  const resolveStorageProfile: StorageRuntimeOptions['resolveStorageProfile'] = async (
-    request,
-    context,
-  ) => (await authority.resolve(request, context.caller)).profile;
-  const resolveObjectWriteAuthority: NonNullable<
-    StorageRuntimeOptions['resolveObjectWriteAuthority']
-  > = async (request, context) => (await authority.resolve(request, context.caller)).writeAuthority;
+  const integrationAuthenticator = new ConfigurationStoreRuntimeIntegrationTokenAuthenticator(
+    new PostgresClientStorageConfigurationStore(pool),
+  );
+  const activeConfiguration = new PostgresActiveConfigurationResolver({
+    queryable: pool, credentialResolver,
+  });
+  const authenticateCaller: StorageRuntimeOptions['authenticate'] = async (token) => {
+    try {
+      const principal = await integrationAuthenticator.authenticate(token);
+      return Object.freeze({
+        caller: Object.freeze({ appId: principal.clientId, serviceId: 'integration-token' }),
+        integrationPrincipal: principal,
+      });
+    } catch (error) {
+      const legacy = authenticate(configuration, token);
+      if (legacy !== null) return legacy;
+      if (error instanceof RuntimeIntegrationTokenAuthenticationError) throw error;
+      throw new RuntimeIntegrationTokenAuthenticationError('unauthenticated', 'integration-token-invalid', 401);
+    }
+  };
+  const resolveConfigured = async (context: Parameters<StorageRuntimeOptions['resolveStorageProfile']>[1]) => {
+    const principal = context.integrationPrincipal;
+    if (principal === undefined || context.mediaType === undefined) return undefined;
+    return activeConfiguration.resolve({
+      clientId: principal.clientId, environment: principal.environment,
+      assetClass: deriveRuntimeAssetClass(context.mediaType),
+    });
+  };
+  const resolveStorageProfile: StorageRuntimeOptions['resolveStorageProfile'] = async (request, context) => {
+    const configured = await resolveConfigured(context);
+    return configured === undefined
+      ? (await legacyAuthority.resolve(request, context.caller)).profile
+      : configuredProfile(configured, configuration.maximumObjectByteLength);
+  };
+  const resolveObjectWriteAuthority: NonNullable<StorageRuntimeOptions['resolveObjectWriteAuthority']> =
+    async (request, context) => {
+      const configured = await resolveConfigured(context);
+      return configured === undefined
+        ? (await legacyAuthority.resolve(request, context.caller)).writeAuthority
+        : configuredWriteAuthority(configured, configuration.maximumObjectByteLength);
+    };
 
   const controlPlaneReadiness = async (): Promise<DependencyReadiness> => {
     try {
       await pool.query('SELECT 1 AS ready');
-      await authority.resolve(EXACT_PROFILE_REQUEST, VIDEO_MAKER_CALLER);
+      await pool.query('SELECT 1 AS configuration_store_ready');
       return Object.freeze({ status: 'ready' });
     } catch (error) {
       return Object.freeze({
@@ -887,8 +1008,6 @@ export function createVideoMakerRuntimeComposition(
   const dataPlaneReadiness = async (): Promise<DependencyReadiness> => {
     try {
       if (
-        configuration.videoMakerBearerToken === undefined ||
-        configuration.zXBearerToken === undefined ||
         !validSigningKey(configuration.uploadSigningKey) ||
         !validSigningKey(configuration.readGrantSigningKey)
       ) {
@@ -899,11 +1018,7 @@ export function createVideoMakerRuntimeComposition(
           true,
         );
       }
-      const snapshot = await authority.resolve(EXACT_PROFILE_REQUEST, VIDEO_MAKER_CALLER);
-      const referenceIds = Object.values(snapshot.providers).map(
-        (provider) => provider.secretReferenceId,
-      );
-      if (!credentialResolver.configured || !credentialResolver.has(referenceIds)) {
+      if (!credentialResolver.configured) {
         throw new RuntimeCompositionError(
           'dependency-unavailable',
           'provider-credential-binding-unavailable',
@@ -938,7 +1053,7 @@ export function createVideoMakerRuntimeComposition(
         maximumByteLength: configuration.maximumObjectByteLength,
       }),
       resolveTarget: {
-        resolve: (input) => authority.resolveTarget(input),
+        resolve: (input) => legacyAuthority.resolveTarget(input),
       },
     }),
     controlPlaneReadiness,
@@ -956,8 +1071,16 @@ export function createVideoMakerRuntimeComposition(
     dataPlaneReadiness,
     authorizeObjectReadGrant: async (input) => {
       if (!isObjectReadGrantCallerAllowed(input.caller)) return false;
+      if (input.caller.serviceId === 'integration-token') {
+        return input.request.allowedMethods.every(
+          (method) => method === 'HEAD' || method === 'GET',
+        );
+      }
       try {
-        const snapshot = await authority.resolve(EXACT_PROFILE_REQUEST, VIDEO_MAKER_CALLER);
+        const snapshot = await legacyAuthority.resolve(
+          LEGACY_EXACT_PROFILE_REQUEST,
+          LEGACY_VIDEO_MAKER_CALLER,
+        );
         return (
           snapshot.profile.capabilities.objectReadGrant &&
           input.request.allowedMethods.every((method) => method === 'HEAD' || method === 'GET')

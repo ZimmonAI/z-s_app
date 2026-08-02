@@ -14,7 +14,7 @@ import {
 } from './integrity.js';
 import type { SafeDiagnostic, SafeDiagnosticCategory } from './runtime-contract.js';
 
-export type ProviderWriteRole = 'hot' | 'canonical';
+export type ProviderWriteRole = 'hot' | 'canonical' | 'primary' | 'replica';
 
 export interface ResolvedProviderWriteTarget {
   providerRole: ProviderWriteRole;

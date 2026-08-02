@@ -77,6 +77,9 @@ export async function applyConfigurationCleanupMigrations(pool: Pool): Promise<v
 
 export async function seedClients(pool: Pool): Promise<void> {
   const now = new Date('2026-08-02T00:00:00.000Z');
+  const videoMakerId = randomUUID();
+  const otherClientId = randomUUID();
+
   await pool.query(
     `
 INSERT INTO public.storage_control_clients (
@@ -85,7 +88,18 @@ INSERT INTO public.storage_control_clients (
   ($1, 'video-maker_app', 'Video Maker', 'active', $3, $3),
   ($2, 'other-client', 'Other Client', 'active', $3, $3)
 `,
-    [randomUUID(), randomUUID(), now],
+    [videoMakerId, otherClientId, now],
+  );
+
+  await pool.query(
+    `
+INSERT INTO public.managed_apps (
+  id, app_id, environment, status, created_at, updated_at
+) VALUES
+  ($1, 'video-maker_app', 'dev', 'active', $3, $3),
+  ($2, 'other-client', 'dev', 'active', $3, $3)
+`,
+    [videoMakerId, otherClientId, now],
   );
 }
 

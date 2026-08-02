@@ -7,6 +7,8 @@ export * from './fingerprint.js';
 export * from './integrity.js';
 export * from './prefix-authorizer.js';
 export * from './profile-registry.js';
+export * from './runtime-active-configuration.js';
+export * from './runtime-integration-token-auth.js';
 export * from './runtime-contract.js';
 export * from './runtime-dual-provider.js';
 export * from './runtime-media-verification.js';
