@@ -38,12 +38,12 @@ jobs:
             '/tmp/h03.patch' | sha256sum --check --strict
           git apply --check /tmp/h03.patch
           git apply /tmp/h03.patch
-      - name: Remove one-shot transfer scaffolding
+          rm -f .github/workflows/t2-h03-generic-runtime-routing-validation.yml
+      - name: Remove transfer scaffolding
         shell: bash
         run: |
           set -euo pipefail
           rm -rf \
-            .github/workflows/h03-source-export.yml \
             tmp/h03-patch \
             tmp/h03-run-id.txt \
             tmp/h03-apply-run-id.txt \
