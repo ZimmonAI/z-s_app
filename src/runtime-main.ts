@@ -1,4 +1,6 @@
-import { createVideoMakerNodeRuntimeServer } from './runtime-node-server.js';
+import {
+  createVideoMakerNodeRuntimeServer as createVideoMakerRuntimeComposition,
+} from './runtime-node-server.js';
 
 const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_PORT = 4310;
@@ -13,7 +15,7 @@ function readPort(): number {
   return port;
 }
 
-const runtimeServer = createVideoMakerNodeRuntimeServer();
+const runtimeServer = createVideoMakerRuntimeComposition();
 const host = process.env.Z_S_RUNTIME_HOST?.trim() || DEFAULT_HOST;
 const port = readPort();
 
