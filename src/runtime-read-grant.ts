@@ -11,10 +11,8 @@ import type {
 export * from './runtime-read-grant-impl.js';
 
 function preservePersistedConfigurationReadAuthority<Row extends Record<string, unknown>>(
-  text: string,
   result: PostgresQueryResult<Row>,
 ): PostgresQueryResult<Row> {
-  if (!text.includes('END AS profile_status')) return result;
   return {
     rows: result.rows.map((row) =>
       row.profile_status === 'superseded'
@@ -35,7 +33,6 @@ function configuredReadAuthorityPool(pool: PostgresPoolLike): PostgresPoolLike {
           values?: readonly unknown[],
         ): Promise<PostgresQueryResult<Row>> {
           return preservePersistedConfigurationReadAuthority(
-            text,
             await client.query<Row>(text, values),
           );
         },
