@@ -27,22 +27,19 @@ jobs:
 
           source_path = Path('src/client-storage-configuration.ts')
           source = source_path.read_text()
-          old = """function cloneDocument(input: Readonly<ConfigurationDraftDocument>): ConfigurationDraftDocument {
-            return structuredClone(input) as ConfigurationDraftDocument;
-          }
-          """
-          new = """function cloneDocument(input: Readonly<ConfigurationDraftDocument>): ConfigurationDraftDocument {
+          start_marker = 'function cloneDocument('
+          end_marker = '\n\nfunction publicTokenMetadata('
+          start = source.index(start_marker)
+          end = source.index(end_marker, start)
+          replacement = """function cloneDocument(input: Readonly<ConfigurationDraftDocument>): ConfigurationDraftDocument {
             return structuredClone({
               providerConnections: input.providerConnections,
               vaults: input.vaults,
               routes: input.routes,
               imagePresets: input.imagePresets,
             }) as ConfigurationDraftDocument;
-          }
-          """
-          if source.count(old) != 1:
-            raise SystemExit('expected cloneDocument implementation not found exactly once')
-          source_path.write_text(source.replace(old, new))
+          }"""
+          source_path.write_text(source[:start] + replacement + source[end:])
           PY
           git checkout HEAD^ -- .github/workflows/package-distribution-validation.yml
           git rm .github/workflows/t2-temp-clone-document-patch.yml
