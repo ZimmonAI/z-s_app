@@ -1,0 +1,62 @@
+name: H03 registry diagnostic
+
+on:
+  push:
+    branches:
+      - agent/t2-h03-generic-runtime-routing-final2
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: z_s_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d z_s_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run test:compile
+      - name: Run registry files with captured output
+        shell: bash
+        run: |
+          set +e
+          mkdir -p diagnostic
+          status=0
+          for file in \
+            runtime-storage-registry.integration.test.js \
+            runtime-read-grant.integration.test.js \
+            client-storage-configuration.integration.test.js \
+            client-storage-configuration-cleanup.integration.test.js \
+            runtime-configuration-routing.integration.test.js
+          do
+            echo "===== $file =====" | tee -a diagnostic/registry.log
+            node --test ".test-dist/tests/$file" 2>&1 | tee -a diagnostic/registry.log
+            code=${PIPESTATUS[0]}
+            echo "exit=$code" | tee -a diagnostic/registry.log
+            if [ "$code" -ne 0 ]; then status="$code"; fi
+          done
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: h03-registry-diagnostic
+          path: diagnostic/registry.log
+          retention-days: 1
