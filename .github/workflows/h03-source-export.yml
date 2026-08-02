@@ -33,11 +33,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat tmp/h03-patch/0* > /tmp/h03.patch.gz.b64
-          printf '%s  %s\n' \
-            'dd102fced5b91c3291a4eda24c0212651fe347b602a2e3e75a08b2e8512a9f6a' \
-            '/tmp/h03.patch.gz.b64' | sha256sum --check --strict
-          base64 -d /tmp/h03.patch.gz.b64 | gzip -d > /tmp/h03.patch
+          cat tmp/h03-patch/0* | base64 -d | gzip -d > /tmp/h03.patch
           printf '%s  %s\n' \
             '03a1c02ff4a8cd0e3d7f9d5e7f7ebe1d6aded50af627651fc610fcb1ba095c6f' \
             '/tmp/h03.patch' | sha256sum --check --strict
