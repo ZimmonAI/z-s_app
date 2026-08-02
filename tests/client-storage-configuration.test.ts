@@ -9,7 +9,7 @@ import {
 
 const NOW = new Date('2026-08-02T00:00:00.000Z');
 
-function validDocument(): ConfigurationDraftDocument {
+function validDocument() {
   return {
     providerConnections: [
       {
@@ -93,7 +93,7 @@ function validDocument(): ConfigurationDraftDocument {
         ],
       },
     ],
-  };
+  } satisfies ConfigurationDraftDocument;
 }
 
 function store(): InMemoryClientStorageConfigurationStore {
