@@ -21,6 +21,7 @@ import {
   type ObjectWriteIntentResult,
   type ProviderCapabilityPolicy,
   type ResolvedObjectWritePolicy,
+  type RuntimeAuthenticatedCaller,
   type SafeDiagnostic,
   type SafeDiagnosticCategory,
   type SafeResolvedStorageProfile,
@@ -29,6 +30,10 @@ import {
   type StorageReadiness,
   type StorageRuntimeOptions,
 } from './runtime-contract.js';
+import {
+  requireRuntimeIntegrationScope,
+  type RuntimeIntegrationPrincipal,
+} from './runtime-integration-token-auth.js';
 import type { Environment } from './domain.js';
 import {
   UPLOAD_COMPLETION_TOKEN_PURPOSE,
@@ -125,22 +130,33 @@ function fingerprint(value: unknown): string {
   return createHash('sha256').update(stableStringify(value)).digest('hex');
 }
 
-function normalizeCallerIdentity(value: unknown): Readonly<CallerIdentity> {
+function normalizeCallerIdentity(value: unknown): Readonly<RuntimeAuthenticatedCaller> {
   if (!isRecord(value)) {
     throw new StorageRuntimeError('unauthenticated', 'authentication-required', 401);
   }
-  const appId = requireString(value.appId, 'caller-app', {
+  const callerValue = isRecord(value.caller) ? value.caller : value;
+  const appId = requireString(callerValue.appId, 'caller-app', {
     max: 96,
     pattern: /^[a-z0-9][a-z0-9_-]*$/,
   });
-  if (value.serviceId === undefined || value.serviceId === null) {
-    return Object.freeze({ appId });
+  const caller: CallerIdentity = { appId };
+  if (callerValue.serviceId !== undefined && callerValue.serviceId !== null) {
+    caller.serviceId = requireString(callerValue.serviceId, 'caller-service', {
+      max: 96,
+      pattern: /^[a-z0-9][a-z0-9_-]*$/,
+    });
   }
-  const serviceId = requireString(value.serviceId, 'caller-service', {
-    max: 96,
-    pattern: /^[a-z0-9][a-z0-9_-]*$/,
-  });
-  return Object.freeze({ appId, serviceId });
+  if (value.integrationPrincipal !== undefined) {
+    const principal = value.integrationPrincipal;
+    if (!isRecord(principal) || principal.clientId !== appId || !Array.isArray(principal.scopes)) {
+      throw new StorageRuntimeError('unauthenticated', 'integration-token-invalid', 401);
+    }
+    return Object.freeze({
+      caller: Object.freeze(caller),
+      integrationPrincipal: principal as Readonly<RuntimeIntegrationPrincipal>,
+    });
+  }
+  return Object.freeze({ caller: Object.freeze(caller) });
 }
 
 function callerScope(caller: Readonly<CallerIdentity>, operation: string): string {
@@ -385,7 +401,7 @@ function sanitizeUploadCompletionCore(
   if (typeof value.objectProtectionStage !== 'string' || value.objectProtectionStage.trim() === '') {
     throw new StorageRuntimeError('internal', 'invalid-runtime-result', 500);
   }
-  return Object.freeze({
+  const result: ObjectUploadCompletionOperationResult = {
     storageObjectId: requireUuid(value.storageObjectId, 'storage-object-id'),
     writeIntentId: requireUuid(value.writeIntentId, 'write-intent-id'),
     state: 'recorded',
@@ -402,7 +418,52 @@ function sanitizeUploadCompletionCore(
       sizeVerificationDisposition: 'matched',
     }),
     objectProtectionStage: value.objectProtectionStage,
-  });
+  };
+  if (value.storageState !== undefined) {
+    if (value.storageState !== 'ready' && value.storageState !== 'degraded' && value.storageState !== 'unavailable') {
+      throw new StorageRuntimeError('internal', 'invalid-runtime-result', 500);
+    }
+    result.storageState = value.storageState;
+  }
+  if (value.verifiedMedia !== undefined) {
+    if (!isRecord(value.verifiedMedia) || typeof value.verifiedMedia.mediaType !== 'string' ||
+        (value.verifiedMedia.mediaFamily !== 'image' && value.verifiedMedia.mediaFamily !== 'video')) {
+      throw new StorageRuntimeError('internal', 'invalid-runtime-result', 500);
+    }
+    result.verifiedMedia = Object.freeze({ ...value.verifiedMedia }) as NonNullable<ObjectUploadCompletionOperationResult['verifiedMedia']>;
+  }
+  const safeCopy = (copy: unknown) => {
+    if (!isRecord(copy) || (copy.state !== 'verified' && copy.state !== 'failed') ||
+        typeof copy.retryable !== 'boolean') {
+      throw new StorageRuntimeError('internal', 'invalid-runtime-result', 500);
+    }
+    return Object.freeze({ state: copy.state, retryable: copy.retryable });
+  };
+  if (value.copies !== undefined) {
+    if (!isRecord(value.copies)) throw new StorageRuntimeError('internal', 'invalid-runtime-result', 500);
+    result.copies = Object.freeze({ hot: safeCopy(value.copies.hot), canonical: safeCopy(value.copies.canonical) });
+  }
+  if (value.targetCopies !== undefined) {
+    if (!Array.isArray(value.targetCopies)) throw new StorageRuntimeError('internal', 'invalid-runtime-result', 500);
+    result.targetCopies = Object.freeze(value.targetCopies.map((entry) => {
+      if (!isRecord(entry) || (entry.role !== 'primary' && entry.role !== 'replica') ||
+          !Number.isSafeInteger(entry.order) || (entry.role === 'primary' ? entry.order !== 0 : (entry.order as number) <= 0)) {
+        throw new StorageRuntimeError('internal', 'invalid-runtime-result', 500);
+      }
+      return Object.freeze({ ...safeCopy(entry), role: entry.role, order: entry.order as number });
+    }));
+  }
+  if (value.safeDiagnostic !== undefined) {
+    if (!isRecord(value.safeDiagnostic) || typeof value.safeDiagnostic.code !== 'string' ||
+        typeof value.safeDiagnostic.category !== 'string' || typeof value.safeDiagnostic.retryable !== 'boolean') {
+      throw new StorageRuntimeError('internal', 'invalid-runtime-result', 500);
+    }
+    result.safeDiagnostic = Object.freeze({
+      category: value.safeDiagnostic.category as SafeDiagnostic['category'],
+      code: value.safeDiagnostic.code, retryable: value.safeDiagnostic.retryable,
+    });
+  }
+  return Object.freeze(result);
 }
 
 function sanitizeCancellationCore(
@@ -660,16 +721,19 @@ export function createHttpStorageRuntime(options: StorageRuntimeOptions): HttpSt
     });
   }
 
-  async function authenticateAndAuthorize(request: Request): Promise<Readonly<CallerIdentity>> {
+  async function authenticateAndAuthorize(request: Request): Promise<Readonly<RuntimeAuthenticatedCaller>> {
     const token = bearerToken(request);
-    let caller: Readonly<CallerIdentity>;
+    let authenticated: Readonly<RuntimeAuthenticatedCaller>;
     try {
-      caller = normalizeCallerIdentity(await options.authenticate(token));
+      authenticated = normalizeCallerIdentity(await options.authenticate(token));
     } catch (error) {
-      if (error instanceof StorageRuntimeError) throw error;
-      throw new StorageRuntimeError('unauthenticated', 'authentication-failed', 401);
+      throw externalRuntimeError(error, {
+        category: 'unauthenticated',
+        code: 'authentication-failed',
+        status: 401,
+      });
     }
-
+    const caller = authenticated.caller;
     const claimedApp = requiredHeader(request, 'x-zs-caller-app', 'caller-app', 96);
     if (claimedApp !== caller.appId) {
       throw new StorageRuntimeError('unauthorized', 'invalid-caller', 403);
@@ -683,7 +747,7 @@ export function createHttpStorageRuntime(options: StorageRuntimeOptions): HttpSt
     if (!authorized) {
       throw new StorageRuntimeError('unauthorized', 'invalid-caller', 403);
     }
-    return caller;
+    return authenticated;
   }
 
   async function issueUploadCompletionToken(input: {
@@ -727,11 +791,22 @@ export function createHttpStorageRuntime(options: StorageRuntimeOptions): HttpSt
 
   async function handleWriteIntent(request: Request): Promise<Response> {
     const version = contractVersion(request);
-    const caller = await authenticateAndAuthorize(request);
+    const authenticated = await authenticateAndAuthorize(request);
+    const caller = authenticated.caller;
+    if (authenticated.integrationPrincipal !== undefined) {
+      requireRuntimeIntegrationScope(authenticated.integrationPrincipal, 'object:write');
+    }
     const key = duplicateProtectionKey(request);
     const appCorrelationReference = correlationReference(request);
     const payload = parseWriteIntentRequest(await readJsonBody(request));
-    const resolutionContext = Object.freeze({ caller, appCorrelationReference });
+    const resolutionContext = Object.freeze({
+      caller,
+      ...(authenticated.integrationPrincipal === undefined
+        ? {}
+        : { integrationPrincipal: authenticated.integrationPrincipal }),
+      appCorrelationReference,
+      mediaType: payload.mediaType,
+    });
 
     let resolvedProfile: Readonly<SafeResolvedStorageProfile>;
     let writeAuthority: Awaited<ReturnType<NonNullable<StorageRuntimeOptions['resolveObjectWriteAuthority']>>> | undefined;
@@ -752,9 +827,10 @@ export function createHttpStorageRuntime(options: StorageRuntimeOptions): HttpSt
     }
 
     if (
-      resolvedProfile.profileId !== payload.storageProfile.profileId ||
+      authenticated.integrationPrincipal === undefined &&
+      (resolvedProfile.profileId !== payload.storageProfile.profileId ||
       resolvedProfile.profileVersion !== payload.storageProfile.profileVersion ||
-      resolvedProfile.environment !== payload.storageProfile.environment
+      resolvedProfile.environment !== payload.storageProfile.environment)
     ) {
       throw new StorageRuntimeError('duplicate-conflict', 'storage-profile-version-mismatch', 409);
     }
@@ -767,6 +843,7 @@ export function createHttpStorageRuntime(options: StorageRuntimeOptions): HttpSt
 
     const authorityRecord = isRecord(writeAuthority) ? writeAuthority : undefined;
     if (
+      authenticated.integrationPrincipal === undefined &&
       authorityRecord !== undefined &&
       (authorityRecord.storageProfileVersion !== payload.storageProfile.profileVersion ||
         authorityRecord.storageProfileFingerprint !== resolvedProfile.safeFingerprint)
@@ -814,6 +891,9 @@ export function createHttpStorageRuntime(options: StorageRuntimeOptions): HttpSt
               ...(writeAuthority === undefined ? {} : { writeAuthority }),
               context: Object.freeze({
                 caller,
+                ...(authenticated.integrationPrincipal === undefined
+                  ? {}
+                  : { integrationPrincipal: authenticated.integrationPrincipal }),
                 contractVersion: version,
                 appCorrelationReference,
                 duplicateProtectionKey: key,
@@ -866,7 +946,11 @@ export function createHttpStorageRuntime(options: StorageRuntimeOptions): HttpSt
   ): Promise<Response> {
     requireUuid(objectWriteIntentId, 'object-write-intent-id');
     const version = contractVersion(request);
-    const caller = await authenticateAndAuthorize(request);
+    const authenticated = await authenticateAndAuthorize(request);
+    const caller = authenticated.caller;
+    if (authenticated.integrationPrincipal !== undefined) {
+      requireRuntimeIntegrationScope(authenticated.integrationPrincipal, 'object:write');
+    }
     const key = duplicateProtectionKey(request);
     const appCorrelationReference = correlationReference(request);
     if (
@@ -914,6 +998,9 @@ export function createHttpStorageRuntime(options: StorageRuntimeOptions): HttpSt
     }
     const context = Object.freeze({
       caller,
+      ...(authenticated.integrationPrincipal === undefined
+        ? {}
+        : { integrationPrincipal: authenticated.integrationPrincipal }),
       contractVersion: version,
       appCorrelationReference,
       duplicateProtectionKey: key,
@@ -991,7 +1078,11 @@ export function createHttpStorageRuntime(options: StorageRuntimeOptions): HttpSt
   ): Promise<Response> {
     requireUuid(objectWriteIntentId, 'object-write-intent-id');
     const version = contractVersion(request);
-    const caller = await authenticateAndAuthorize(request);
+    const authenticated = await authenticateAndAuthorize(request);
+    const caller = authenticated.caller;
+    if (authenticated.integrationPrincipal !== undefined) {
+      requireRuntimeIntegrationScope(authenticated.integrationPrincipal, 'object:write');
+    }
     const key = duplicateProtectionKey(request);
     const appCorrelationReference = correlationReference(request);
     if (options.cancelObjectWriteIntent === undefined) {
@@ -999,6 +1090,9 @@ export function createHttpStorageRuntime(options: StorageRuntimeOptions): HttpSt
     }
     const context = Object.freeze({
       caller,
+      ...(authenticated.integrationPrincipal === undefined
+        ? {}
+        : { integrationPrincipal: authenticated.integrationPrincipal }),
       contractVersion: version,
       appCorrelationReference,
       duplicateProtectionKey: key,

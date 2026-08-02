@@ -8,11 +8,11 @@ import type {
 } from './runtime-s3-provider.js';
 
 export type ObjectReadMethod = 'HEAD' | 'GET';
-export type ObjectReadDeliveryState = 'hot' | 'canonical-fallback';
+export type ObjectReadDeliveryState = 'hot' | 'canonical-fallback' | 'replica' | 'primary';
 export type ObjectReadGrantDisposition = 'inline' | 'attachment';
 
 export interface ResolvedProviderReadTarget {
-  providerRole: 'hot' | 'canonical';
+  providerRole: 'hot' | 'canonical' | 'primary' | 'replica';
   providerId: string;
   bucketLabel: string;
   internalLocator: string;
@@ -29,6 +29,23 @@ export interface ObjectReadProviderCopySnapshot {
   target: Readonly<ResolvedProviderReadTarget>;
 }
 
+
+
+export interface ConfiguredObjectReadProviderCopySnapshot {
+  storageObjectCopyId: string;
+  role: 'primary' | 'replica';
+  order: number;
+  state: 'pending' | 'verified' | 'failed' | 'missing' | 'delete_pending' | 'deleted';
+  observedChecksumSha256?: string;
+  observedByteLength?: number;
+  latestVerifiedAt?: string;
+  target: Readonly<ResolvedProviderReadTarget>;
+}
+
+export type ObjectReadCopySnapshot =
+  | ObjectReadProviderCopySnapshot
+  | ConfiguredObjectReadProviderCopySnapshot;
+
 export interface ObjectReadDeliverySnapshot {
   storageObjectId: string;
   callerAppId: string;
@@ -41,6 +58,7 @@ export interface ObjectReadDeliverySnapshot {
     hot: Readonly<ObjectReadProviderCopySnapshot>;
     canonical: Readonly<ObjectReadProviderCopySnapshot>;
   }>;
+  configuredCopies?: readonly Readonly<ConfiguredObjectReadProviderCopySnapshot>[];
 }
 
 export interface ReadGrantDeliveryAuthorization {
@@ -187,7 +205,8 @@ function clientConfig(binding: Readonly<ResolvedS3CredentialBinding>): S3ClientC
 
 function validTarget(target: Readonly<ResolvedProviderReadTarget>): boolean {
   return (
-    (target.providerRole === 'hot' || target.providerRole === 'canonical') &&
+    (target.providerRole === 'hot' || target.providerRole === 'canonical' ||
+      target.providerRole === 'primary' || target.providerRole === 'replica') &&
     SAFE_ID_PATTERN.test(target.providerId) &&
     SAFE_ID_PATTERN.test(target.bucketLabel) &&
     SAFE_LOCATOR_PATTERN.test(target.internalLocator) &&
@@ -387,7 +406,7 @@ function safeDiagnostic(error: unknown): Readonly<SafeDiagnostic> {
 }
 
 function usableCopy(
-  copy: Readonly<ObjectReadProviderCopySnapshot>,
+  copy: Readonly<ObjectReadCopySnapshot>,
   checksum: string,
   byteLength: number,
 ): 'usable' | 'fallback' | 'conflict' {
@@ -612,7 +631,52 @@ export class ObjectReadDeliveryCoordinator implements ObjectReadDeliveryService 
       input.rangeHeader === undefined ? undefined : parseSingleByteRange(input.rangeHeader, total);
     const expectedLength = range?.byteLength ?? total;
 
-    const hotDisposition = usableCopy(snapshot.copies.hot, checksum, total);
+    if (snapshot.configuredCopies !== undefined) {
+      const orderedCopies = [...snapshot.configuredCopies].sort((left, right) => {
+        const leftGroup = left.role === 'replica' ? 0 : 1;
+        const rightGroup = right.role === 'replica' ? 0 : 1;
+        return leftGroup - rightGroup || left.order - right.order ||
+          left.storageObjectCopyId.localeCompare(right.storageObjectCopyId);
+      });
+      for (const copy of orderedCopies) {
+        const disposition = usableCopy(copy, checksum, total);
+        if (disposition === 'conflict') {
+          throw new ObjectReadDeliveryError('not-ready', 'storage-object-copy-state-conflict', 409);
+        }
+        if (disposition !== 'usable') continue;
+        try {
+          return await this.#attempt({
+            input,
+            snapshot,
+            copy,
+            checksum,
+            total,
+            expectedLength,
+            ...(range === undefined ? {} : { range }),
+            deliveryState: copy.role,
+          });
+        } catch (error) {
+          if (!(error instanceof ProviderReadExecutionError) || !error.fallbackEligible) throw error;
+        }
+      }
+      throw new ObjectReadDeliveryError(
+        'dependency-unavailable',
+        'object-content-unavailable',
+        503,
+        true,
+      );
+    }
+
+    const legacyCopies = snapshot.copies;
+    if (legacyCopies === undefined) {
+      throw new ObjectReadDeliveryError(
+        'dependency-unavailable',
+        'object-content-unavailable',
+        503,
+        true,
+      );
+    }
+    const hotDisposition = usableCopy(legacyCopies.hot, checksum, total);
     if (hotDisposition === 'conflict') {
       throw new ObjectReadDeliveryError('not-ready', 'storage-object-copy-state-conflict', 409);
     }
@@ -622,7 +686,7 @@ export class ObjectReadDeliveryCoordinator implements ObjectReadDeliveryService 
         return await this.#attempt({
           input,
           snapshot,
-          copy: snapshot.copies.hot,
+          copy: legacyCopies.hot,
           checksum,
           total,
           expectedLength,
@@ -634,7 +698,7 @@ export class ObjectReadDeliveryCoordinator implements ObjectReadDeliveryService 
       }
     }
 
-    const canonicalDisposition = usableCopy(snapshot.copies.canonical, checksum, total);
+    const canonicalDisposition = usableCopy(legacyCopies.canonical, checksum, total);
     if (canonicalDisposition === 'conflict') {
       throw new ObjectReadDeliveryError('not-ready', 'storage-object-copy-state-conflict', 409);
     }
@@ -650,7 +714,7 @@ export class ObjectReadDeliveryCoordinator implements ObjectReadDeliveryService 
       return await this.#attempt({
         input,
         snapshot,
-        copy: snapshot.copies.canonical,
+        copy: legacyCopies.canonical,
         checksum,
         total,
         expectedLength,
@@ -681,7 +745,7 @@ export class ObjectReadDeliveryCoordinator implements ObjectReadDeliveryService 
       signal: AbortSignal;
     };
     snapshot: Readonly<ObjectReadDeliverySnapshot>;
-    copy: Readonly<ObjectReadProviderCopySnapshot>;
+    copy: Readonly<ObjectReadCopySnapshot>;
     checksum: string;
     total: number;
     expectedLength: number;

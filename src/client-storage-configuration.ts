@@ -141,7 +141,7 @@ export type IntegrationTokenAuthenticationResult =
     tokenId: string;
     scopes: readonly IntegrationTokenScope[];
   }>
-  | Readonly<{ kind: 'invalid' | 'expired' | 'revoked' | 'scope-denied' | 'not-configured' }>;
+  | Readonly<{ kind: 'invalid' | 'expired' | 'revoked' | 'scope-denied' | 'client-disabled' | 'not-configured' }>;
 
 export interface ClientStorageConfigurationStore {
   readonly configured: boolean;
@@ -214,7 +214,7 @@ export interface ClientStorageConfigurationStore {
   ): Promise<Readonly<IntegrationTokenMetadata>>;
   authenticateIntegrationToken(
     token: string,
-    requiredScope: IntegrationTokenScope,
+    requiredScope?: IntegrationTokenScope,
     now?: Date,
   ): Promise<Readonly<IntegrationTokenAuthenticationResult>>;
 }
@@ -788,7 +788,7 @@ implements ClientStorageConfigurationStore {
 
   async authenticateIntegrationToken(
     token: string,
-    requiredScope: IntegrationTokenScope,
+    requiredScope?: IntegrationTokenScope,
     now = new Date(),
   ): Promise<Readonly<IntegrationTokenAuthenticationResult>> {
     const digest = digestIntegrationToken(token);
@@ -797,7 +797,9 @@ implements ClientStorageConfigurationStore {
     const metadata = publicTokenMetadata(current.metadata, now);
     if (metadata.status === 'expired') return Object.freeze({ kind: 'expired' });
     if (metadata.status === 'revoked') return Object.freeze({ kind: 'revoked' });
-    if (!metadata.scopes.includes(requiredScope)) return Object.freeze({ kind: 'scope-denied' });
+    if (requiredScope !== undefined && !metadata.scopes.includes(requiredScope)) {
+      return Object.freeze({ kind: 'scope-denied' });
+    }
     return Object.freeze({
       kind: 'authenticated',
       clientId: current.clientId,

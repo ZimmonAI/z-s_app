@@ -18,9 +18,12 @@ import type {
 } from './runtime-contract.js';
 import { createHttpStorageRuntime } from './runtime-service.js';
 import type {
+  CreateConfiguredObjectWriteIntentInput,
   CreateObjectWriteIntentInput,
-  ObjectWriteIntentExecutionContext,
+  RuntimeObjectWriteIntentExecutionContext,
   ObjectWriteIntentState,
+  ConfiguredProviderCopyExecutionContext,
+  ConfiguredProviderTarget,
   ProviderCopyExecutionContext,
   ProviderRole,
 } from './runtime-storage-registry-types.js';
@@ -29,7 +32,8 @@ import type {
   UploadCompletionTokenService,
 } from './runtime-upload-token.js';
 
-export interface ResolvedObjectWriteAuthority {
+export interface LegacyResolvedObjectWriteAuthority {
+  authorityKind?: 'legacy-profile';
   managedAppId: string;
   callerServiceId?: string;
   storageProfileId: string;
@@ -42,6 +46,26 @@ export interface ResolvedObjectWriteAuthority {
   writePolicy: Readonly<ResolvedObjectWritePolicy>;
 }
 
+export interface ConfiguredResolvedObjectWriteAuthority {
+  authorityKind: 'configuration';
+  callerServiceId?: string;
+  storageControlClientId: string;
+  clientId: string;
+  environment: 'dev' | 'staging' | 'prod';
+  configurationVersionId: string;
+  configurationVersionNumber: number;
+  configurationFingerprint: string;
+  configurationRouteId: string;
+  routeId: string;
+  assetClass: 'image' | 'video' | 'document';
+  targets: readonly Readonly<Omit<ConfiguredProviderTarget, 'internalLocator'>>[];
+  writePolicy: Readonly<ResolvedObjectWritePolicy>;
+}
+
+export type ResolvedObjectWriteAuthority =
+  | LegacyResolvedObjectWriteAuthority
+  | ConfiguredResolvedObjectWriteAuthority;
+
 export interface ObjectIngestInput {
   objectWriteIntentId: string;
   storageObjectId: string;
@@ -50,6 +74,7 @@ export interface ObjectIngestInput {
   declaredChecksumSha256: string;
   body: AsyncIterable<Uint8Array>;
   internalLocators: Readonly<{ hot: string; canonical: string }>;
+  configuredCopies?: readonly Readonly<ConfiguredProviderCopyExecutionContext>[];
   intentRowVersion?: number;
   objectRowVersion?: number;
   providerCopies?: Readonly<Record<ProviderRole, Readonly<ProviderCopyExecutionContext>>>;
@@ -87,25 +112,37 @@ export interface ObjectIngestRegistry extends DuplicateProtectionStore {
       objectProtectionStage: string;
     }>;
   }>>;
+  createConfiguredObjectWriteIntent?(input: CreateConfiguredObjectWriteIntentInput): Promise<Readonly<{
+    intent: Readonly<{
+      objectWriteIntentId: string;
+      storageObjectId: string;
+      state: ObjectWriteIntentState;
+      expiresAt: string;
+    }>;
+    object: Readonly<{
+      storageObjectId: string;
+      objectProtectionStage: string;
+    }>;
+  }>>;
   getObjectWriteIntentExecutionContext(
     objectWriteIntentId: string,
-  ): Promise<Readonly<ObjectWriteIntentExecutionContext> | null>;
+  ): Promise<Readonly<RuntimeObjectWriteIntentExecutionContext> | null>;
   expireObjectWriteIntentIfDue(objectWriteIntentId: string): Promise<boolean>;
   beginObjectUpload(input: {
     objectWriteIntentId: string;
     expectedRowVersion: number;
-  }): Promise<Readonly<ObjectWriteIntentExecutionContext>>;
+  }): Promise<Readonly<RuntimeObjectWriteIntentExecutionContext>>;
   completeObjectUpload(input: {
     objectWriteIntentId: string;
     expectedRowVersion: number;
     checksumSha256: string;
     byteLength: number;
-  }): Promise<Readonly<ObjectWriteIntentExecutionContext>>;
+  }): Promise<Readonly<RuntimeObjectWriteIntentExecutionContext>>;
   cancelObjectWriteIntent(input: {
     objectWriteIntentId: string;
     expectedState: 'accepted' | 'uploading';
     expectedRowVersion: number;
-  }): Promise<Readonly<ObjectWriteIntentExecutionContext>>;
+  }): Promise<Readonly<RuntimeObjectWriteIntentExecutionContext>>;
   failObjectUpload(objectWriteIntentId: string): Promise<boolean>;
 }
 
@@ -185,7 +222,7 @@ function callerServiceId(caller: Readonly<CallerIdentity>): string {
 }
 
 function assertSameCaller(
-  execution: Readonly<ObjectWriteIntentExecutionContext>,
+  execution: Readonly<RuntimeObjectWriteIntentExecutionContext>,
   caller: Readonly<CallerIdentity>,
 ): void {
   if (
@@ -222,6 +259,22 @@ function normalizeWritePolicy(
   });
 }
 
+function normalizePrefixTemplate(value: string): string {
+  if (
+    typeof value !== 'string' ||
+    value.length < 2 ||
+    value.length > 1024 ||
+    value.startsWith('/') ||
+    value.includes('..') ||
+    value.includes('\\') ||
+    value.includes('://') ||
+    !value.endsWith('/*')
+  ) {
+    invalid('invalid-authority-prefix-pattern');
+  }
+  return value;
+}
+
 function normalizeAuthority(
   value: Readonly<ResolvedObjectWriteAuthority>,
 ): Readonly<ResolvedObjectWriteAuthority> {
@@ -229,60 +282,81 @@ function normalizeAuthority(
     value.callerServiceId === undefined
       ? undefined
       : requireSafeId(value.callerServiceId, 'invalid-authority-caller-service', 96);
-  const authority: ResolvedObjectWriteAuthority = {
+  if (value.authorityKind === 'configuration') {
+    const orders = new Set<number>();
+    const targets = value.targets.map((target) => {
+      requireUuid(target.configurationRouteTargetId, 'invalid-authority-route-target');
+      requireUuid(target.configurationVaultId, 'invalid-authority-vault');
+      requireUuid(target.providerConnectionId, 'invalid-authority-provider-connection');
+      if (target.role !== 'primary' && target.role !== 'replica') invalid('invalid-authority-target-role');
+      if (!Number.isSafeInteger(target.order) || target.order < 0 || orders.has(target.order)) {
+        invalid('invalid-authority-target-order');
+      }
+      orders.add(target.order);
+      if (target.providerType !== 'minio' && target.providerType !== 'r2' && target.providerType !== 's3-compatible') {
+        invalid('invalid-authority-provider-type');
+      }
+      return Object.freeze({
+        ...target,
+        bucketLabel: requireSafeId(target.bucketLabel, 'invalid-authority-bucket'),
+        prefixTemplate: normalizePrefixTemplate(target.prefixTemplate),
+        secretReferenceId: requireSafeId(target.secretReferenceId, 'invalid-authority-secret-reference', 256),
+      });
+    });
+    const primary = targets.filter((target) => target.role === 'primary');
+    if (primary.length !== 1 || primary[0]?.order !== 0) invalid('invalid-authority-primary-target');
+    const authority: ConfiguredResolvedObjectWriteAuthority = {
+      authorityKind: 'configuration',
+      storageControlClientId: requireUuid(value.storageControlClientId, 'invalid-authority-client'),
+      clientId: requireSafeId(value.clientId, 'invalid-authority-client-id', 96),
+      environment: value.environment,
+      configurationVersionId: requireUuid(value.configurationVersionId, 'invalid-authority-configuration-version'),
+      configurationVersionNumber: requirePositiveSafeInteger(value.configurationVersionNumber, 'invalid-authority-configuration-version-number'),
+      configurationFingerprint: requireSha256(value.configurationFingerprint, 'invalid-authority-configuration-fingerprint'),
+      configurationRouteId: requireUuid(value.configurationRouteId, 'invalid-authority-configuration-route'),
+      routeId: requireSafeId(value.routeId, 'invalid-authority-route-id'),
+      assetClass: value.assetClass,
+      targets: Object.freeze(targets),
+      writePolicy: normalizeWritePolicy(value.writePolicy),
+    };
+    if (callerService !== undefined) authority.callerServiceId = callerService;
+    if (!['dev', 'staging', 'prod'].includes(authority.environment)) invalid('invalid-authority-environment');
+    if (!['image', 'video', 'document'].includes(authority.assetClass)) invalid('invalid-authority-asset-class');
+    return Object.freeze(authority);
+  }
+
+  const authority: LegacyResolvedObjectWriteAuthority = {
+    authorityKind: 'legacy-profile',
     managedAppId: requireUuid(value.managedAppId, 'invalid-authority-managed-app'),
     storageProfileId: requireUuid(value.storageProfileId, 'invalid-authority-storage-profile'),
-    storageProfileVersion: requirePositiveSafeInteger(
-      value.storageProfileVersion,
-      'invalid-authority-profile-version',
-    ),
-    storageProfileFingerprint: requireSafeId(
-      value.storageProfileFingerprint,
-      'invalid-authority-profile-fingerprint',
-    ),
-    storagePrefixClassId: requireUuid(
-      value.storagePrefixClassId,
-      'invalid-authority-prefix-class',
-    ),
-    normalizedPrefixPattern: value.normalizedPrefixPattern,
-    hotProviderBindingId: requireUuid(
-      value.hotProviderBindingId,
-      'invalid-authority-hot-binding',
-    ),
-    canonicalProviderBindingId: requireUuid(
-      value.canonicalProviderBindingId,
-      'invalid-authority-canonical-binding',
-    ),
+    storageProfileVersion: requirePositiveSafeInteger(value.storageProfileVersion, 'invalid-authority-profile-version'),
+    storageProfileFingerprint: requireSafeId(value.storageProfileFingerprint, 'invalid-authority-profile-fingerprint'),
+    storagePrefixClassId: requireUuid(value.storagePrefixClassId, 'invalid-authority-prefix-class'),
+    normalizedPrefixPattern: normalizePrefixTemplate(value.normalizedPrefixPattern),
+    hotProviderBindingId: requireUuid(value.hotProviderBindingId, 'invalid-authority-hot-binding'),
+    canonicalProviderBindingId: requireUuid(value.canonicalProviderBindingId, 'invalid-authority-canonical-binding'),
     writePolicy: normalizeWritePolicy(value.writePolicy),
   };
   if (callerService !== undefined) authority.callerServiceId = callerService;
-  if (
-    typeof authority.normalizedPrefixPattern !== 'string' ||
-    authority.normalizedPrefixPattern.length < 2 ||
-    authority.normalizedPrefixPattern.length > 1024 ||
-    authority.normalizedPrefixPattern.startsWith('/') ||
-    authority.normalizedPrefixPattern.includes('..') ||
-    authority.normalizedPrefixPattern.includes('\\') ||
-    authority.normalizedPrefixPattern.includes('://') ||
-    !authority.normalizedPrefixPattern.endsWith('*')
-  ) {
-    invalid('invalid-authority-prefix-pattern');
-  }
   return Object.freeze(authority);
 }
 
-function locatorFor(
-  authority: Readonly<ResolvedObjectWriteAuthority>,
+function legacyLocatorFor(
+  authority: Readonly<LegacyResolvedObjectWriteAuthority>,
   locatorId: string,
   role: 'hot' | 'canonical',
 ): string {
   const prefix = authority.normalizedPrefixPattern.slice(0, -1);
-  const separator = prefix.endsWith('/') ? '' : '/';
-  return `${prefix}${separator}${requireSafeId(locatorId, 'invalid-locator-id')}/${role}`;
+  return `${prefix}${requireSafeId(locatorId, 'invalid-locator-id')}/${role}`;
+}
+
+function configuredLocatorFor(prefixTemplate: string, storageObjectId: string): string {
+  requireUuid(storageObjectId, 'invalid-storage-object-id');
+  return normalizePrefixTemplate(prefixTemplate).slice(0, -1) + storageObjectId;
 }
 
 function metadataMatches(
-  execution: Readonly<ObjectWriteIntentExecutionContext>,
+  execution: Readonly<RuntimeObjectWriteIntentExecutionContext>,
   metadata: Readonly<ObjectUploadCompletionRequestMetadata>,
 ): void {
   if (metadata.mediaType !== execution.expectedContentType) invalid('content-type-mismatch');
@@ -364,7 +438,7 @@ function bodyTracker(input: {
 
 async function safeCleanup(
   adapter: ObjectIngestAdapter,
-  execution: Pick<ObjectWriteIntentExecutionContext, 'objectWriteIntentId' | 'storageObjectId'>,
+  execution: Pick<RuntimeObjectWriteIntentExecutionContext, 'objectWriteIntentId' | 'storageObjectId'>,
 ): Promise<void> {
   try {
     await adapter.cleanup({
@@ -403,54 +477,103 @@ export function createObjectIngestRuntime(options: ObjectIngestRuntimeOptions): 
         );
       }
       const authority = normalizeAuthority(writeAuthority);
-      if (
-        authority.storageProfileVersion !== request.storageProfile.profileVersion ||
-        authority.storageProfileFingerprint !== resolvedProfile.safeFingerprint
-      ) {
-        conflict('storage-profile-authority-mismatch');
-      }
       if ((authority.callerServiceId ?? '') !== callerServiceId(context.caller)) {
         throw new ObjectIngestRuntimeError('unauthorized', 'write-authority-caller-mismatch', 403);
       }
       const locatorId = createLocatorId();
       const expiresAt = new Date(now().getTime() + authority.writePolicy.intentTtlSeconds * 1000);
-      const createInput: CreateObjectWriteIntentInput = {
-        managedAppId: authority.managedAppId,
-        storageProfileId: authority.storageProfileId,
-        storageProfileFingerprint: authority.storageProfileFingerprint,
-        storagePrefixClassId: authority.storagePrefixClassId,
-        hotProviderBindingId: authority.hotProviderBindingId,
-        canonicalProviderBindingId: authority.canonicalProviderBindingId,
-        appCorrelationReference: context.appCorrelationReference,
-        sourceReference: request.sourceReference,
-        expectedContentType: request.mediaType,
-        expectedByteLength: request.byteLength,
-        expectedChecksumSha256: request.checksumSha256,
-        expiresAt,
-        internalLocators: Object.freeze({
-          hot: locatorFor(authority, locatorId, 'hot'),
-          canonical: locatorFor(authority, locatorId, 'canonical'),
-        }),
-        safeTechnicalMetadata: Object.freeze({
-          upload_mode: authority.writePolicy.uploadMode,
-          profile_version: authority.storageProfileVersion,
-        }),
-      };
-      if (authority.callerServiceId !== undefined) {
-        createInput.callerServiceId = authority.callerServiceId;
+      if (authority.authorityKind === 'configuration') {
+        if (
+          context.integrationPrincipal === undefined ||
+          context.integrationPrincipal.clientId !== authority.clientId ||
+          context.integrationPrincipal.environment !== authority.environment
+        ) {
+          throw new ObjectIngestRuntimeError('unauthorized', 'configuration-authority-principal-mismatch', 403);
+        }
+        const targets: readonly Readonly<ConfiguredProviderTarget>[] = Object.freeze(
+          authority.targets.map((target) => Object.freeze({
+            ...target,
+            internalLocator: configuredLocatorFor(target.prefixTemplate, locatorId),
+          })),
+        );
+        const createInput: CreateConfiguredObjectWriteIntentInput = {
+          storageObjectId: locatorId,
+          storageControlClientId: authority.storageControlClientId,
+          configurationVersionId: authority.configurationVersionId,
+          configurationFingerprint: authority.configurationFingerprint,
+          configurationRouteId: authority.configurationRouteId,
+          targets,
+          appCorrelationReference: context.appCorrelationReference,
+          sourceReference: request.sourceReference,
+          expectedContentType: request.mediaType,
+          expectedByteLength: request.byteLength,
+          expectedChecksumSha256: request.checksumSha256,
+          expiresAt,
+          safeTechnicalMetadata: Object.freeze({
+            upload_mode: authority.writePolicy.uploadMode,
+            configuration_version_number: authority.configurationVersionNumber,
+            route_id: authority.routeId,
+            asset_class: authority.assetClass,
+          }),
+        };
+        if (authority.callerServiceId !== undefined) createInput.callerServiceId = authority.callerServiceId;
+        if (request.requestedProtectionStage !== undefined) {
+          createInput.requestedObjectProtectionStage = request.requestedProtectionStage;
+        }
+        if (options.registry.createConfiguredObjectWriteIntent === undefined) {
+          throw new ObjectIngestRuntimeError('dependency-unavailable', 'configuration-registry-unavailable', 503, { retryable: true });
+        }
+        const created = await options.registry.createConfiguredObjectWriteIntent(createInput);
+        return Object.freeze({
+          writeIntentId: created.intent.objectWriteIntentId,
+          storageObjectId: created.object.storageObjectId,
+          state: 'accepted' as const,
+          expiresAt: created.intent.expiresAt,
+          objectProtectionStage: 'write-intent-created',
+        });
+      } else {
+        if (
+          authority.storageProfileVersion !== request.storageProfile.profileVersion ||
+          authority.storageProfileFingerprint !== resolvedProfile.safeFingerprint
+        ) {
+          conflict('storage-profile-authority-mismatch');
+        }
+        const createInput: CreateObjectWriteIntentInput = {
+          managedAppId: authority.managedAppId,
+          storageProfileId: authority.storageProfileId,
+          storageProfileFingerprint: authority.storageProfileFingerprint,
+          storagePrefixClassId: authority.storagePrefixClassId,
+          hotProviderBindingId: authority.hotProviderBindingId,
+          canonicalProviderBindingId: authority.canonicalProviderBindingId,
+          appCorrelationReference: context.appCorrelationReference,
+          sourceReference: request.sourceReference,
+          expectedContentType: request.mediaType,
+          expectedByteLength: request.byteLength,
+          expectedChecksumSha256: request.checksumSha256,
+          expiresAt,
+          internalLocators: Object.freeze({
+            hot: legacyLocatorFor(authority, locatorId, 'hot'),
+            canonical: legacyLocatorFor(authority, locatorId, 'canonical'),
+          }),
+          safeTechnicalMetadata: Object.freeze({
+            upload_mode: authority.writePolicy.uploadMode,
+            profile_version: authority.storageProfileVersion,
+          }),
+        };
+        if (authority.callerServiceId !== undefined) createInput.callerServiceId = authority.callerServiceId;
+        if (request.requestedProtectionStage !== undefined) {
+          createInput.requestedObjectProtectionStage = request.requestedProtectionStage;
+        }
+        const created = await options.registry.createObjectWriteIntent(createInput);
+        const result: ObjectWriteIntentOperationResult = {
+          writeIntentId: created.intent.objectWriteIntentId,
+          storageObjectId: created.object.storageObjectId,
+          state: 'accepted',
+          expiresAt: created.intent.expiresAt,
+          objectProtectionStage: 'write-intent-created',
+        };
+        return Object.freeze(result);
       }
-      if (request.requestedProtectionStage !== undefined) {
-        createInput.requestedObjectProtectionStage = request.requestedProtectionStage;
-      }
-      const created = await options.registry.createObjectWriteIntent(createInput);
-      const result: ObjectWriteIntentOperationResult = {
-        writeIntentId: created.intent.objectWriteIntentId,
-        storageObjectId: created.object.storageObjectId,
-        state: 'accepted',
-        expiresAt: created.intent.expiresAt,
-        objectProtectionStage: 'write-intent-created',
-      };
-      return Object.freeze(result);
     },
     completeObjectUpload: async ({ metadata, body, tokenClaims, context }) => {
       const execution = await options.registry.getObjectWriteIntentExecutionContext(
@@ -495,24 +618,36 @@ export function createObjectIngestRuntime(options: ObjectIngestRuntimeOptions): 
         maximumByteLength: execution.expectedByteLength,
       });
       try {
-        const receipt = await options.adapter.ingest(
-          Object.freeze({
-            objectWriteIntentId: uploading.objectWriteIntentId,
-            storageObjectId: uploading.storageObjectId,
-            mediaType: uploading.expectedContentType,
-            declaredByteLength: uploading.expectedByteLength,
-            declaredChecksumSha256: uploading.expectedChecksumSha256,
-            body: tracked.body,
-            internalLocators: uploading.internalLocators,
-            intentRowVersion: uploading.rowVersion,
-            ...(uploading.objectRowVersion === undefined
-              ? {}
-              : { objectRowVersion: uploading.objectRowVersion }),
-            ...(uploading.providerCopies === undefined
-              ? {}
-              : { providerCopies: uploading.providerCopies }),
-          }),
-        );
+        const adapterInput: ObjectIngestInput = uploading.authorityKind === 'configuration'
+          ? {
+              objectWriteIntentId: uploading.objectWriteIntentId,
+              storageObjectId: uploading.storageObjectId,
+              mediaType: uploading.expectedContentType,
+              declaredByteLength: uploading.expectedByteLength,
+              declaredChecksumSha256: uploading.expectedChecksumSha256,
+              body: tracked.body,
+              internalLocators: uploading.internalLocators,
+              configuredCopies: uploading.configuredCopies,
+              intentRowVersion: uploading.rowVersion,
+              objectRowVersion: uploading.objectRowVersion,
+            }
+          : {
+              objectWriteIntentId: uploading.objectWriteIntentId,
+              storageObjectId: uploading.storageObjectId,
+              mediaType: uploading.expectedContentType,
+              declaredByteLength: uploading.expectedByteLength,
+              declaredChecksumSha256: uploading.expectedChecksumSha256,
+              body: tracked.body,
+              internalLocators: uploading.internalLocators,
+              intentRowVersion: uploading.rowVersion,
+              ...(uploading.objectRowVersion === undefined
+                ? {}
+                : { objectRowVersion: uploading.objectRowVersion }),
+              ...(uploading.providerCopies === undefined
+                ? {}
+                : { providerCopies: uploading.providerCopies }),
+            };
+        const receipt = await options.adapter.ingest(Object.freeze(adapterInput));
         validateReceipt(receipt);
         const observed = tracked.result();
         if (!observed.completed) {
@@ -548,9 +683,9 @@ export function createObjectIngestRuntime(options: ObjectIngestRuntimeOptions): 
             result.byteLength !== observed.byteLength ||
             result.storageState === undefined ||
             result.verifiedMedia === undefined ||
-            result.copies === undefined
+            (result.copies === undefined && result.targetCopies === undefined)
           ) {
-            throw new ObjectIngestRuntimeError('internal', 'invalid-dual-provider-result', 500, {
+            throw new ObjectIngestRuntimeError('internal', 'invalid-provider-result', 500, {
               failObjectWriteIntent: true,
             });
           }
