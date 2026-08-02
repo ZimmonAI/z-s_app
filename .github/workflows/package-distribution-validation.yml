@@ -18,7 +18,7 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-      - name: Apply clone metadata fix and restore workflows
+      - name: Apply clone metadata fix and restore workflow
         shell: bash
         run: |
           set -euo pipefail
@@ -41,10 +41,10 @@ jobs:
           }"""
           source_path.write_text(source[:start] + replacement + source[end:])
           PY
-          git checkout HEAD^ -- .github/workflows/package-distribution-validation.yml
-          git rm .github/workflows/t2-temp-clone-document-patch.yml
+          git checkout HEAD^^ -- .github/workflows/package-distribution-validation.yml
+          rm -f .github/workflows/t2-temp-clone-document-patch.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/client-storage-configuration.ts .github/workflows/package-distribution-validation.yml
+          git add -A
           git commit -m 'fix: clone configuration document fields only'
           git push origin HEAD:${{ github.head_ref }}
