@@ -1,43 +1,87 @@
-name: T2 H03 apply schema compatibility correction
+name: T2 H03 generic runtime routing validation
 
 on:
   pull_request:
     paths:
       - '.github/workflows/t2-h03-generic-runtime-routing-validation.yml'
-      - 'tmp/h03-fix/**'
+      - 'db/migrations/0010_z_s_runtime_configuration_routing.sql'
+      - 'db/migrations/0010_z_s_runtime_configuration_routing.down.sql'
+      - 'package.json'
+      - 'scripts/validate-runtime-configuration-routing.mjs'
+      - 'scripts/verify-package-artifact.mjs'
+      - 'src/client-storage-configuration*.ts'
+      - 'src/runtime-active-configuration.ts'
+      - 'src/runtime-integration-token-auth.ts'
+      - 'src/runtime-contract.ts'
+      - 'src/runtime-service.ts'
+      - 'src/runtime-ingest.ts'
+      - 'src/runtime-local-composition.ts'
+      - 'src/runtime-storage-registry*.ts'
+      - 'src/runtime-dual-provider.ts'
+      - 'src/runtime-s3-provider.ts'
+      - 'src/runtime-read-delivery.ts'
+      - 'src/runtime-read-grant.ts'
+      - 'tests/runtime-active-configuration.test.ts'
+      - 'tests/runtime-integration-token-auth.test.ts'
+      - 'tests/runtime-configured-provider.test.ts'
+      - 'tests/runtime-configured-read-delivery.test.ts'
+      - 'tests/runtime-configuration-routing-migration.test.ts'
+      - 'tests/runtime-configuration-routing.integration.test.ts'
+  push:
+    branches:
+      - agent/t2-h03-generic-runtime-routing
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-fix:
+  validate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: z_s_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d z_s_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          ref: agent/t2-h03-generic-runtime-routing
-          fetch-depth: 0
-      - name: Verify and extract corrected readers
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat \
-            tmp/h03-fix/00a \
-            tmp/h03-fix/00b \
-            tmp/h03-fix/01 \
-            tmp/h03-fix/02 \
-            tmp/h03-fix/03 | base64 -d > /tmp/h03-fix.tgz
-          printf '%s  %s\n' \
-            '54870100677381010f3384a66ba93ad54eeac653ac4f8fe33f29a69f69590ae0' \
-            '/tmp/h03-fix.tgz' | sha256sum --check --strict
-          tar -xzf /tmp/h03-fix.tgz
-          rm -rf tmp/h03-fix
-      - name: Publish compatibility correction
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A src tmp
-          git commit -m 'fix: preserve legacy registry schemas with configuration routing [skip ci]'
-          git push origin HEAD:agent/t2-h03-generic-runtime-routing
+          node-version: 22
+      - run: npm install --ignore-scripts
+      - name: Focused tests
+        run: npm run test:focused
+      - name: Full tests
+        run: npm test
+      - name: PostgreSQL registry tests
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/z_s_test
+        run: npm run test:registry
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build
+      - name: Package install smoke
+        run: npm run pack:check
+      - name: Package artifact verification
+        run: npm run package:verify
+      - name: Migration validation
+        run: npm run validate:migration
+      - name: Seed validation
+        run: npm run validate:seed
+      - name: Secret scan
+        run: npm run validate:secrets
+      - name: Legacy identifier validation
+        run: npm run validate:legacy-id
+      - name: Complete validation chain
+        run: npm run validate
