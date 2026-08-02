@@ -144,7 +144,7 @@ function runtime() {
   configurationStore.registerClient('other-client');
   const delegatedRequests: Request[] = [];
   const storageRuntime: HttpStorageRuntime = Object.freeze({
-    async handle(request): Promise<Response> {
+    async handle(request: Request): Promise<Response> {
       delegatedRequests.push(request);
       return new Response(JSON.stringify({ error: { code: 'runtime-unauthenticated' } }), {
         status: 401,
