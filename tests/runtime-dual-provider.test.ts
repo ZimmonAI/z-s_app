@@ -24,6 +24,7 @@ import {
   type ProviderObjectWriter,
   type ProviderWriteInput,
   type ProviderWriteReceipt,
+  type ProviderWriteRole,
   type ResolvedProviderWriteTarget,
 } from '../src/runtime-s3-provider.js';
 import type {
@@ -253,9 +254,9 @@ class FakeRegistry implements DualProviderWriteRegistry {
 }
 
 class FakeWriter implements ProviderObjectWriter {
-  readonly failRoles = new Set<'hot' | 'canonical'>();
-  readonly writes: Array<{ role: 'hot' | 'canonical'; bytes: Uint8Array }> = [];
-  readonly cleanups: Array<'hot' | 'canonical'> = [];
+  readonly failRoles = new Set<ProviderWriteRole>();
+  readonly writes: Array<{ role: ProviderWriteRole; bytes: Uint8Array }> = [];
+  readonly cleanups: ProviderWriteRole[] = [];
 
   async write(input: Readonly<ProviderWriteInput>): Promise<Readonly<ProviderWriteReceipt>> {
     const chunks: Uint8Array[] = [];

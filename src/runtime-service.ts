@@ -136,8 +136,8 @@ function normalizeCallerIdentity(value: unknown): Readonly<RuntimeAuthenticatedC
   }
   const callerValue = isRecord(value.caller) ? value.caller : value;
   const appId = requireString(callerValue.appId, 'caller-app', {
-    max: 96,
-    pattern: /^[a-z0-9][a-z0-9_-]*$/,
+    max: 128,
+    pattern: /^[a-z0-9][a-z0-9._:-]{0,127}$/,
   });
   const caller: CallerIdentity = { appId };
   if (callerValue.serviceId !== undefined && callerValue.serviceId !== null) {
@@ -734,7 +734,7 @@ export function createHttpStorageRuntime(options: StorageRuntimeOptions): HttpSt
       });
     }
     const caller = authenticated.caller;
-    const claimedApp = requiredHeader(request, 'x-zs-caller-app', 'caller-app', 96);
+    const claimedApp = requiredHeader(request, 'x-zs-caller-app', 'caller-app', 128);
     if (claimedApp !== caller.appId) {
       throw new StorageRuntimeError('unauthorized', 'invalid-caller', 403);
     }

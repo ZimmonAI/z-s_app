@@ -287,65 +287,72 @@ BEFORE INSERT OR UPDATE OF
 ON public.storage_object_copies
 FOR EACH ROW EXECUTE FUNCTION public.z_s_runtime_configuration_copy_guard();
 
+COMMENT ON TABLE public.object_write_intents IS
+  'Durable object-write-intent state, including immutable client configuration authority for T2 H03. Sources: z-kn/08-execution/zimspace-storage-server-dev/tasks/in-progress/storage-platform-development/02b-04-package-runtime-storage-registry-and-schema.md; z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
+COMMENT ON TABLE public.storage_objects IS
+  'Provider-neutral storage-object lifecycle truth, including immutable client configuration authority for T2 H03. Sources: z-kn/08-execution/zimspace-storage-server-dev/tasks/in-progress/storage-platform-development/02b-04-package-runtime-storage-registry-and-schema.md; z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
+COMMENT ON TABLE public.storage_object_copies IS
+  'Independent persisted provider-copy truth for legacy and provider-neutral configured targets in T2 H03. Sources: z-kn/08-execution/zimspace-storage-server-dev/tasks/in-progress/storage-platform-development/02b-04-package-runtime-storage-registry-and-schema.md; z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
+
 COMMENT ON COLUMN public.object_write_intents.storage_control_client_id IS
   'Authenticated client authority persisted by T2 H03. Source: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON COLUMN public.object_write_intents.configuration_version_id IS
-  'Immutable active configuration version selected by T2 H03.';
+  'Immutable active configuration version selected by T2 H03. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON COLUMN public.object_write_intents.configuration_fingerprint IS
-  'Safe SHA-256 configuration authority fingerprint selected by T2 H03.';
+  'Safe SHA-256 configuration authority fingerprint selected by T2 H03. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON COLUMN public.object_write_intents.configuration_route_id IS
-  'Server-selected asset-class route persisted by T2 H03.';
+  'Server-selected asset-class route persisted by T2 H03. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON COLUMN public.storage_objects.storage_control_client_id IS
-  'Authenticated client authority persisted by T2 H03.';
+  'Authenticated client authority persisted by T2 H03. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON COLUMN public.storage_objects.configuration_version_id IS
-  'Immutable active configuration version selected by T2 H03.';
+  'Immutable active configuration version selected by T2 H03. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON COLUMN public.storage_objects.configuration_fingerprint IS
-  'Safe SHA-256 configuration authority fingerprint selected by T2 H03.';
+  'Safe SHA-256 configuration authority fingerprint selected by T2 H03. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON COLUMN public.storage_objects.configuration_route_id IS
-  'Server-selected asset-class route persisted by T2 H03.';
+  'Server-selected asset-class route persisted by T2 H03. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON COLUMN public.storage_object_copies.configuration_route_target_id IS
-  'Persisted route-target identity selected by T2 H03.';
+  'Persisted route-target identity selected by T2 H03. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON COLUMN public.storage_object_copies.configuration_vault_id IS
-  'Persisted configuration vault identity selected by T2 H03.';
+  'Persisted configuration vault identity selected by T2 H03. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON COLUMN public.storage_object_copies.provider_connection_id IS
-  'Persisted provider connection identity selected by T2 H03.';
+  'Persisted provider connection identity selected by T2 H03. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON COLUMN public.storage_object_copies.target_role IS
-  'Provider-neutral primary or replica role selected by T2 H03.';
+  'Provider-neutral primary or replica role selected by T2 H03. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON COLUMN public.storage_object_copies.target_order IS
-  'Deterministic primary/replica execution and read order selected by T2 H03.';
+  'Deterministic primary/replica execution and read order selected by T2 H03. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON FUNCTION public.z_s_runtime_configuration_copy_guard() IS
   'Enforces cross-table client/configuration/route ownership for T2 H03 persisted copies.';
 COMMENT ON TRIGGER z_s_runtime_configuration_copy_guard_trigger ON public.storage_object_copies IS
   'Rejects configuration-routed copies whose persisted target provenance conflicts with the owning object. Source: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 
 COMMENT ON CONSTRAINT storage_objects_configuration_client_fk ON public.storage_objects IS
-  'T2 H03 client authority must reference the accepted client storage configuration platform.';
+  'T2 H03 client authority must reference the accepted client storage configuration platform. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON CONSTRAINT storage_objects_configuration_version_fk ON public.storage_objects IS
-  'T2 H03 objects remain bound to the immutable configuration version selected at write-intent creation.';
+  'T2 H03 objects remain bound to the immutable configuration version selected at write-intent creation. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON CONSTRAINT storage_objects_configuration_route_fk ON public.storage_objects IS
-  'T2 H03 objects persist the server-selected asset-class route under the same client and version.';
+  'T2 H03 objects persist the server-selected asset-class route under the same client and version. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON CONSTRAINT storage_objects_authority_exclusive_check ON public.storage_objects IS
-  'T2 H03 prevents partial or mixed legacy-profile and client-configuration authority.';
+  'T2 H03 prevents partial or mixed legacy-profile and client-configuration authority. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON CONSTRAINT object_write_intents_configuration_client_fk ON public.object_write_intents IS
-  'T2 H03 write intents persist authenticated client authority.';
+  'T2 H03 write intents persist authenticated client authority. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON CONSTRAINT object_write_intents_configuration_version_fk ON public.object_write_intents IS
-  'T2 H03 write intents persist the immutable active configuration version.';
+  'T2 H03 write intents persist the immutable active configuration version. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON CONSTRAINT object_write_intents_configuration_route_fk ON public.object_write_intents IS
-  'T2 H03 write intents persist the server-selected asset-class route.';
+  'T2 H03 write intents persist the server-selected asset-class route. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON CONSTRAINT object_write_intents_authority_exclusive_check ON public.object_write_intents IS
-  'T2 H03 prevents partial or mixed legacy-profile and client-configuration authority.';
+  'T2 H03 prevents partial or mixed legacy-profile and client-configuration authority. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON CONSTRAINT storage_object_copies_configuration_route_target_fk ON public.storage_object_copies IS
-  'T2 H03 copies reference one persisted configuration route target.';
+  'T2 H03 copies reference one persisted configuration route target. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON CONSTRAINT storage_object_copies_configuration_vault_fk ON public.storage_object_copies IS
-  'T2 H03 copies reference the selected configuration vault.';
+  'T2 H03 copies reference the selected configuration vault. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON CONSTRAINT storage_object_copies_provider_connection_fk ON public.storage_object_copies IS
-  'T2 H03 copies reference the selected provider connection metadata.';
+  'T2 H03 copies reference the selected provider connection metadata. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON CONSTRAINT storage_object_copies_target_role_check ON public.storage_object_copies IS
-  'T2 H03 uses provider-neutral primary and replica roles.';
+  'T2 H03 uses provider-neutral primary and replica roles. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON CONSTRAINT storage_object_copies_target_order_check ON public.storage_object_copies IS
-  'T2 H03 requires primary order zero and positive replica order.';
+  'T2 H03 requires primary order zero and positive replica order. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 COMMENT ON CONSTRAINT storage_object_copies_authority_exclusive_check ON public.storage_object_copies IS
-  'T2 H03 prevents partial or mixed legacy binding and configured target authority.';
+  'T2 H03 prevents partial or mixed legacy binding and configured target authority. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/03-online-generic-runtime-routing-coding.md';
 
 COMMENT ON INDEX public.storage_object_copies_configuration_target_idx IS
   'T2 H03 enforces one copy per object and persisted configuration route target.';

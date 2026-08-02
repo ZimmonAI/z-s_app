@@ -549,7 +549,7 @@ export class PostgresRuntimeStorageRegistry extends PostgresRuntimeStorageRegist
   }
 
   async reserveConfiguredTargetRetry(input: {
-    storageObjectId: string; configurationRouteTargetId: string; expectedFailedCopyVersion: number;
+    clientId: string; storageObjectId: string; configurationRouteTargetId: string; expectedFailedCopyVersion: number;
   }): Promise<Readonly<ConfiguredTargetedRetryReservation>> {
     requireUuid(input.storageObjectId, 'configured-retry-storage-object');
     requireUuid(input.configurationRouteTargetId, 'configured-retry-route-target');
@@ -568,12 +568,15 @@ export class PostgresRuntimeStorageRegistry extends PostgresRuntimeStorageRegist
                 object_record.expected_checksum_sha256, object_record.expected_byte_length
            FROM public.storage_object_copies AS copy
            JOIN public.storage_objects AS object_record ON object_record.storage_object_id = copy.storage_object_id
+           JOIN public.storage_control_clients AS client
+             ON client.id = object_record.storage_control_client_id
            JOIN public.storage_control_configuration_vaults AS vault ON vault.id = copy.configuration_vault_id
            JOIN public.storage_control_provider_connections AS connection ON connection.id = copy.provider_connection_id
           WHERE copy.storage_object_id = $1 AND copy.configuration_route_target_id = $2
             AND copy.copy_state = 'failed' AND copy.row_version = $3
+            AND client.client_id = $4 AND client.status = 'active'
           FOR UPDATE OF copy, object_record`,
-        [input.storageObjectId, input.configurationRouteTargetId, input.expectedFailedCopyVersion],
+        [input.storageObjectId, input.configurationRouteTargetId, input.expectedFailedCopyVersion, input.clientId],
       );
       const row = result.rows[0];
       if (row === undefined) {

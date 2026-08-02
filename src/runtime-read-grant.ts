@@ -94,7 +94,8 @@ export class ObjectReadGrantTokenError extends Error {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const SAFE_CALLER_PATTERN = /^[a-z0-9][a-z0-9_-]{0,95}$/;
+const SAFE_CALLER_APP_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
+const SAFE_CALLER_SERVICE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,95}$/;
 const SAFE_FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,179}$/;
 
 function rejectToken(): never {
@@ -139,12 +140,12 @@ function normalizeTokenClaims(value: unknown): Readonly<ObjectReadGrantTokenClai
   const callerServiceId =
     record.callerServiceId === undefined
       ? undefined
-      : normalizeSafeId(record.callerServiceId, SAFE_CALLER_PATTERN);
+      : normalizeSafeId(record.callerServiceId, SAFE_CALLER_SERVICE_PATTERN);
   const claims: ObjectReadGrantTokenClaims = {
     tokenPurpose: OBJECT_READ_GRANT_TOKEN_PURPOSE,
     objectReadGrantId: normalizeUuid(record.objectReadGrantId),
     storageObjectId: normalizeUuid(record.storageObjectId),
-    callerAppId: normalizeSafeId(record.callerAppId, SAFE_CALLER_PATTERN),
+    callerAppId: normalizeSafeId(record.callerAppId, SAFE_CALLER_APP_PATTERN),
     purpose: normalizeSafeId(record.purpose),
     allowedMethods: normalizeAllowedMethods(record.allowedMethods, rejectToken),
     allowRange: record.allowRange,
@@ -602,8 +603,13 @@ export class PostgresObjectReadRegistry
         verified_byte_length: string | number | null;
         usable_copy_count: string | number;
       }>(
-        `SELECT object_record.managed_app_id, managed_app.app_id AS caller_app_id,
-                managed_app.status AS managed_app_status, profile.status AS profile_status,
+        `SELECT COALESCE(object_record.managed_app_id, configured_app.id) AS managed_app_id,
+                COALESCE(control_client.client_id, legacy_app.app_id) AS caller_app_id,
+                COALESCE(configured_app.status, legacy_app.status) AS managed_app_status,
+                CASE
+                  WHEN object_record.configuration_version_id IS NOT NULL THEN configuration.state
+                  ELSE profile.status
+                END AS profile_status,
                 object_record.registry_state, object_record.verified_checksum_sha256,
                 object_record.verified_byte_length,
                 (SELECT count(*) FROM public.storage_object_copies AS copy
@@ -612,14 +618,29 @@ export class PostgresObjectReadRegistry
                     AND copy.observed_checksum_sha256 = object_record.verified_checksum_sha256
                     AND copy.observed_byte_length = object_record.verified_byte_length) AS usable_copy_count
            FROM public.storage_objects AS object_record
-           JOIN public.managed_apps AS managed_app ON managed_app.id = object_record.managed_app_id
-           JOIN public.storage_profiles AS profile ON profile.id = object_record.storage_profile_id
+           LEFT JOIN public.managed_apps AS legacy_app
+             ON legacy_app.id = object_record.managed_app_id
+           LEFT JOIN public.storage_profiles AS profile
+             ON profile.id = object_record.storage_profile_id
+           LEFT JOIN public.storage_control_clients AS control_client
+             ON control_client.id = object_record.storage_control_client_id
+           LEFT JOIN public.storage_control_configuration_versions AS configuration
+             ON configuration.storage_control_client_id = object_record.storage_control_client_id
+            AND configuration.id = object_record.configuration_version_id
+           LEFT JOIN public.managed_apps AS configured_app
+             ON configured_app.app_id = control_client.client_id
+            AND configured_app.environment = CASE configuration.environment
+                  WHEN 'staging' THEN 'stg'
+                  ELSE configuration.environment
+                END
           WHERE object_record.storage_object_id = $1
-          FOR SHARE OF object_record, managed_app, profile`,
+          FOR SHARE OF object_record`,
         [input.storageObjectId],
       );
       const row = authority.rows[0];
-      if (row === undefined) throw registryError('not-ready', 'storage-object-not-found', 404);
+      if (row === undefined || row.managed_app_id === null || row.caller_app_id === null) {
+        throw registryError('not-ready', 'storage-object-not-found', 404);
+      }
       if (row.caller_app_id !== input.callerAppId) {
         throw registryError('unauthorized', 'storage-object-scope-mismatch', 403);
       }
@@ -1341,14 +1362,14 @@ function normalizeCaller(value: unknown): Readonly<RuntimeAuthenticatedCaller> {
   if (!isRecord(value)) throw new ObjectReadHttpError('unauthenticated', 'authentication-required', 401);
   const callerValue = isRecord(value.caller) ? value.caller : value;
   const appId = requireString(callerValue.appId, 'invalid-caller', {
-    max: 96,
-    pattern: SAFE_CALLER_PATTERN,
+    max: 128,
+    pattern: SAFE_CALLER_APP_PATTERN,
   });
   const caller: CallerIdentity = { appId };
   if (callerValue.serviceId !== undefined && callerValue.serviceId !== null) {
     caller.serviceId = requireString(callerValue.serviceId, 'invalid-caller', {
       max: 96,
-      pattern: SAFE_CALLER_PATTERN,
+      pattern: SAFE_CALLER_SERVICE_PATTERN,
     });
   }
   if (value.integrationPrincipal !== undefined) {
@@ -1384,7 +1405,7 @@ async function authenticateAndAuthorize(
     throw new ObjectReadHttpError('unauthenticated', 'authentication-failed', 401);
   }
   const caller = authenticated.caller;
-  const claimedApp = requiredHeader(request, 'x-zs-caller-app', 'invalid-caller', 96);
+  const claimedApp = requiredHeader(request, 'x-zs-caller-app', 'invalid-caller', 128);
   if (claimedApp !== caller.appId) {
     throw new ObjectReadHttpError('unauthorized', 'invalid-caller', 403);
   }

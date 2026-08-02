@@ -150,6 +150,7 @@ export interface DualProviderWriteRegistry {
     diagnostic: Readonly<SafeDiagnostic>;
   }): Promise<void>;
   reserveConfiguredTargetRetry?(input: {
+    clientId: string;
     storageObjectId: string;
     configurationRouteTargetId: string;
     expectedFailedCopyVersion: number;
@@ -341,7 +342,7 @@ function configuredWriteTarget(
   copy: Readonly<ConfiguredProviderCopyExecutionContext>,
 ): Readonly<ResolvedProviderWriteTarget> {
   return Object.freeze({
-    providerRole: copy.role === 'primary' ? 'canonical' : 'hot',
+    providerRole: copy.role,
     providerId: copy.providerConnectionId,
     bucketLabel: copy.bucketLabel,
     internalLocator: copy.internalLocator,
@@ -736,6 +737,7 @@ export class ConfiguredTargetedRetryCoordinator {
       );
     }
     const reservation = await reserve.call(this.#registry, {
+      clientId: input.principal.clientId,
       storageObjectId: input.storageObjectId,
       configurationRouteTargetId: input.configurationRouteTargetId,
       expectedFailedCopyVersion: input.expectedFailedCopyVersion,

@@ -22,6 +22,9 @@ const requirements = [
   /z_s_runtime_configuration_copy_guard/i,
   /configuration_fingerprint ~ '\^\[a-f0-9\]\{64\}\$'/i,
   /0010 rollback blocked: configuration-routed runtime rows exist/i,
+  /COMMENT ON TABLE public\.object_write_intents[\s\S]*03-online-generic-runtime-routing-coding\.md/i,
+  /COMMENT ON TABLE public\.storage_objects[\s\S]*03-online-generic-runtime-routing-coding\.md/i,
+  /COMMENT ON TABLE public\.storage_object_copies[\s\S]*03-online-generic-runtime-routing-coding\.md/i,
   /03-online-generic-runtime-routing-coding\.md/i,
 ];
 const errors = requirements.filter((pattern) => !pattern.test(source)).map((pattern) =>

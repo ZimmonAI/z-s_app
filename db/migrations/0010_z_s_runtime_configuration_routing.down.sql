@@ -90,4 +90,9 @@ ALTER TABLE public.storage_objects
   ALTER COLUMN storage_profile_id SET NOT NULL,
   ALTER COLUMN managed_app_id SET NOT NULL;
 
+
+COMMENT ON TABLE public.object_write_intents IS 'Durable object-write-intent state. Ref: z-kn/08-execution/zimspace-storage-server-dev/tasks/in-progress/storage-platform-development/02b-04-package-runtime-storage-registry-and-schema.md';
+COMMENT ON TABLE public.storage_objects IS 'Provider-neutral storage-object identity and lifecycle truth. Ref: z-kn/08-execution/zimspace-storage-server-dev/tasks/in-progress/storage-platform-development/02b-04-package-runtime-storage-registry-and-schema.md';
+COMMENT ON TABLE public.storage_object_copies IS 'Independent current hot and canonical copy truth. Ref: z-kn/08-execution/zimspace-storage-server-dev/tasks/in-progress/storage-platform-development/02b-04-package-runtime-storage-registry-and-schema.md';
+
 COMMIT;

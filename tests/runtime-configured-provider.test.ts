@@ -200,9 +200,11 @@ test('replica failure records degraded result and leaves primary verified', asyn
 test('configured targeted retry addresses only the selected persisted route target', async () => {
   const selected = configuredCopy('replica', 2, 3);
   let reservedTargetId = '';
+  let reservedClientId = '';
   let completedTargetId = '';
   const registry = {
-    reserveConfiguredTargetRetry: async (input: { configurationRouteTargetId: string }): Promise<Readonly<ConfiguredTargetedRetryReservation>> => {
+    reserveConfiguredTargetRetry: async (input: { clientId: string; configurationRouteTargetId: string }): Promise<Readonly<ConfiguredTargetedRetryReservation>> => {
+      reservedClientId = input.clientId;
       reservedTargetId = input.configurationRouteTargetId;
       return Object.freeze({
         storageObjectId: OBJECT_ID,
@@ -240,6 +242,7 @@ test('configured targeted retry addresses only the selected persisted route targ
     expectedFailedCopyVersion: 1,
     verifiedSource: { open: () => Readable.from([CONTENT]) },
   });
+  assert.equal(reservedClientId, 'client-a');
   assert.equal(reservedTargetId, selected.configurationRouteTargetId);
   assert.equal(completedTargetId, selected.configurationRouteTargetId);
   assert.deepEqual(writes, [selected.providerConnectionId]);

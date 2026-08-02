@@ -16,6 +16,9 @@ test('0010 is additive, guarded and persists provider-neutral authority', async 
   assert.match(up, /target_role = 'primary' AND target_order = 0/);
   assert.match(up, /target_role = 'replica' AND target_order > 0/);
   assert.match(up, /storage_object_copies_configuration_target_idx/);
+  assert.match(up, /COMMENT ON TABLE public\.object_write_intents[\s\S]*03-online-generic-runtime-routing-coding\.md/);
+  assert.match(up, /COMMENT ON TABLE public\.storage_objects[\s\S]*03-online-generic-runtime-routing-coding\.md/);
+  assert.match(up, /COMMENT ON TABLE public\.storage_object_copies[\s\S]*03-online-generic-runtime-routing-coding\.md/);
   assert.match(up, /0010 migration already applied/);
   assert.doesNotMatch(up, /INSERT INTO public\./);
   assert.match(down, /row_total <> 0/);

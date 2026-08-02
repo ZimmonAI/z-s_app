@@ -5,6 +5,7 @@ import test from 'node:test';
 import { Pool } from 'pg';
 import { PostgresActiveConfigurationResolver } from '../src/runtime-active-configuration.js';
 import { PostgresClientStorageConfigurationStore } from '../src/client-storage-configuration-postgres.js';
+import { PostgresObjectReadRegistry } from '../src/runtime-read-grant.js';
 import type { ConfigurationDraftDocument } from '../src/client-storage-configuration.js';
 import {
   PostgresRuntimeStorageRegistry,
@@ -262,6 +263,34 @@ integrationTest('configured registry persists immutable provenance, degrades rep
     assert.equal(degraded.storageState, 'degraded');
     assert.deepEqual(degraded.targetCopies?.map((copy) => copy.state), ['verified', 'verified', 'failed']);
 
+    const readRegistry = new PostgresObjectReadRegistry({
+      pool: adapted,
+      now: () => new Date('2026-08-02T00:02:30.000Z'),
+    });
+    const readGrant = await readRegistry.createObjectReadGrant({
+      objectReadGrantId: randomUUID(),
+      storageObjectId,
+      callerAppId: 'video-maker_app',
+      callerServiceId: 'integration-token',
+      appCorrelationReference: 'configured-read-grant-01',
+      businessAuthorizationReference: 'configured-read-policy-01',
+      purpose: 'configured-read',
+      allowedMethods: Object.freeze(['HEAD', 'GET'] as const),
+      allowRange: true,
+      disposition: 'inline',
+      tokenDigest: 'd'.repeat(64),
+      expiresAt: new Date('2026-08-02T00:07:30.000Z'),
+    });
+    assert.equal(readGrant.callerAppId, 'video-maker_app');
+    const deliverySnapshot = await readRegistry.getObjectReadDeliverySnapshot({
+      storageObjectId,
+      callerAppId: 'video-maker_app',
+      callerServiceId: 'integration-token',
+    });
+    assert.deepEqual(deliverySnapshot?.configuredCopies?.map((copy) => [copy.role, copy.order]), [
+      ['replica', 1], ['replica', 2], ['primary', 0],
+    ]);
+
     const beforeRetry = await pool.query<{
       configuration_route_target_id: string;
       copy_state: string;
@@ -281,6 +310,7 @@ ORDER BY target_order
         .map((row) => [row.configuration_route_target_id, row.row_version]),
     );
     const retryReservation = await registry.reserveConfiguredTargetRetry({
+      clientId: 'client-a',
       storageObjectId,
       configurationRouteTargetId: replicas[1]!.configurationRouteTargetId,
       expectedFailedCopyVersion: failedRow.row_version,
