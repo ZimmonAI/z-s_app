@@ -1,0 +1,25 @@
+name: H03 source export
+
+on:
+  push:
+    branches:
+      - agent/t2-h03-generic-runtime-routing
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Archive source checkout
+        run: tar --exclude=.git -czf /tmp/z-s_app-h03-source.tgz .
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: z-s_app-h03-source
+          path: /tmp/z-s_app-h03-source.tgz
+          if-no-files-found: error
+          retention-days: 1
