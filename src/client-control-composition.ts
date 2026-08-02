@@ -4,10 +4,19 @@ import {
   PostgresStorageControlClientCredentialAuthenticator,
   type ClientCredentialAuthenticator,
 } from './client-control-auth.js';
-import type { PostgresQueryable } from './runtime-storage-registry-types.js';
+import {
+  createUnavailableClientStorageConfigurationStore,
+  type ClientStorageConfigurationStore,
+} from './client-storage-configuration.js';
+import { PostgresClientStorageConfigurationStore } from './client-storage-configuration-postgres.js';
+import type {
+  PostgresPoolLike,
+  PostgresQueryable,
+} from './runtime-storage-registry-types.js';
 
 export interface ClientControlComposition {
   readonly authenticator: ClientCredentialAuthenticator;
+  readonly configurationStore: ClientStorageConfigurationStore;
   close(): Promise<void>;
 }
 
@@ -36,6 +45,7 @@ export function createClientControlComposition(
   if (postgresUrl === undefined) {
     return Object.freeze({
       authenticator: createUnavailableClientCredentialAuthenticator(),
+      configurationStore: createUnavailableClientStorageConfigurationStore(),
       async close(): Promise<void> {},
     });
   }
@@ -55,13 +65,13 @@ export function createClientControlComposition(
       10 * 60_000,
     ),
     allowExitOnIdle: false,
-    application_name: 'z-s-client-control-login',
+    application_name: 'z-s-client-storage-control',
   };
   const pool = new Pool(configuration);
+  const queryable = pool as unknown as PostgresPoolLike & PostgresQueryable;
   return Object.freeze({
-    authenticator: new PostgresStorageControlClientCredentialAuthenticator(
-      pool as unknown as PostgresQueryable,
-    ),
+    authenticator: new PostgresStorageControlClientCredentialAuthenticator(queryable),
+    configurationStore: new PostgresClientStorageConfigurationStore(queryable),
     close: () => pool.end(),
   });
 }

@@ -14,6 +14,9 @@ on:
       - src/client-control-auth.ts
       - src/client-control-composition.ts
       - src/client-control-pages.ts
+      - src/client-storage-configuration.ts
+      - src/client-storage-configuration-postgres.ts
+      - src/client-storage-control-request.ts
       - src/control-plane-session.ts
       - src/control-plane-ui-abuse.ts
       - src/control-plane-ui-request.ts
@@ -27,16 +30,25 @@ on:
       - tests/runtime-read-grant.test.ts
       - tests/runtime-read-grant.integration.test.ts
       - tests/client-control-auth.test.ts
+      - tests/client-storage-configuration.test.ts
+      - tests/client-storage-configuration.integration.test.ts
       - tests/control-plane-client-login.test.ts
+      - tests/control-plane-client-storage.test.ts
       - tests/control-plane-ui-abuse.test.ts
       - tests/runtime-node-boundary.test.ts
+      - tests/storage-configuration-migration.test.ts
       - scripts/bootstrap-client-login.mjs
       - scripts/install-smoke.mjs
       - scripts/local-readiness.mjs
       - scripts/validate-migration.mjs
+      - scripts/validate-client-storage-configuration.mjs
       - scripts/verify-package-artifact.mjs
       - db/migrations/0003_z_s_read_delivery.sql
       - db/migrations/0003_z_s_read_delivery.down.sql
+      - db/migrations/0004_z_s_storage_control_vaults.sql
+      - db/migrations/0004_z_s_storage_control_vaults.down.sql
+      - db/migrations/0005_z_s_client_storage_configuration.sql
+      - db/migrations/0005_z_s_client_storage_configuration.down.sql
       - .github/workflows/package-distribution-validation.yml
       - .github/workflows/2b-05-write-intent-ingest-validation.yml
       - .github/workflows/2b-06-dual-provider-media-validation.yml
@@ -88,7 +100,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          allowed='^(package\.json|package-lock\.json|README\.md|docs/runtime-contract\.md|src/(index|runtime-contract|runtime-read-delivery|runtime-read-grant|client-control-auth|client-control-composition|client-control-pages|control-plane-session|control-plane-ui-abuse|control-plane-ui-request|control-plane-ui|node-http-adapter|runtime-control-composition|runtime-main|runtime-node-server)\.ts|tests/(runtime-service|runtime-read-delivery|runtime-read-grant|runtime-read-grant\.integration|client-control-auth|control-plane-client-login|control-plane-ui-abuse|runtime-node-boundary)\.test\.ts|scripts/(bootstrap-client-login|install-smoke|local-readiness|validate-migration|verify-package-artifact)\.mjs|db/migrations/0003_z_s_read_delivery(\.down)?\.sql|\.github/workflows/(package-distribution-validation|2b-05-write-intent-ingest-validation|2b-06-dual-provider-media-validation|2b-07-read-delivery-validation)\.yml)$'
+          allowed='^(package\.json|package-lock\.json|README\.md|docs/runtime-contract\.md|src/(index|runtime-contract|runtime-read-delivery|runtime-read-grant|client-control-auth|client-control-composition|client-control-pages|client-storage-configuration|client-storage-configuration-postgres|client-storage-control-request|control-plane-session|control-plane-ui-abuse|control-plane-ui-request|control-plane-ui|node-http-adapter|runtime-control-composition|runtime-main|runtime-node-server)\.ts|tests/(runtime-service|runtime-read-delivery|runtime-read-grant|runtime-read-grant\.integration|client-control-auth|client-storage-configuration|client-storage-configuration\.integration|control-plane-client-login|control-plane-client-storage|control-plane-ui-abuse|runtime-node-boundary|storage-configuration-migration)\.test\.ts|scripts/(bootstrap-client-login|install-smoke|local-readiness|validate-migration|validate-client-storage-configuration|verify-package-artifact)\.mjs|db/migrations/000(3_z_s_read_delivery|4_z_s_storage_control_vaults|5_z_s_client_storage_configuration)(\.down)?\.sql|\.github/workflows/(package-distribution-validation|2b-05-write-intent-ingest-validation|2b-06-dual-provider-media-validation|2b-07-read-delivery-validation)\.yml)$'
           git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" | while IFS= read -r file; do
             if [[ ! "$file" =~ $allowed ]]; then
               echo "out-of-scope path: $file" >&2
@@ -105,6 +117,10 @@ jobs:
             db/migrations/0001_z_s_control_plane_foundation.down.sql \
             db/migrations/0002_z_s_runtime_registry.sql \
             db/migrations/0002_z_s_runtime_registry.down.sql \
+            db/migrations/0003_z_s_read_delivery.sql \
+            db/migrations/0003_z_s_read_delivery.down.sql \
+            db/migrations/0004_z_s_storage_control_vaults.sql \
+            db/migrations/0004_z_s_storage_control_vaults.down.sql \
             db/seeds
       - name: Verify canonical npm lock authority
         shell: bash

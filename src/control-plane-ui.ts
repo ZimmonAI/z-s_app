@@ -1,10 +1,28 @@
 import type { ClientCredentialAuthenticator } from './client-control-auth.js';
 import { createUnavailableClientCredentialAuthenticator } from './client-control-auth.js';
-import { clientLoginPage, clientStoragePage, type ClientAccountView } from './client-control-pages.js';
+import {
+  clientConfigurationVersionPage,
+  clientLoginPage,
+  clientStorageConfigurationPage,
+  clientStoragePage,
+  type ClientAccountView,
+} from './client-control-pages.js';
+import {
+  ClientStorageConfigurationError,
+  createUnavailableClientStorageConfigurationStore,
+  type ClientStorageConfigurationStore,
+} from './client-storage-configuration.js';
+import {
+  clientStorageEnvironmentFromUrl,
+  configurationDocumentFromPayload,
+  createConfigurationDraftFromPayload,
+  integrationTokenInputFromPayload,
+} from './client-storage-control-request.js';
 import { createControlLoginAttemptLimiter } from './control-plane-ui-abuse.js';
 import {
   ControlPlaneUiError,
   readClientCredential,
+  readControlJsonPayload,
   readPassword,
   readPlanPayload,
   wantsJson,
@@ -32,6 +50,7 @@ export interface ControlPlaneUiOptions {
   readonly adminPassword?: string;
   readonly sessionSigningKey?: string;
   readonly clientCredentialAuthenticator?: ClientCredentialAuthenticator;
+  readonly clientStorageConfigurationStore?: ClientStorageConfigurationStore;
   readonly now?: () => Date;
 }
 
@@ -120,6 +139,29 @@ function clientSessionAccount(
   });
 }
 
+function clientApiAccount(
+  request: Request,
+  options: Readonly<ControlPlaneUiOptions>,
+  now: Date,
+  labels: ReadonlyMap<string, string>,
+): Readonly<ClientAccountView> {
+  const account = clientSessionAccount(request, options, now, labels);
+  if (account === null) throw new ControlPlaneUiError(401, 'client-login-required');
+  return account;
+}
+
+function decodedPathValue(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new ControlPlaneUiError(400, 'invalid-path-identifier');
+  }
+}
+
+function acceptsHtml(request: Request): boolean {
+  return (request.headers.get('accept') ?? '').toLowerCase().includes('text/html');
+}
+
 export function createControlPlaneUiRuntime(
   storageRuntime: HttpStorageRuntime,
   options: ControlPlaneUiOptions = {},
@@ -127,6 +169,8 @@ export function createControlPlaneUiRuntime(
   const now = options.now ?? (() => new Date());
   const clientAuthenticator =
     options.clientCredentialAuthenticator ?? createUnavailableClientCredentialAuthenticator();
+  const configurationStore =
+    options.clientStorageConfigurationStore ?? createUnavailableClientStorageConfigurationStore();
   const operatorLoginLimiter = createControlLoginAttemptLimiter();
   const clientLoginLimiter = createControlLoginAttemptLimiter('client-login-rate-limited');
   const clientLabels = new Map<string, string>();
@@ -243,11 +287,151 @@ export function createControlPlaneUiRuntime(
       if (request.method === 'GET' && url.pathname === '/client/storage') {
         const account = clientSessionAccount(request, options, snapshot, clientLabels);
         if (account === null) return redirect('/client/login');
-        return html(clientStoragePage(account));
+        if (!configurationStore.configured) return html(clientStoragePage(account));
+        const overview = await configurationStore.overview(
+          account.clientId,
+          clientStorageEnvironmentFromUrl(url),
+        );
+        return html(clientStoragePage(account, overview));
+      }
+      if (request.method === 'GET' && url.pathname === '/client/storage/configuration') {
+        const account = clientSessionAccount(request, options, snapshot, clientLabels);
+        if (account === null) return redirect('/client/login');
+        const environment = clientStorageEnvironmentFromUrl(url);
+        const [overview, tokens] = await Promise.all([
+          configurationStore.overview(account.clientId, environment),
+          configurationStore.listIntegrationTokens(account.clientId, environment, snapshot),
+        ]);
+        return html(clientStorageConfigurationPage(account, overview, tokens));
+      }
+      if (url.pathname === '/client/storage/configurations') {
+        const account = clientApiAccount(request, options, snapshot, clientLabels);
+        if (request.method === 'GET') {
+          const overview = await configurationStore.overview(
+            account.clientId,
+            clientStorageEnvironmentFromUrl(url),
+          );
+          return json({ result: overview });
+        }
+        if (request.method === 'POST') {
+          const result = await configurationStore.createDraft(
+            account.clientId,
+            createConfigurationDraftFromPayload(await readControlJsonPayload(request)),
+            snapshot,
+          );
+          return json({ result }, 201);
+        }
+      }
+      const configurationMatch = url.pathname.match(
+        /^\/client\/storage\/configurations\/([^/]+)(?:\/(activate|clone))?$/,
+      );
+      if (configurationMatch !== null) {
+        const account = clientApiAccount(request, options, snapshot, clientLabels);
+        const versionId = decodedPathValue(configurationMatch[1] ?? '');
+        const action = configurationMatch[2];
+        const environment = clientStorageEnvironmentFromUrl(url);
+        if (action === undefined && request.method === 'GET') {
+          const result = await configurationStore.readVersion(
+            account.clientId,
+            environment,
+            versionId,
+          );
+          if (acceptsHtml(request)) return html(clientConfigurationVersionPage(account, result));
+          return json({ result });
+        }
+        if (action === undefined && request.method === 'PUT') {
+          const result = await configurationStore.replaceDraft(
+            account.clientId,
+            environment,
+            versionId,
+            configurationDocumentFromPayload(await readControlJsonPayload(request)),
+            snapshot,
+          );
+          return json({ result });
+        }
+        if (action === undefined && request.method === 'DELETE') {
+          await configurationStore.deleteDraft(account.clientId, environment, versionId);
+          return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } });
+        }
+        if (action === 'activate' && request.method === 'POST') {
+          const result = await configurationStore.activateDraft(
+            account.clientId,
+            environment,
+            versionId,
+            snapshot,
+          );
+          return json({ result });
+        }
+        if (action === 'clone' && request.method === 'POST') {
+          const result = await configurationStore.cloneVersion(
+            account.clientId,
+            environment,
+            versionId,
+            snapshot,
+          );
+          return json({ result }, 201);
+        }
+      }
+      if (url.pathname === '/client/storage/integration-tokens') {
+        const account = clientApiAccount(request, options, snapshot, clientLabels);
+        if (request.method === 'GET') {
+          const result = await configurationStore.listIntegrationTokens(
+            account.clientId,
+            clientStorageEnvironmentFromUrl(url),
+            snapshot,
+          );
+          return json({ result });
+        }
+        if (request.method === 'POST') {
+          const result = await configurationStore.createIntegrationToken(
+            account.clientId,
+            integrationTokenInputFromPayload(await readControlJsonPayload(request)),
+            snapshot,
+          );
+          return json({ result }, 201);
+        }
+      }
+      const tokenMatch = url.pathname.match(
+        /^\/client\/storage\/integration-tokens\/([^/]+)(?:\/(rotate))?$/,
+      );
+      if (tokenMatch !== null) {
+        const account = clientApiAccount(request, options, snapshot, clientLabels);
+        const tokenId = decodedPathValue(tokenMatch[1] ?? '');
+        const action = tokenMatch[2];
+        const environment = clientStorageEnvironmentFromUrl(url);
+        if (action === 'rotate' && request.method === 'POST') {
+          const result = await configurationStore.rotateIntegrationToken(
+            account.clientId,
+            environment,
+            tokenId,
+            snapshot,
+          );
+          return json({ result }, 201);
+        }
+        if (action === undefined && request.method === 'DELETE') {
+          const result = await configurationStore.revokeIntegrationToken(
+            account.clientId,
+            environment,
+            tokenId,
+            snapshot,
+          );
+          return json({ result });
+        }
       }
       return storageRuntime.handle(request);
     } catch (error) {
+      if (error instanceof ClientStorageConfigurationError) {
+        if (url.pathname.startsWith('/client/storage/') && url.pathname !== '/client/storage/configuration') {
+          return json({ error: { code: error.code } }, error.status);
+        }
+        const account = clientSessionAccount(request, options, snapshot, clientLabels);
+        if (account !== null) return html(clientStoragePage(account), error.status);
+        return json({ error: { code: error.code } }, error.status);
+      }
       if (error instanceof ControlPlaneUiError) {
+        if (url.pathname.startsWith('/client/storage/')) {
+          return json({ error: { code: error.code } }, error.status);
+        }
         if (wantsJson(request)) return json({ error: { code: error.code } }, error.status);
         if (url.pathname === '/admin/storage/plans') {
           return html(storagePlannerPage(error.code), error.status);

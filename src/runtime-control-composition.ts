@@ -1,5 +1,6 @@
 import { createClientControlComposition } from './client-control-composition.js';
 import type { ClientCredentialAuthenticator } from './client-control-auth.js';
+import type { ClientStorageConfigurationStore } from './client-storage-configuration.js';
 import { createControlPlaneUiRuntime } from './control-plane-ui.js';
 import type { HttpStorageRuntime } from './runtime-contract.js';
 import {
@@ -16,11 +17,13 @@ function controlRuntime(
   runtime: HttpStorageRuntime,
   environment: NodeJS.ProcessEnv,
   clientCredentialAuthenticator: ClientCredentialAuthenticator,
+  clientStorageConfigurationStore: ClientStorageConfigurationStore,
 ): HttpStorageRuntime {
   const adminPassword = optionalString(environment.Z_S_CONTROL_ADMIN_PASSWORD);
   const sessionSigningKey = optionalString(environment.Z_S_CONTROL_SESSION_SIGNING_KEY);
   return createControlPlaneUiRuntime(runtime, {
     clientCredentialAuthenticator,
+    clientStorageConfigurationStore,
     ...(adminPassword === undefined ? {} : { adminPassword }),
     ...(sessionSigningKey === undefined ? {} : { sessionSigningKey }),
   });
@@ -32,7 +35,12 @@ export function createVideoMakerControlRuntimeComposition(
   const composition = createVideoMakerRuntimeComposition(environment);
   const clientControl = createClientControlComposition(environment);
   return Object.freeze({
-    runtime: controlRuntime(composition.runtime, environment, clientControl.authenticator),
+    runtime: controlRuntime(
+      composition.runtime,
+      environment,
+      clientControl.authenticator,
+      clientControl.configurationStore,
+    ),
     close: async () => {
       await Promise.all([composition.close(), clientControl.close()]);
     },
