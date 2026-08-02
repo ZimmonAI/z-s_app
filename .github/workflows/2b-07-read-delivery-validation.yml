@@ -1,9 +1,6 @@
 name: 2B-07 read grant delivery validation
 
 on:
-  push:
-    branches:
-      - agent/t2-h03-generic-runtime-routing-final2
   pull_request:
 
 permissions:
@@ -11,7 +8,7 @@ permissions:
 
 jobs:
   apply-h03-read-authority-fix:
-    if: github.event_name == 'push' && !contains(github.event.head_commit.message, '[h03-read-authority-fixed]')
+    if: github.event.pull_request.head.ref == 'agent/t2-h03-generic-runtime-routing-final2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +39,7 @@ jobs:
           elif new not in text:
               raise SystemExit('expected read-authority condition not found')
           PY
-          git show HEAD^:.github/workflows/2b-07-read-delivery-validation.yml > .github/workflows/2b-07-read-delivery-validation.yml
+          git show c7a0f2d6830b7a82127fb9735ed419f8d8e6c70c:.github/workflows/2b-07-read-delivery-validation.yml > .github/workflows/2b-07-read-delivery-validation.yml
           git show a3ea0cefa040d3209259aa8bca442d2f4d754a04:.github/workflows/t2-h03-generic-runtime-routing-validation.yml > .github/workflows/t2-h03-generic-runtime-routing-validation.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
