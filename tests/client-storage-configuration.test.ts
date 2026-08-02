@@ -17,14 +17,14 @@ function validDocument() {
         displayLabel: 'MinIO production',
         providerType: 'minio',
         secretReferenceId: 'vault:z-s/minio-production',
-        safeMetadata: { regionLabel: 'local-primary' },
+        safeMetadata: { regionLabel: 'local-primary' } as Readonly<Record<string, unknown>>,
       },
       {
         connectionId: 'r2-video-maker',
         displayLabel: 'R2 Video Maker',
         providerType: 'r2',
         secretReferenceId: 'vault:z-s/r2-video-maker',
-        safeMetadata: { regionLabel: 'global-hot' },
+        safeMetadata: { regionLabel: 'global-hot' } as Readonly<Record<string, unknown>>,
       },
     ],
     vaults: [
