@@ -62,9 +62,25 @@ jobs:
       - name: Full tests
         run: npm test
       - name: PostgreSQL registry tests
+        id: registry
+        continue-on-error: true
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/z_s_test
-        run: npm run test:registry
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run test:registry 2>&1 | tee h03-registry-test.log
+      - name: Upload PostgreSQL registry log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h03-registry-test-log
+          path: h03-registry-test.log
+          if-no-files-found: error
+          retention-days: 1
+      - name: Enforce PostgreSQL registry result
+        if: steps.registry.outcome != 'success'
+        run: exit 1
       - name: Typecheck
         run: npm run typecheck
       - name: Lint
