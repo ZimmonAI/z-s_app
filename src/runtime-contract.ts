@@ -1,6 +1,7 @@
 import type { Environment, ProviderCapabilityPolicy } from './domain.js';
 import type { IntegrityVerificationResult } from './integrity.js';
 import type { ResolvedObjectWriteAuthority } from './runtime-ingest.js';
+import type { RuntimeIntegrationPrincipal } from './runtime-integration-token-auth.js';
 import type {
   UploadCompletionTokenClaims,
   UploadCompletionTokenService,
@@ -106,6 +107,11 @@ export interface SafeProviderCopyResult {
   retryable: boolean;
 }
 
+export interface SafeConfiguredTargetCopyResult extends SafeProviderCopyResult {
+  role: 'primary' | 'replica';
+  order: number;
+}
+
 export interface VerifiedImageMetadata {
   width: number;
   height: number;
@@ -141,6 +147,7 @@ export interface ObjectUploadCompletionResult {
     hot: Readonly<SafeProviderCopyResult>;
     canonical: Readonly<SafeProviderCopyResult>;
   }>;
+  targetCopies?: readonly Readonly<SafeConfiguredTargetCopyResult>[];
   safeDiagnostic?: SafeDiagnostic;
 }
 
@@ -310,8 +317,14 @@ export interface DependencyReadiness {
   code?: string;
 }
 
+export interface RuntimeAuthenticatedCaller {
+  caller: Readonly<CallerIdentity>;
+  integrationPrincipal?: Readonly<RuntimeIntegrationPrincipal>;
+}
+
 export interface RuntimeRequestContext {
   caller: Readonly<CallerIdentity>;
+  integrationPrincipal?: Readonly<RuntimeIntegrationPrincipal>;
   contractVersion: ContractVersion;
   appCorrelationReference: string;
   duplicateProtectionKey: string;
@@ -345,16 +358,27 @@ export type ObjectWriteIntentCancellationOperationResult = Omit<
   'duplicateProtection'
 >;
 
+export interface RuntimeAuthorityContext {
+  caller: Readonly<CallerIdentity>;
+  integrationPrincipal?: Readonly<RuntimeIntegrationPrincipal>;
+  appCorrelationReference: string;
+  mediaType?: string;
+}
+
 export interface StorageRuntimeOptions {
-  authenticate: (bearerToken: string) => Promise<CallerIdentity | null> | CallerIdentity | null;
+  authenticate: (bearerToken: string) =>
+    | Promise<CallerIdentity | RuntimeAuthenticatedCaller | null>
+    | CallerIdentity
+    | RuntimeAuthenticatedCaller
+    | null;
   authorizeCaller: (caller: Readonly<CallerIdentity>) => Promise<boolean> | boolean;
   resolveStorageProfile: (
     request: Readonly<StorageProfileRequest>,
-    context: Readonly<Pick<RuntimeRequestContext, 'caller' | 'appCorrelationReference'>>,
+    context: Readonly<RuntimeAuthorityContext>,
   ) => Promise<SafeResolvedStorageProfile> | SafeResolvedStorageProfile;
   resolveObjectWriteAuthority?: (
     request: Readonly<StorageProfileRequest>,
-    context: Readonly<Pick<RuntimeRequestContext, 'caller' | 'appCorrelationReference'>>,
+    context: Readonly<RuntimeAuthorityContext>,
   ) => Promise<ResolvedObjectWriteAuthority> | ResolvedObjectWriteAuthority;
   createObjectWriteIntent: (input: {
     request: Readonly<ObjectWriteIntentRequest>;

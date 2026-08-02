@@ -7,6 +7,7 @@ import path from 'node:path';
 import type {
   ObjectUploadCompletionOperationResult,
   SafeDiagnostic,
+  SafeConfiguredTargetCopyResult,
   SafeProviderCopyResult,
   StorageObjectResultState,
   VerifiedMediaMetadata,
@@ -22,12 +23,17 @@ import {
   type MediaVerificationAdapter,
 } from './runtime-media-verification.js';
 import {
+  requireRuntimeIntegrationScope,
+  type RuntimeIntegrationPrincipal,
+} from './runtime-integration-token-auth.js';
+import {
   ProviderExecutionError,
   type ProviderObjectWriter,
   type ProviderWriteReceipt,
   type ResolvedProviderWriteTarget,
 } from './runtime-s3-provider.js';
 import type {
+  ConfiguredProviderCopyExecutionContext,
   ProviderCopyExecutionContext,
   ProviderRole,
 } from './runtime-storage-registry-types.js';
@@ -60,6 +66,36 @@ export interface DualProviderWriteOutcome {
   diagnostic?: Readonly<SafeDiagnostic>;
 }
 
+export interface ConfiguredProviderAttemptReservation {
+  objectWriteIntentId: string;
+  storageObjectId: string;
+  expectedIntentRowVersion: number;
+  expectedObjectRowVersion: number;
+  attempts: readonly Readonly<{
+    configurationRouteTargetId: string;
+    providerAttemptId: string;
+    storageObjectCopyId: string;
+    expectedCopyRowVersion: number;
+  }>[];
+}
+
+export interface ConfiguredProviderStorageTruth {
+  storageObjectId: string;
+  storageState: StorageObjectResultState;
+  objectProtectionStage: string;
+  targetCopies: readonly Readonly<SafeConfiguredTargetCopyResult>[];
+}
+
+export interface ConfiguredTargetedRetryReservation {
+  storageObjectId: string;
+  target: Readonly<ConfiguredProviderCopyExecutionContext>;
+  providerAttemptId: string;
+  expectedPendingCopyVersion: number;
+  expectedObjectRowVersion: number;
+  checksumSha256: string;
+  byteLength: number;
+}
+
 export interface DualProviderWriteRegistry {
   beginDualProviderWrite(input: {
     objectWriteIntentId: string;
@@ -90,6 +126,39 @@ export interface DualProviderWriteRegistry {
     reservation: Readonly<TargetedProviderRetryReservation>;
     outcome: Readonly<DualProviderWriteOutcome>;
   }): Promise<Readonly<DualProviderStorageTruth>>;
+  beginConfiguredProviderWrite?(input: {
+    objectWriteIntentId: string;
+    storageObjectId: string;
+    expectedIntentRowVersion: number;
+    expectedObjectRowVersion: number;
+    expectedChecksumSha256: string;
+    expectedByteLength: number;
+    copies: readonly Readonly<ConfiguredProviderCopyExecutionContext>[];
+  }): Promise<Readonly<ConfiguredProviderAttemptReservation>>;
+  completeConfiguredProviderWrite?(input: {
+    reservation: Readonly<ConfiguredProviderAttemptReservation>;
+    checksumSha256: string;
+    byteLength: number;
+    verifiedMedia: Readonly<VerifiedMediaMetadata>;
+    outcomes: readonly Readonly<{
+      configurationRouteTargetId: string;
+      outcome: Readonly<DualProviderWriteOutcome>;
+    }>[];
+  }): Promise<Readonly<ObjectUploadCompletionOperationResult>>;
+  abortConfiguredProviderWrite?(input: {
+    reservation: Readonly<ConfiguredProviderAttemptReservation>;
+    diagnostic: Readonly<SafeDiagnostic>;
+  }): Promise<void>;
+  reserveConfiguredTargetRetry?(input: {
+    clientId: string;
+    storageObjectId: string;
+    configurationRouteTargetId: string;
+    expectedFailedCopyVersion: number;
+  }): Promise<Readonly<ConfiguredTargetedRetryReservation>>;
+  completeConfiguredTargetRetry?(input: {
+    reservation: Readonly<ConfiguredTargetedRetryReservation>;
+    outcome: Readonly<DualProviderWriteOutcome>;
+  }): Promise<Readonly<ConfiguredProviderStorageTruth>>;
 }
 
 export interface TargetedProviderRetryReservation {
@@ -130,6 +199,8 @@ interface ActiveExecution {
   directory?: string;
   targets: Partial<Record<ProviderRole, Readonly<ResolvedProviderWriteTarget>>>;
   verifiedRoles: Set<ProviderRole>;
+  configuredTargets?: Map<string, Readonly<ResolvedProviderWriteTarget>>;
+  verifiedTargetIds?: Set<string>;
 }
 
 const ROLES = ['hot', 'canonical'] as const;
@@ -267,6 +338,25 @@ function validateTarget(
   }
 }
 
+function configuredWriteTarget(
+  copy: Readonly<ConfiguredProviderCopyExecutionContext>,
+): Readonly<ResolvedProviderWriteTarget> {
+  return Object.freeze({
+    providerRole: copy.role,
+    providerId: copy.providerConnectionId,
+    bucketLabel: copy.bucketLabel,
+    internalLocator: copy.internalLocator,
+    normalizedPrefixPattern: copy.prefixTemplate,
+    capabilityPolicy: Object.freeze({
+      checksumVerification: 'required',
+      sizeVerification: 'required-when-supported',
+      headContentLength: 'required',
+      rangeRead: 'optional',
+    }),
+    credentialSecretReferenceId: copy.secretReferenceId,
+  });
+}
+
 export class DualProviderObjectIngestAdapter implements ObjectIngestAdapter {
   readonly #registry: DualProviderWriteRegistry;
   readonly #writer: ProviderObjectWriter;
@@ -286,6 +376,7 @@ export class DualProviderObjectIngestAdapter implements ObjectIngestAdapter {
   }
 
   async ingest(input: Readonly<ObjectIngestInput>): Promise<Readonly<ObjectIngestReceipt>> {
+    if (input.configuredCopies !== undefined) return this.ingestConfigured(input);
     if (
       !SHA256_PATTERN.test(input.declaredChecksumSha256) ||
       input.providerCopies === undefined ||
@@ -409,6 +500,125 @@ export class DualProviderObjectIngestAdapter implements ObjectIngestAdapter {
     }
   }
 
+  private async ingestConfigured(
+    input: Readonly<ObjectIngestInput>,
+  ): Promise<Readonly<ObjectIngestReceipt>> {
+    const copies = input.configuredCopies;
+    const begin = this.#registry.beginConfiguredProviderWrite;
+    const complete = this.#registry.completeConfiguredProviderWrite;
+    const abort = this.#registry.abortConfiguredProviderWrite;
+    if (copies === undefined || begin === undefined || complete === undefined || abort === undefined ||
+        !SHA256_PATTERN.test(input.declaredChecksumSha256) ||
+        !Number.isSafeInteger(input.intentRowVersion) || !Number.isSafeInteger(input.objectRowVersion)) {
+      throw new ObjectIngestRuntimeError('invalid-request', 'configured-provider-input-invalid', 400, {
+        failObjectWriteIntent: true,
+      });
+    }
+    const primaryCopies = copies.filter((copy) => copy.role === 'primary');
+    const replicas = copies.filter((copy) => copy.role === 'replica')
+      .sort((left, right) => left.order - right.order);
+    const primary = primaryCopies[0];
+    if (primaryCopies.length !== 1 || primary === undefined || primary.order !== 0 ||
+        input.intentRowVersion === undefined || input.objectRowVersion === undefined) {
+      throw new ObjectIngestRuntimeError('invalid-request', 'configuration-primary-target-not-ready', 503, {
+        retryable: true, failObjectWriteIntent: true,
+      });
+    }
+    const reservation = await begin.call(this.#registry, {
+      objectWriteIntentId: input.objectWriteIntentId,
+      storageObjectId: input.storageObjectId,
+      expectedIntentRowVersion: input.intentRowVersion,
+      expectedObjectRowVersion: input.objectRowVersion,
+      expectedChecksumSha256: input.declaredChecksumSha256,
+      expectedByteLength: input.declaredByteLength,
+      copies,
+    });
+    const active: ActiveExecution = {
+      reservation: reservation as unknown as Readonly<DualProviderAttemptReservation>,
+      targets: {},
+      verifiedRoles: new Set(),
+      configuredTargets: new Map(),
+      verifiedTargetIds: new Set(),
+    };
+    this.#active.set(input.objectWriteIntentId, active);
+    try {
+      const directory = await mkdtemp(path.join(this.#temporaryRoot, `z-s-h03-${this.#createTemporaryId()}-`));
+      active.directory = directory;
+      const staged = await stageBody(input, directory);
+      const verifiedMedia = await this.#mediaVerifier.verify({
+        declaredMediaType: input.mediaType,
+        source: Object.freeze({ filePath: staged.filePath }),
+        maximumByteLength: input.declaredByteLength,
+      });
+      for (const copy of copies) {
+        active.configuredTargets?.set(copy.configurationRouteTargetId, configuredWriteTarget(copy));
+      }
+      const outcomes: Array<Readonly<{
+        configurationRouteTargetId: string;
+        outcome: Readonly<DualProviderWriteOutcome>;
+      }>> = [];
+      const execute = async (copy: Readonly<ConfiguredProviderCopyExecutionContext>) => {
+        const target = active.configuredTargets?.get(copy.configurationRouteTargetId);
+        if (target === undefined) return providerFailure(new ProviderExecutionError('internal', 'provider-target-missing', false));
+        try {
+          const receipt = await this.#writer.write({
+            target,
+            source: createReadStream(staged.filePath),
+            checksumSha256: staged.checksumSha256,
+            byteLength: staged.byteLength,
+          });
+          active.verifiedTargetIds?.add(copy.configurationRouteTargetId);
+          return verifiedOutcome(receipt);
+        } catch (error) {
+          if (error instanceof ProviderExecutionError && error.cleanupRequired) {
+            await this.#writer.cleanup({ target });
+          }
+          return providerFailure(error);
+        }
+      };
+      const primaryOutcome = await execute(primary);
+      outcomes.push(Object.freeze({
+        configurationRouteTargetId: primary.configurationRouteTargetId,
+        outcome: primaryOutcome,
+      }));
+      if (primaryOutcome.state === 'failed') {
+        await complete.call(this.#registry, {
+          reservation, checksumSha256: staged.checksumSha256, byteLength: staged.byteLength,
+          verifiedMedia, outcomes: Object.freeze(outcomes),
+        });
+        this.#active.delete(input.objectWriteIntentId);
+        throw new ObjectIngestRuntimeError('dependency-unavailable', 'configuration-primary-write-failed', 503, {
+          retryable: primaryOutcome.retryable, failObjectWriteIntent: true,
+        });
+      }
+      for (const replica of replicas) {
+        outcomes.push(Object.freeze({
+          configurationRouteTargetId: replica.configurationRouteTargetId,
+          outcome: await execute(replica),
+        }));
+      }
+      const completionResult = await complete.call(this.#registry, {
+        reservation, checksumSha256: staged.checksumSha256, byteLength: staged.byteLength,
+        verifiedMedia, outcomes: Object.freeze(outcomes),
+      });
+      this.#active.delete(input.objectWriteIntentId);
+      return Object.freeze({
+        state: 'accepted', checksumSha256: staged.checksumSha256, byteLength: staged.byteLength,
+        completionResult,
+      });
+    } catch (error) {
+      if (this.#active.has(input.objectWriteIntentId)) {
+        try { await abort.call(this.#registry, { reservation, diagnostic: safeAbortDiagnostic(error) }); } catch {}
+      }
+      throw runtimeError(error);
+    } finally {
+      if (active.directory !== undefined) {
+        await rm(active.directory, { recursive: true, force: true });
+        delete active.directory;
+      }
+    }
+  }
+
   hasPartialState(input: { objectWriteIntentId: string }): boolean {
     return this.#active.has(input.objectWriteIntentId);
   }
@@ -421,6 +631,9 @@ export class DualProviderObjectIngestAdapter implements ObjectIngestAdapter {
       if (target !== undefined && !active.verifiedRoles.has(role)) {
         await this.#writer.cleanup({ target });
       }
+    }
+    for (const [targetId, target] of active.configuredTargets ?? []) {
+      if (!active.verifiedTargetIds?.has(targetId)) await this.#writer.cleanup({ target });
     }
     if (active.directory !== undefined) {
       await rm(active.directory, { recursive: true, force: true });
@@ -485,5 +698,74 @@ export class TargetedProviderRetryCoordinator {
       outcome = providerFailure(error);
     }
     return this.#registry.completeTargetedProviderRetry({ reservation, outcome });
+  }
+}
+
+export interface ConfiguredTargetedRetryCoordinatorOptions {
+  registry: DualProviderWriteRegistry;
+  writer: ProviderObjectWriter;
+}
+
+/**
+ * Retries exactly one persisted configuration route target. It never resolves the
+ * currently active configuration and never rewrites verified peer copies.
+ */
+export class ConfiguredTargetedRetryCoordinator {
+  readonly #registry: DualProviderWriteRegistry;
+  readonly #writer: ProviderObjectWriter;
+
+  constructor(options: ConfiguredTargetedRetryCoordinatorOptions) {
+    this.#registry = options.registry;
+    this.#writer = options.writer;
+  }
+
+  async retry(input: {
+    principal: Readonly<RuntimeIntegrationPrincipal>;
+    storageObjectId: string;
+    configurationRouteTargetId: string;
+    expectedFailedCopyVersion: number;
+    verifiedSource: VerifiedProviderWriteSource;
+  }): Promise<Readonly<ConfiguredProviderStorageTruth>> {
+    requireRuntimeIntegrationScope(input.principal, 'object:manage');
+    const reserve = this.#registry.reserveConfiguredTargetRetry;
+    const complete = this.#registry.completeConfiguredTargetRetry;
+    if (reserve === undefined || complete === undefined) {
+      throw new ProviderExecutionError(
+        'internal',
+        'configured-target-retry-unavailable',
+        false,
+      );
+    }
+    const reservation = await reserve.call(this.#registry, {
+      clientId: input.principal.clientId,
+      storageObjectId: input.storageObjectId,
+      configurationRouteTargetId: input.configurationRouteTargetId,
+      expectedFailedCopyVersion: input.expectedFailedCopyVersion,
+    });
+    if (reservation.target.configurationRouteTargetId !== input.configurationRouteTargetId) {
+      throw new ProviderExecutionError(
+        'internal',
+        'provider-target-authority-mismatch',
+        false,
+      );
+    }
+    const target = configuredWriteTarget(reservation.target);
+    let outcome: Readonly<DualProviderWriteOutcome>;
+    try {
+      const source = await input.verifiedSource.open();
+      const receipt = await this.#writer.write({
+        target,
+        source,
+        checksumSha256: reservation.checksumSha256,
+        byteLength: reservation.byteLength,
+      });
+      outcome = verifiedOutcome(receipt);
+    } catch (error) {
+      if (error instanceof ProviderExecutionError && error.cleanupRequired) {
+        await this.#writer.cleanup({ target });
+      }
+      outcome = providerFailure(error);
+    }
+    return complete.call(this.#registry, { reservation, outcome });
   }
 }

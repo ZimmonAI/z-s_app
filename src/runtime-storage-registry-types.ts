@@ -1,6 +1,21 @@
 import type { SafeDiagnostic } from './runtime-contract.js';
 
 export type ProviderRole = 'hot' | 'canonical';
+export type ConfiguredTargetRole = 'primary' | 'replica';
+export type ConfiguredProviderType = 'minio' | 'r2' | 's3-compatible';
+
+export interface ConfiguredProviderTarget {
+  configurationRouteTargetId: string;
+  configurationVaultId: string;
+  providerConnectionId: string;
+  role: ConfiguredTargetRole;
+  order: number;
+  providerType: ConfiguredProviderType;
+  bucketLabel: string;
+  prefixTemplate: string;
+  secretReferenceId: string;
+  internalLocator: string;
+}
 export type ObjectWriteIntentState =
   | 'accepted'
   | 'uploading'
@@ -122,6 +137,7 @@ export interface WriteIntentExecutionRow extends WriteIntentRow {
 
 export interface StorageObjectRow extends Record<string, unknown> {
   storage_object_id: string;
+  configuration_route_id?: string | null;
   registry_state: StorageObjectState;
   object_protection_stage: string;
   expected_checksum_sha256: string;
@@ -174,14 +190,8 @@ export interface ReconciliationIssueRow extends Record<string, unknown> {
   row_version: number;
 }
 
-export interface CreateObjectWriteIntentInput {
-  managedAppId: string;
+export interface CreateObjectWriteIntentBaseInput {
   callerServiceId?: string;
-  storageProfileId: string;
-  storageProfileFingerprint: string;
-  storagePrefixClassId: string;
-  hotProviderBindingId: string;
-  canonicalProviderBindingId: string;
   appCorrelationReference: string;
   sourceReference: string;
   expectedContentType: string;
@@ -189,8 +199,27 @@ export interface CreateObjectWriteIntentInput {
   expectedChecksumSha256: string;
   requestedObjectProtectionStage?: string;
   expiresAt: Date;
-  internalLocators: Readonly<Record<ProviderRole, string>>;
   safeTechnicalMetadata?: Readonly<Record<string, unknown>>;
+}
+
+/** Legacy profile authority retained only for compatibility with historical callers/tests. */
+export interface CreateObjectWriteIntentInput extends CreateObjectWriteIntentBaseInput {
+  managedAppId: string;
+  storageProfileId: string;
+  storageProfileFingerprint: string;
+  storagePrefixClassId: string;
+  hotProviderBindingId: string;
+  canonicalProviderBindingId: string;
+  internalLocators: Readonly<Record<ProviderRole, string>>;
+}
+
+export interface CreateConfiguredObjectWriteIntentInput extends CreateObjectWriteIntentBaseInput {
+  storageObjectId: string;
+  storageControlClientId: string;
+  configurationVersionId: string;
+  configurationFingerprint: string;
+  configurationRouteId: string;
+  targets: readonly Readonly<ConfiguredProviderTarget>[];
 }
 
 export interface ObjectWriteIntentSnapshot {
@@ -213,7 +242,15 @@ export interface ProviderCopyExecutionContext {
   internalLocator: string;
 }
 
+export interface ConfiguredProviderCopyExecutionContext extends ConfiguredProviderTarget {
+  storageObjectCopyId: string;
+  state: StorageObjectCopyState;
+  rowVersion: number;
+}
+
+/** Legacy execution context retained as the compatibility contract. */
 export interface ObjectWriteIntentExecutionContext {
+  authorityKind?: 'legacy-profile';
   objectWriteIntentId: string;
   storageObjectId: string;
   managedAppId: string;
@@ -238,9 +275,52 @@ export interface ObjectWriteIntentExecutionContext {
   providerCopies?: Readonly<Record<ProviderRole, Readonly<ProviderCopyExecutionContext>>>;
 }
 
+export interface ConfiguredObjectWriteIntentExecutionContext {
+  authorityKind: 'configuration';
+  objectWriteIntentId: string;
+  storageObjectId: string;
+  storageControlClientId: string;
+  callerAppId: string;
+  callerServiceId?: string;
+  configurationVersionId: string;
+  configurationFingerprint: string;
+  configurationRouteId: string;
+  appCorrelationReference: string;
+  sourceReference: string;
+  expectedContentType: string;
+  expectedByteLength: number;
+  expectedChecksumSha256: string;
+  state: ObjectWriteIntentState;
+  expiresAt: string;
+  rowVersion: number;
+  objectRowVersion: number;
+  registryState: StorageObjectState;
+  objectProtectionStage: string;
+  configuredCopies: readonly Readonly<ConfiguredProviderCopyExecutionContext>[];
+  providerCopies?: Readonly<Record<ProviderRole, Readonly<ProviderCopyExecutionContext>>>;
+  internalLocators: Readonly<Record<ProviderRole, string>>;
+}
+
+export type RuntimeObjectWriteIntentExecutionContext =
+  | ObjectWriteIntentExecutionContext
+  | ConfiguredObjectWriteIntentExecutionContext;
+
 export interface StorageObjectCopySnapshot {
   storageObjectCopyId: string;
   providerRole: ProviderRole;
+  state: StorageObjectCopyState;
+  observedChecksumSha256?: string;
+  observedByteLength?: number;
+  latestVerifiedAt?: string;
+  rowVersion: number;
+  updatedAt: string;
+}
+
+export interface ConfiguredStorageObjectCopySnapshot {
+  storageObjectCopyId: string;
+  configurationRouteTargetId: string;
+  role: ConfiguredTargetRole;
+  order: number;
   state: StorageObjectCopyState;
   observedChecksumSha256?: string;
   observedByteLength?: number;
@@ -263,6 +343,7 @@ export interface StorageObjectSnapshot {
   createdAt: string;
   updatedAt: string;
   copies: Readonly<Record<ProviderRole, StorageObjectCopySnapshot>>;
+  configuredCopies?: readonly Readonly<ConfiguredStorageObjectCopySnapshot>[];
 }
 
 export interface ProviderAttemptInput {

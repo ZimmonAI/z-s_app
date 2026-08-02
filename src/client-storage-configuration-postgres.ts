@@ -1121,7 +1121,7 @@ RETURNING id, token_id, environment, display_label, scopes, status, expires_at, 
 
   async authenticateIntegrationToken(
     token: string,
-    requiredScope: IntegrationTokenScope,
+    requiredScope?: IntegrationTokenScope,
     now = new Date(),
   ): Promise<Readonly<IntegrationTokenAuthenticationResult>> {
     const result = await this.#pool.query<TokenAuthenticationRow>(`
@@ -1140,7 +1140,8 @@ WHERE tokens.token_digest = $1
 LIMIT 1
 `, [digestIntegrationToken(token)]);
     const row = result.rows[0];
-    if (row === undefined || row.client_status !== 'active') return Object.freeze({ kind: 'invalid' });
+    if (row === undefined) return Object.freeze({ kind: 'invalid' });
+    if (row.client_status !== 'active') return Object.freeze({ kind: 'client-disabled' });
     if (row.token_status === 'revoked') return Object.freeze({ kind: 'revoked' });
     if (
       row.token_status === 'expired' ||
@@ -1148,7 +1149,9 @@ LIMIT 1
     ) {
       return Object.freeze({ kind: 'expired' });
     }
-    if (!row.scopes.includes(requiredScope)) return Object.freeze({ kind: 'scope-denied' });
+    if (requiredScope !== undefined && !row.scopes.includes(requiredScope)) {
+      return Object.freeze({ kind: 'scope-denied' });
+    }
     return Object.freeze({
       kind: 'authenticated',
       clientId: row.client_id,
