@@ -30,6 +30,8 @@ const EXPECTED_PACKAGE_FILES = [
   'db/migrations/0003_z_s_read_delivery.down.sql',
   'db/migrations/0004_z_s_storage_control_vaults.sql',
   'db/migrations/0004_z_s_storage_control_vaults.down.sql',
+  'db/migrations/0005_z_s_client_storage_configuration.sql',
+  'db/migrations/0005_z_s_client_storage_configuration.down.sql',
 ];
 const EXPECTED_STATIC_ARTIFACT_FILES = [
   'README.md',
@@ -41,6 +43,8 @@ const EXPECTED_STATIC_ARTIFACT_FILES = [
   'db/migrations/0003_z_s_read_delivery.down.sql',
   'db/migrations/0004_z_s_storage_control_vaults.sql',
   'db/migrations/0004_z_s_storage_control_vaults.down.sql',
+  'db/migrations/0005_z_s_client_storage_configuration.sql',
+  'db/migrations/0005_z_s_client_storage_configuration.down.sql',
 ];
 
 async function sourceModuleNames(directory, prefix = '') {
@@ -164,7 +168,7 @@ try {
     registry: EXPECTED_REGISTRY,
     repository: 'https://github.com/ZimmonAI/z-s_app',
     packageUrl: 'https://github.com/orgs/ZimmonAI/packages/npm/package/z-s-control-plane',
-    sourceBaseline: 'd13e74fb428cec20f1706034ed0e00274ee9fce2',
+    sourceBaseline: 'a18bd69818a5e12da5ac45cf5d64da68a59fe49e',
     tarballFilename: artifact.filename,
     tarballSha256: sha256,
     npmIntegrity: artifact.integrity,
