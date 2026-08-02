@@ -64,6 +64,11 @@ async function readJson(request: Request): Promise<unknown> {
   }
 }
 
+export async function readControlJsonPayload(request: Request): Promise<unknown> {
+  if (!wantsJson(request)) throw new ControlPlaneUiError(415, 'json-content-type-required');
+  return readJson(request);
+}
+
 export async function readPassword(request: Request): Promise<string> {
   if (wantsJson(request)) {
     const payload = await readJson(request);
