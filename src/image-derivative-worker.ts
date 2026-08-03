@@ -34,7 +34,11 @@ async function collectBoundedStream(
   const chunks: Uint8Array[] = [];
   let byteLength = 0;
   for await (const chunk of stream) {
-    const bytes = chunk instanceof Uint8Array ? chunk : Buffer.from(chunk);
+    const bytes = typeof chunk === 'number'
+      ? Uint8Array.of(chunk)
+      : chunk instanceof Uint8Array
+        ? chunk
+        : Buffer.from(chunk);
     byteLength += bytes.byteLength;
     if (byteLength > maximumByteLength) {
       stream.destroy();
@@ -158,7 +162,7 @@ export class ImageDerivativeWorker {
         }
         const receipt = await this.#writer.write({
           target: reservation.target,
-          source: Readable.from(output.bytes),
+          source: Readable.from([output.bytes]),
           checksumSha256,
           byteLength: output.bytes.byteLength,
         });
