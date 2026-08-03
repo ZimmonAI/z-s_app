@@ -1,0 +1,140 @@
+name: T2 H05 image derivative validation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/t2-h05-image-derivative-validation.yml'
+      - 'db/migrations/0011_z_s_image_derivatives.sql'
+      - 'db/migrations/0011_z_s_image_derivatives.down.sql'
+      - 'docs/image-derivatives.md'
+      - 'evidence/t2-h05-image-derivatives/**'
+      - 'reports/t2-h05-image-derivatives/**'
+      - 'scripts/validate-image-derivative-migration.mjs'
+      - 'src/client-control-composition.ts'
+      - 'src/index.ts'
+      - 'src/image-derivative*.ts'
+      - 'src/runtime-control-composition.ts'
+      - 'tests/image-derivative*.test.ts'
+  push:
+    branches:
+      - agent/h05-image-derivatives
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: z_s_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d z_s_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify frozen H04A baseline ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=1518e7adb38429a9dc931ed17730189621c4fd2c
+          test "$(git merge-base "$baseline" HEAD)" = "$baseline"
+      - name: Verify H05 source scope
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          allowed='^(src/(index|client-control-composition|runtime-control-composition|image-derivative(-[a-z-]+)?)\.ts|tests/image-derivative(\.integration|-migration|-runtime)?\.test\.ts|scripts/validate-image-derivative-migration\.mjs|db/migrations/0011_z_s_image_derivatives(\.down)?\.sql|docs/image-derivatives\.md|reports/t2-h05-image-derivatives/[^/]+\.md|evidence/t2-h05-image-derivatives/[^/]+\.json|\.github/workflows/t2-h05-image-derivative-validation\.yml)$'
+          git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" | while IFS= read -r file; do
+            if [[ ! "$file" =~ $allowed ]]; then
+              echo "out-of-scope path: $file" >&2
+              exit 1
+            fi
+          done
+      - name: Verify prior migrations and seeds are unchanged
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" -- \
+            db/migrations/0001_z_s_control_plane_foundation.sql \
+            db/migrations/0001_z_s_control_plane_foundation.down.sql \
+            db/migrations/0002_z_s_runtime_registry.sql \
+            db/migrations/0002_z_s_runtime_registry.down.sql \
+            db/migrations/0003_z_s_read_delivery.sql \
+            db/migrations/0003_z_s_read_delivery.down.sql \
+            db/migrations/0004_z_s_storage_control_vaults.sql \
+            db/migrations/0004_z_s_storage_control_vaults.down.sql \
+            db/migrations/0005_z_s_client_storage_configuration.sql \
+            db/migrations/0005_z_s_client_storage_configuration.down.sql \
+            db/migrations/0006_z_s_configuration_audit_cleanup.sql \
+            db/migrations/0006_z_s_configuration_audit_cleanup.down.sql \
+            db/migrations/0007_z_s_configuration_child_cleanup.sql \
+            db/migrations/0007_z_s_configuration_child_cleanup.down.sql \
+            db/migrations/0008_z_s_configuration_audit_nullification.sql \
+            db/migrations/0008_z_s_configuration_audit_nullification.down.sql \
+            db/migrations/0009_z_s_configuration_child_fk_deferral.sql \
+            db/migrations/0009_z_s_configuration_child_fk_deferral.down.sql \
+            db/migrations/0010_z_s_runtime_configuration_routing.sql \
+            db/migrations/0010_z_s_runtime_configuration_routing.down.sql \
+            db/seeds
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Compile tests
+        run: npm run test:compile
+      - name: Run focused image derivative tests
+        run: >-
+          node --test
+          .test-dist/tests/image-derivative.test.js
+          .test-dist/tests/image-derivative-runtime.test.js
+          .test-dist/tests/image-derivative-migration.test.js
+      - name: Run PostgreSQL image derivative integration proof
+        run: node --test .test-dist/tests/image-derivative.integration.test.js
+      - name: Validate 0011 migration contract
+        run: node scripts/validate-image-derivative-migration.mjs
+      - name: Run full test suite
+        run: npm test
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build
+      - name: Package install smoke
+        run: npm run pack:check
+      - name: Package artifact verification
+        run: npm run package:verify
+      - name: Existing migration and seed validation
+        run: npm run validate:migration && npm run validate:seed
+      - name: Secret and legacy identifier validation
+        run: npm run validate:secrets && npm run validate:legacy-id
+      - name: Local readiness
+        run: npm run local:readiness
+      - name: Retain H05 non-secret evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: t2-h05-image-derivative-evidence
+          path: |
+            evidence/t2-h05-image-derivatives/
+            reports/t2-h05-image-derivatives/
+          if-no-files-found: error
+          retention-days: 30
