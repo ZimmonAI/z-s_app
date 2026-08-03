@@ -38,8 +38,25 @@ function baseRuntime(): HttpStorageRuntime {
       }
       return new Response('not found', { status: 404 });
     },
-    async health() { return Object.freeze({ process: 'healthy' }); },
-    async readiness() { return Object.freeze({ status: 'ready' }); },
+    async health() {
+      return Object.freeze({
+        serviceId: 'z-s',
+        packageVersion: '0.5.0',
+        contractVersion: '1.0',
+        process: 'healthy',
+        checkedAt: NOW.toISOString(),
+      });
+    },
+    async readiness() {
+      return Object.freeze({
+        serviceId: 'z-s',
+        process: 'healthy',
+        controlPlane: Object.freeze({ status: 'ready' as const }),
+        dataPlane: Object.freeze({ status: 'ready' as const }),
+        status: 'ready',
+        checkedAt: NOW.toISOString(),
+      });
+    },
   });
 }
 
