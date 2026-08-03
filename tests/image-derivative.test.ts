@@ -8,8 +8,15 @@ import {
   ImageDerivativeError,
   type ImageDerivativeJob,
   type ImageDerivativeStore,
+  type ProcessedImageDerivative,
 } from '../src/image-derivative.js';
 import { PngImageDerivativeProcessor } from '../src/image-derivative-png.js';
+import { ConfiguredImageDerivativeOutputWriter } from '../src/image-derivative-provider.js';
+import type { PostgresImageDerivativeStore } from '../src/image-derivative-postgres.js';
+import type {
+  ProviderObjectWriter,
+  ResolvedProviderWriteTarget,
+} from '../src/runtime-s3-provider.js';
 
 const JOB: Readonly<ImageDerivativeJob> = Object.freeze({
   id: '00000000-0000-4000-8000-000000000001',
@@ -173,4 +180,66 @@ test('application service completes only after verified output persistence', asy
     'claim', 'read', 'process', 'write',
     'complete:00000000-0000-4000-8000-000000000009', 'close',
   ]);
+});
+
+test('configured derivative writer preserves the output as one byte chunk', async () => {
+  const body = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const checksumSha256 = createHash('sha256').update(body).digest('hex');
+  const output: Readonly<ProcessedImageDerivative> = Object.freeze({
+    mediaType: 'image/png',
+    width: 16,
+    height: 8,
+    byteLength: body.byteLength,
+    checksumSha256,
+    body,
+  });
+  const target = {} as ResolvedProviderWriteTarget;
+  const store = {
+    async reserveOutput() {
+      return {
+        storageObjectId: '00000000-0000-4000-8000-000000000009',
+        storageObjectCopyId: '00000000-0000-4000-8000-000000000010',
+        target,
+      };
+    },
+    async markOutputVerified() {},
+    async outputReservation() { return null; },
+    async markOutputFailed() {},
+  } as unknown as PostgresImageDerivativeStore;
+  const observedChunks: Buffer[] = [];
+  const providerWriter: ProviderObjectWriter = {
+    async write(input) {
+      for await (const value of input.source) {
+        assert.ok(value instanceof Uint8Array, 'provider source must emit byte chunks');
+        observedChunks.push(Buffer.from(value));
+      }
+      return {
+        providerRole: 'primary',
+        observed: {
+          checksumSha256: input.checksumSha256,
+          byteLength: input.byteLength,
+        },
+        integrityVerification: {
+          verified: true,
+          checksumVerified: true,
+          sizeVerified: true,
+          sizeVerificationDisposition: 'matched',
+        },
+      };
+    },
+    async cleanup() {
+      return { deleted: true };
+    },
+  };
+
+  const writer = new ConfiguredImageDerivativeOutputWriter({
+    store,
+    writer: providerWriter,
+  });
+  const verified = await writer.write(JOB, output);
+
+  assert.equal(observedChunks.length, 1);
+  assert.deepEqual(observedChunks[0], body);
+  assert.equal(verified.byteLength, body.byteLength);
+  assert.equal(verified.checksumSha256, checksumSha256);
 });
