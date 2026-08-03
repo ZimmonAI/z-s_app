@@ -122,7 +122,7 @@ export class ConfiguredImageDerivativeOutputWriter implements ImageDerivativeOut
     try {
       const receipt = await this.#writer.write({
         target: reservation.target,
-        source: Readable.from(output.body),
+        source: Readable.from([output.body]),
         checksumSha256: output.checksumSha256,
         byteLength: output.byteLength,
       });
