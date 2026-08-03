@@ -270,8 +270,21 @@ test('upload completion enqueue is duplicate-safe and never changes the complete
     handle: async () => new Response(JSON.stringify({ result: {
       state: 'recorded', storageObjectId: '00000000-0000-4000-8000-000000000010',
     } }), { status: 200, headers: { 'content-type': 'application/json' } }),
-    health: async () => ({ status: 'ok' }),
-    readiness: async () => ({ status: 'ready' }),
+    health: async () => ({
+      serviceId: 'z-s',
+      packageVersion: '0.5.0',
+      contractVersion: '1.0',
+      process: 'healthy',
+      checkedAt: '2026-08-03T00:00:00.000Z',
+    }),
+    readiness: async () => ({
+      serviceId: 'z-s',
+      process: 'healthy',
+      controlPlane: { status: 'ready' },
+      dataPlane: { status: 'ready' },
+      status: 'ready',
+      checkedAt: '2026-08-03T00:00:00.000Z',
+    }),
   };
   const response = await createImageDerivativeEnqueueRuntime(base, store).handle(new Request(
     'https://example.test/v1/object-write-intents/00000000-0000-4000-8000-000000000011/content',
@@ -312,8 +325,21 @@ test('status API requires a browser client session and workspace injection expos
       '<main><section class="panel stack" aria-labelledby="activity-title">activity</section></main>',
       { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } },
     ),
-    health: async () => ({ status: 'ok' }),
-    readiness: async () => ({ status: 'ready' }),
+    health: async () => ({
+      serviceId: 'z-s',
+      packageVersion: '0.5.0',
+      contractVersion: '1.0',
+      process: 'healthy',
+      checkedAt: '2026-08-03T00:00:00.000Z',
+    }),
+    readiness: async () => ({
+      serviceId: 'z-s',
+      process: 'healthy',
+      controlPlane: { status: 'ready' },
+      dataPlane: { status: 'ready' },
+      status: 'ready',
+      checkedAt: '2026-08-03T00:00:00.000Z',
+    }),
   };
   const runtime = createImageDerivativeControlRuntime(base, {
     store,
