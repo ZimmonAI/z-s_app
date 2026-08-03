@@ -7,6 +7,7 @@ on:
       - package-lock.json
       - README.md
       - docs/runtime-contract.md
+      - docs/image-derivatives.md
       - src/index.ts
       - src/runtime-contract.ts
       - src/runtime-read-delivery.ts
@@ -25,6 +26,18 @@ on:
       - src/control-plane-ui-request.ts
       - src/control-plane-ui.ts
       - src/storage-control-html.ts
+      - src/image-derivative.ts
+      - src/image-derivative-contract.ts
+      - src/image-derivative-png.ts
+      - src/image-derivative-worker.ts
+      - src/image-derivative-postgres.ts
+      - src/image-derivative-postgres-helpers.ts
+      - src/image-derivative-postgres-output.ts
+      - src/image-derivative-postgres-queue.ts
+      - src/image-derivative-postgres-types.ts
+      - src/image-derivative-control.ts
+      - src/image-derivative-runtime.ts
+      - src/image-derivative-worker-composition.ts
       - src/node-http-adapter.ts
       - src/runtime-control-composition.ts
       - src/runtime-main.ts
@@ -42,11 +55,15 @@ on:
       - tests/control-plane-ui-abuse.test.ts
       - tests/runtime-node-boundary.test.ts
       - tests/storage-configuration-migration.test.ts
+      - tests/image-derivative.test.ts
+      - tests/image-derivative.integration.test.ts
       - scripts/bootstrap-client-login.mjs
       - scripts/install-smoke.mjs
       - scripts/local-readiness.mjs
       - scripts/validate-migration.mjs
       - scripts/validate-client-storage-configuration.mjs
+      - scripts/validate-image-derivative.mjs
+      - scripts/run-image-derivative-worker.mjs
       - scripts/verify-package-artifact.mjs
       - db/migrations/0003_z_s_read_delivery.sql
       - db/migrations/0003_z_s_read_delivery.down.sql
@@ -54,10 +71,12 @@ on:
       - db/migrations/0004_z_s_storage_control_vaults.down.sql
       - db/migrations/0005_z_s_client_storage_configuration.sql
       - db/migrations/0005_z_s_client_storage_configuration.down.sql
-      - .github/workflows/package-distribution-validation.yml
-      - .github/workflows/2b-05-write-intent-ingest-validation.yml
-      - .github/workflows/2b-06-dual-provider-media-validation.yml
+      - db/migrations/0010_z_s_runtime_configuration_routing.sql
+      - db/migrations/0010_z_s_runtime_configuration_routing.down.sql
+      - db/migrations/0011_z_s_image_derivatives.sql
+      - db/migrations/0011_z_s_image_derivatives.down.sql
       - .github/workflows/2b-07-read-delivery-validation.yml
+      - .github/workflows/t2-h05-image-derivative-validation.yml
   workflow_dispatch:
 
 permissions:
@@ -105,7 +124,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          allowed='^(package\.json|package-lock\.json|README\.md|docs/runtime-contract\.md|src/(index|runtime-contract|runtime-read-delivery|runtime-read-grant|client-control-auth|client-control-composition|client-control-pages|client-storage-configuration|client-storage-configuration-postgres|client-storage-control-client|client-storage-control-editor-client|client-storage-control-presentation|client-storage-control-request|control-plane-session|control-plane-ui-abuse|control-plane-ui-request|control-plane-ui|storage-control-html|node-http-adapter|runtime-control-composition|runtime-main|runtime-node-server)\.ts|tests/(runtime-service|runtime-read-delivery|runtime-read-grant|runtime-read-grant\.integration|client-control-auth|client-storage-configuration|client-storage-configuration\.integration|client-storage-control-presentation|control-plane-client-login|control-plane-client-storage|control-plane-ui-abuse|runtime-node-boundary|storage-configuration-migration)\.test\.ts|scripts/(bootstrap-client-login|install-smoke|local-readiness|validate-migration|validate-client-storage-configuration|verify-package-artifact)\.mjs|db/migrations/000(3_z_s_read_delivery|4_z_s_storage_control_vaults|5_z_s_client_storage_configuration)(\.down)?\.sql|src/(domain|runtime-active-configuration|runtime-dual-provider|runtime-ingest|runtime-integration-token-auth|runtime-local-composition|runtime-s3-provider|runtime-service|runtime-storage-registry|runtime-storage-registry-object|runtime-storage-registry-types)\.ts|tests/client-storage-configuration-integration-helpers\.ts|tests/(runtime-active-configuration|runtime-configuration-routing-migration|runtime-configuration-routing\.integration|runtime-configured-provider|runtime-configured-read-delivery|runtime-dual-provider|runtime-integration-token-auth)\.test\.ts|scripts/validate-runtime-configuration-routing\.mjs|db/migrations/0010_z_s_runtime_configuration_routing(\.down)?\.sql|\.github/workflows/(package-distribution-validation|2b-05-write-intent-ingest-validation|2b-06-dual-provider-media-validation|2b-07-read-delivery-validation|t2-h03-generic-runtime-routing-validation)\.yml)$'
+          allowed='^(package\.json|package-lock\.json|README\.md|docs/(runtime-contract|image-derivatives)\.md|src/(index|runtime-contract|runtime-read-delivery|runtime-read-grant|client-control-auth|client-control-composition|client-control-pages|client-storage-configuration|client-storage-configuration-postgres|client-storage-control-client|client-storage-control-editor-client|client-storage-control-presentation|client-storage-control-request|control-plane-session|control-plane-ui-abuse|control-plane-ui-request|control-plane-ui|storage-control-html|node-http-adapter|runtime-control-composition|runtime-main|runtime-node-server|image-derivative|image-derivative-contract|image-derivative-png|image-derivative-worker|image-derivative-postgres|image-derivative-postgres-helpers|image-derivative-postgres-output|image-derivative-postgres-queue|image-derivative-postgres-types|image-derivative-control|image-derivative-runtime|image-derivative-worker-composition)\.ts|tests/(runtime-service|runtime-read-delivery|runtime-read-grant|runtime-read-grant\.integration|client-control-auth|client-storage-configuration|client-storage-configuration\.integration|client-storage-control-presentation|control-plane-client-login|control-plane-client-storage|control-plane-ui-abuse|runtime-node-boundary|storage-configuration-migration|image-derivative|image-derivative\.integration)\.test\.ts|scripts/(bootstrap-client-login|install-smoke|local-readiness|validate-migration|validate-client-storage-configuration|validate-image-derivative|run-image-derivative-worker|verify-package-artifact)\.mjs|db/migrations/000(3_z_s_read_delivery|4_z_s_storage_control_vaults|5_z_s_client_storage_configuration)(\.down)?\.sql|src/(domain|runtime-active-configuration|runtime-dual-provider|runtime-ingest|runtime-integration-token-auth|runtime-local-composition|runtime-s3-provider|runtime-service|runtime-storage-registry|runtime-storage-registry-object|runtime-storage-registry-types)\.ts|tests/client-storage-configuration-integration-helpers\.ts|tests/(runtime-active-configuration|runtime-configuration-routing-migration|runtime-configuration-routing\.integration|runtime-configured-provider|runtime-configured-read-delivery|runtime-dual-provider|runtime-integration-token-auth)\.test\.ts|scripts/validate-runtime-configuration-routing\.mjs|db/migrations/001(0_z_s_runtime_configuration_routing|1_z_s_image_derivatives)(\.down)?\.sql|\.github/workflows/(package-distribution-validation|2b-05-write-intent-ingest-validation|2b-06-dual-provider-media-validation|2b-07-read-delivery-validation|t2-h03-generic-runtime-routing-validation|t2-h05-image-derivative-validation)\.yml)$'
           git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" | while IFS= read -r file; do
             if [[ ! "$file" =~ $allowed ]]; then
               echo "out-of-scope path: $file" >&2
@@ -126,6 +145,18 @@ jobs:
             db/migrations/0003_z_s_read_delivery.down.sql \
             db/migrations/0004_z_s_storage_control_vaults.sql \
             db/migrations/0004_z_s_storage_control_vaults.down.sql \
+            db/migrations/0005_z_s_client_storage_configuration.sql \
+            db/migrations/0005_z_s_client_storage_configuration.down.sql \
+            db/migrations/0006_z_s_configuration_audit_cleanup.sql \
+            db/migrations/0006_z_s_configuration_audit_cleanup.down.sql \
+            db/migrations/0007_z_s_configuration_child_cleanup.sql \
+            db/migrations/0007_z_s_configuration_child_cleanup.down.sql \
+            db/migrations/0008_z_s_configuration_audit_nullification.sql \
+            db/migrations/0008_z_s_configuration_audit_nullification.down.sql \
+            db/migrations/0009_z_s_configuration_child_fk_deferral.sql \
+            db/migrations/0009_z_s_configuration_child_fk_deferral.down.sql \
+            db/migrations/0010_z_s_runtime_configuration_routing.sql \
+            db/migrations/0010_z_s_runtime_configuration_routing.down.sql \
             db/seeds
       - name: Verify canonical npm lock authority
         shell: bash
