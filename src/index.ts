@@ -5,6 +5,7 @@ export * from './control-plane-ui.js';
 export * from './domain.js';
 export * from './errors.js';
 export * from './fingerprint.js';
+export * from './image-derivative.js';
 export * from './integrity.js';
 export * from './prefix-authorizer.js';
 export * from './profile-registry.js';
