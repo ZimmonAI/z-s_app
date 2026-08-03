@@ -46,6 +46,7 @@
     "dist",
     "README.md",
     "docs/runtime-contract.md",
+    "docs/image-derivatives.md",
     "db/migrations/0002_z_s_runtime_registry.sql",
     "db/migrations/0002_z_s_runtime_registry.down.sql",
     "db/migrations/0003_z_s_read_delivery.sql",
@@ -63,7 +64,9 @@
     "db/migrations/0009_z_s_configuration_child_fk_deferral.sql",
     "db/migrations/0009_z_s_configuration_child_fk_deferral.down.sql",
     "db/migrations/0010_z_s_runtime_configuration_routing.sql",
-    "db/migrations/0010_z_s_runtime_configuration_routing.down.sql"
+    "db/migrations/0010_z_s_runtime_configuration_routing.down.sql",
+    "db/migrations/0011_z_s_image_derivatives.sql",
+    "db/migrations/0011_z_s_image_derivatives.down.sql"
   ],
   "scripts": {
     "clean": "node scripts/clean.mjs",
