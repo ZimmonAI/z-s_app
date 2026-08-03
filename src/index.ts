@@ -1,5 +1,6 @@
 export * from './capability-registry.js';
 export * from './client-storage-configuration.js';
+export * from './client-storage-control-presentation.js';
 export * from './control-plane-ui.js';
 export * from './domain.js';
 export * from './errors.js';
