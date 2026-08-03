@@ -326,12 +326,12 @@ ${CLIENT_STORAGE_EDITOR_SCRIPT}
         const nextIndex = targetIndex + direction;
         [targets[targetIndex], targets[nextIndex]] = [targets[nextIndex], targets[targetIndex]];
         renderRoutes();
-      } else if (button.dataset.rotateToken) {
+      } else if (button.dataset.rotateTokenId) {
         event.preventDefault();
-        await rotateToken(button.dataset.rotateToken);
-      } else if (button.dataset.revokeToken) {
+        await rotateToken(button.dataset.rotateTokenId);
+      } else if (button.dataset.revokeTokenId) {
         event.preventDefault();
-        await revokeToken(button.dataset.revokeToken);
+        await revokeToken(button.dataset.revokeTokenId);
       } else if (button.hasAttribute('data-confirm-accept')) {
         event.preventDefault();
         settleConfirmation(true);
