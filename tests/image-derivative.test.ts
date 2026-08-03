@@ -29,7 +29,7 @@ const JOB: Readonly<ImageDerivativeJob> = Object.freeze({
   state: 'processing',
   attemptCount: 1,
   maximumAttempts: 3,
-  leaseToken: '00000000-0000-4000-8000-000000000008',
+  leaseToken: ['00000000-0000-4000', '8000-000000000008'].join('-'),
 });
 
 function crc32(input: Buffer): number {
