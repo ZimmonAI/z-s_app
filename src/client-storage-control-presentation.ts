@@ -150,8 +150,8 @@ function tokenRows(tokens: readonly Readonly<IntegrationTokenMetadata>[]): strin
       <td>${statusBadge(token.status)}</td>
       <td>${formatDate(token.expiresAt)}</td>
       <td><div class="toolbar">
-        <button type="button" class="button-secondary" data-rotate-token="${escapeHtml(token.tokenId)}"${token.status === 'active' ? '' : ' disabled'}>Rotate</button>
-        <button type="button" class="button-danger" data-revoke-token="${escapeHtml(token.tokenId)}"${token.status === 'active' ? '' : ' disabled'}>Revoke</button>
+        <button type="button" class="button-secondary" data-rotate-token-id="${escapeHtml(token.tokenId)}"${token.status === 'active' ? '' : ' disabled'}>Rotate</button>
+        <button type="button" class="button-danger" data-revoke-token-id="${escapeHtml(token.tokenId)}"${token.status === 'active' ? '' : ' disabled'}>Revoke</button>
       </div></td>
     </tr>`).join('')}</tbody>
   </table></div>`;
@@ -196,6 +196,17 @@ function validationSummary(version: Readonly<ConfigurationVersionSnapshot>): str
     <strong>Resolve these server validation errors:</strong>
     <ul>${version.validationErrors.map((error) => `<li>${escapeHtml(error)}</li>`).join('')}</ul>
   </div>`;
+}
+
+function browserVersion(version: Readonly<ConfigurationVersionSnapshot>) {
+  return {
+    ...version,
+    providerConnections: version.providerConnections.map((connection) => ({
+      connectionId: connection.connectionId,
+      displayLabel: connection.displayLabel,
+      providerType: connection.providerType,
+    })),
+  };
 }
 
 function versionReadOnlyDetails(version: Readonly<ConfigurationVersionSnapshot>): string {
@@ -432,6 +443,6 @@ export function clientStorageControlVersionPage(
 ${clientStorageControlClientScript({
     kind: 'editor',
     environment: version.environment,
-    version,
+    version: browserVersion(version),
   })}`);
 }
