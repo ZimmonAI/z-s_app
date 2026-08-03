@@ -3,6 +3,7 @@ name: T2 H05 image derivative validation
 on:
   pull_request:
     paths:
+      - '.github/workflows/2b-07-read-delivery-validation.yml'
       - '.github/workflows/t2-h05-image-derivative-validation.yml'
       - 'db/migrations/0011_z_s_image_derivatives.sql'
       - 'db/migrations/0011_z_s_image_derivatives.down.sql'
@@ -63,7 +64,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          allowed='^(src/(index|client-control-composition|runtime-control-composition|image-derivative(-[a-z-]+)?)\.ts|tests/image-derivative(\.integration|-migration|-runtime)?\.test\.ts|scripts/validate-image-derivative-migration\.mjs|db/migrations/0011_z_s_image_derivatives(\.down)?\.sql|docs/image-derivatives\.md|reports/t2-h05-image-derivatives/[^/]+\.md|evidence/t2-h05-image-derivatives/[^/]+\.json|\.github/workflows/t2-h05-image-derivative-validation\.yml)$'
+          allowed='^(src/(index|client-control-composition|runtime-control-composition|image-derivative(-[a-z-]+)?)\.ts|tests/image-derivative(\.integration|-migration|-runtime)?\.test\.ts|scripts/validate-image-derivative-migration\.mjs|db/migrations/0011_z_s_image_derivatives(\.down)?\.sql|docs/image-derivatives\.md|reports/t2-h05-image-derivatives/[^/]+\.md|evidence/t2-h05-image-derivatives/[^/]+\.json|\.github/workflows/(2b-07-read-delivery-validation|t2-h05-image-derivative-validation)\.yml)$'
           git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" | while IFS= read -r file; do
             if [[ ! "$file" =~ $allowed ]]; then
               echo "out-of-scope path: $file" >&2
