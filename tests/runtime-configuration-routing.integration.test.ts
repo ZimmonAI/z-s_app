@@ -310,7 +310,7 @@ ORDER BY target_order
         .map((row) => [row.configuration_route_target_id, row.row_version]),
     );
     const retryReservation = await registry.reserveConfiguredTargetRetry({
-      clientId: 'client-a',
+      clientId: 'video-maker_app',
       storageObjectId,
       configurationRouteTargetId: replicas[1]!.configurationRouteTargetId,
       expectedFailedCopyVersion: failedRow.row_version,
