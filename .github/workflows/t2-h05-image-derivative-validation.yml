@@ -1,0 +1,66 @@
+name: T2 H05 image derivative validation
+
+on:
+  pull_request:
+    paths:
+      - 'package.json'
+      - 'src/image-derivative*.ts'
+      - 'src/client-control-composition.ts'
+      - 'src/runtime-control-composition.ts'
+      - 'src/index.ts'
+      - 'tests/image-derivative*.test.ts'
+      - 'scripts/validate-image-derivative.mjs'
+      - 'scripts/run-image-derivative-worker.mjs'
+      - 'docs/image-derivatives.md'
+      - 'db/migrations/0011_z_s_image_derivatives.sql'
+      - 'db/migrations/0011_z_s_image_derivatives.down.sql'
+      - '.github/workflows/t2-h05-image-derivative-validation.yml'
+      - '.github/workflows/2b-07-read-delivery-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: z_s_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d z_s_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify exact H04A baseline ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=1518e7adb38429a9dc931ed17730189621c4fd2c
+          test "$(git merge-base "$baseline" HEAD)" = "$baseline"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run test:compile
+      - run: node --test .test-dist/tests/image-derivative.test.js
+      - run: node --test .test-dist/tests/image-derivative.integration.test.js
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+      - run: node scripts/validate-image-derivative.mjs
+      - run: npm run package:verify
