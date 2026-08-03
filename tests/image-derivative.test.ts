@@ -123,7 +123,8 @@ test('bounded PNG processor validates and deterministically resizes an image', (
 test('bounded PNG processor rejects malformed, MIME-mismatched, and unsupported output', () => {
   const processor = new BoundedPngImageDerivativeProcessor();
   const malformed = png(4, 2).slice();
-  malformed[malformed.byteLength - 1] ^= 1;
+  const finalByte = malformed.byteLength - 1;
+  malformed[finalByte] = (malformed[finalByte] ?? 0) ^ 1;
   assert.throws(() => processor.process({
     bytes: malformed,
     declaredContentType: 'image/png',
@@ -269,8 +270,8 @@ test('upload completion enqueue is duplicate-safe and never changes the complete
     handle: async () => new Response(JSON.stringify({ result: {
       state: 'recorded', storageObjectId: '00000000-0000-4000-8000-000000000010',
     } }), { status: 200, headers: { 'content-type': 'application/json' } }),
-    health: () => ({ status: 'ok' }),
-    readiness: () => ({ status: 'ready' }),
+    health: async () => ({ status: 'ok' }),
+    readiness: async () => ({ status: 'ready' }),
   };
   const response = await createImageDerivativeEnqueueRuntime(base, store).handle(new Request(
     'https://example.test/v1/object-write-intents/00000000-0000-4000-8000-000000000011/content',
@@ -311,8 +312,8 @@ test('status API requires a browser client session and workspace injection expos
       '<main><section class="panel stack" aria-labelledby="activity-title">activity</section></main>',
       { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } },
     ),
-    health: () => ({ status: 'ok' }),
-    readiness: () => ({ status: 'ready' }),
+    health: async () => ({ status: 'ok' }),
+    readiness: async () => ({ status: 'ready' }),
   };
   const runtime = createImageDerivativeControlRuntime(base, {
     store,
