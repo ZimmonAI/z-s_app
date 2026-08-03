@@ -31,6 +31,8 @@ DROP TRIGGER z_s_image_derivative_job_guard_trigger
   ON public.storage_image_derivative_jobs;
 DROP FUNCTION public.z_s_image_derivative_job_guard();
 
+DROP TRIGGER z_s_runtime_configuration_copy_guard_trigger
+  ON public.storage_object_copies;
 DROP INDEX public.storage_object_copies_image_derivative_job_idx;
 
 ALTER TABLE public.storage_object_copies
@@ -59,9 +61,6 @@ ALTER TABLE public.storage_object_copies
         AND target_order IS NOT NULL
       )
     );
-
-DROP TRIGGER z_s_runtime_configuration_copy_guard_trigger
-  ON public.storage_object_copies;
 
 CREATE OR REPLACE FUNCTION public.z_s_runtime_configuration_copy_guard()
 RETURNS trigger
