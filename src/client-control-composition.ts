@@ -9,6 +9,11 @@ import {
   type ClientStorageConfigurationStore,
 } from './client-storage-configuration.js';
 import { PostgresClientStorageConfigurationStore } from './client-storage-configuration-postgres.js';
+import {
+  createUnavailableImageDerivativeStore,
+  type ImageDerivativeStore,
+} from './image-derivative.js';
+import { PostgresImageDerivativeStore } from './image-derivative-postgres.js';
 import type {
   PostgresPoolLike,
   PostgresQueryable,
@@ -17,6 +22,7 @@ import type {
 export interface ClientControlComposition {
   readonly authenticator: ClientCredentialAuthenticator;
   readonly configurationStore: ClientStorageConfigurationStore;
+  readonly imageDerivativeStore: ImageDerivativeStore;
   close(): Promise<void>;
 }
 
@@ -46,6 +52,7 @@ export function createClientControlComposition(
     return Object.freeze({
       authenticator: createUnavailableClientCredentialAuthenticator(),
       configurationStore: createUnavailableClientStorageConfigurationStore(),
+      imageDerivativeStore: createUnavailableImageDerivativeStore(),
       async close(): Promise<void> {},
     });
   }
@@ -72,6 +79,7 @@ export function createClientControlComposition(
   return Object.freeze({
     authenticator: new PostgresStorageControlClientCredentialAuthenticator(queryable),
     configurationStore: new PostgresClientStorageConfigurationStore(queryable),
+    imageDerivativeStore: new PostgresImageDerivativeStore({ pool: queryable }),
     close: () => pool.end(),
   });
 }
