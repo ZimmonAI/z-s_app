@@ -9,6 +9,23 @@ import {
   type ClientStorageConfigurationStore,
 } from './client-storage-configuration.js';
 import { PostgresClientStorageConfigurationStore } from './client-storage-configuration-postgres.js';
+import {
+  createUnavailableImageDerivativeStore,
+  ImageDerivativeApplicationService,
+  type ImageDerivativeStore,
+} from './image-derivative.js';
+import { PngImageDerivativeProcessor } from './image-derivative-png.js';
+import { PostgresImageDerivativeStore } from './image-derivative-postgres.js';
+import {
+  ConfiguredImageDerivativeOutputWriter,
+  ConfiguredImageDerivativeSourceReader,
+} from './image-derivative-provider.js';
+import { BoundedImageDerivativeWorker } from './image-derivative-worker.js';
+import {
+  createRuntimeProviderCredentialResolver,
+} from './runtime-local-composition.js';
+import { S3CompatibleProviderObjectReader } from './runtime-read-delivery.js';
+import { S3CompatibleProviderObjectWriter } from './runtime-s3-provider.js';
 import type {
   PostgresPoolLike,
   PostgresQueryable,
@@ -17,6 +34,8 @@ import type {
 export interface ClientControlComposition {
   readonly authenticator: ClientCredentialAuthenticator;
   readonly configurationStore: ClientStorageConfigurationStore;
+  readonly imageDerivativeStore: ImageDerivativeStore;
+  readonly imageDerivativeWorker: BoundedImageDerivativeWorker | null;
   close(): Promise<void>;
 }
 
@@ -46,6 +65,8 @@ export function createClientControlComposition(
     return Object.freeze({
       authenticator: createUnavailableClientCredentialAuthenticator(),
       configurationStore: createUnavailableClientStorageConfigurationStore(),
+      imageDerivativeStore: createUnavailableImageDerivativeStore(),
+      imageDerivativeWorker: null,
       async close(): Promise<void> {},
     });
   }
@@ -69,9 +90,47 @@ export function createClientControlComposition(
   };
   const pool = new Pool(configuration);
   const queryable = pool as unknown as PostgresPoolLike & PostgresQueryable;
+  const imageDerivativeStore = new PostgresImageDerivativeStore(queryable);
+  const credentialResolver = createRuntimeProviderCredentialResolver(
+    optionalString(environment.Z_S_PROVIDER_CREDENTIAL_BINDINGS_JSON),
+  );
+  const imageDerivativeWorker = new BoundedImageDerivativeWorker(
+    new ImageDerivativeApplicationService({
+      store: imageDerivativeStore,
+      sourceReader: new ConfiguredImageDerivativeSourceReader({
+        store: imageDerivativeStore,
+        reader: new S3CompatibleProviderObjectReader({ credentialResolver }),
+      }),
+      processor: new PngImageDerivativeProcessor(),
+      outputWriter: new ConfiguredImageDerivativeOutputWriter({
+        store: imageDerivativeStore,
+        writer: new S3CompatibleProviderObjectWriter({ credentialResolver }),
+      }),
+    }),
+  );
+  const pollIntervalMs = boundedInteger(
+    environment.Z_S_IMAGE_DERIVATIVE_POLL_INTERVAL_MS,
+    5_000,
+    1_000,
+    60_000,
+  );
+  let workerRunning = false;
+  const workerTimer = setInterval(() => {
+    if (workerRunning) return;
+    workerRunning = true;
+    void imageDerivativeWorker.runBatch(`scheduled-${process.pid}`, new Date())
+      .catch(() => undefined)
+      .finally(() => { workerRunning = false; });
+  }, pollIntervalMs);
+  workerTimer.unref();
   return Object.freeze({
     authenticator: new PostgresStorageControlClientCredentialAuthenticator(queryable),
     configurationStore: new PostgresClientStorageConfigurationStore(queryable),
-    close: () => pool.end(),
+    imageDerivativeStore,
+    imageDerivativeWorker,
+    close: async () => {
+      clearInterval(workerTimer);
+      await pool.end();
+    },
   });
 }

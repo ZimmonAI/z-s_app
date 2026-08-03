@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "task": "T2-H05-online-image-derivative-coding",
+  "repository": "ZimmonAI/z-s_app",
+  "baseline": "1518e7adb38429a9dc931ed17730189621c4fd2c",
+  "branch": "agent/h05-image-derivatives",
+  "status": "source-complete-draft-live-gate-pending",
+  "h04b": "pending-external-database-proof",
+  "liveDatabaseAccessed": false,
+  "liveProviderAccessed": false,
+  "isolatedTypecheck": "passed",
+  "isolatedTests": {
+    "unitAndRuntimePassed": 7,
+    "migrationContractPassed": 2,
+    "failed": 0
+  },
+  "processorEnvelope": {
+    "inputMimeTypes": [
+      "image/png"
+    ],
+    "outputFormats": [
+      "png"
+    ],
+    "maximumSourceBytes": 33554432,
+    "maximumDecodedPixels": 67108864,
+    "maximumOutputBytes": 16777216,
+    "maximumConcurrency": 2,
+    "maximumAttempts": 3
+  }
+}
