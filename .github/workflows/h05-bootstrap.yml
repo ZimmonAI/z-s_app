@@ -27,7 +27,9 @@ jobs:
           base64 -d /tmp/h05.b64 > /tmp/h05.tar.gz
           echo 'ad5f938de2b1898036bbec9880b9a31a889cae825de6c3a7364c31e75cc5fa51  /tmp/h05.tar.gz' | sha256sum -c -
           tar -xzf /tmp/h05.tar.gz
-          rm -f scripts/.h05-bundle-chunk-* scripts/.h05-bundle-part-* scripts/.h05-trigger .github/workflows/h05-bootstrap.yml
+          git checkout -- .github/workflows/2b-07-read-delivery-validation.yml
+          rm -f .github/workflows/t2-h05-image-derivative-validation.yml
+          rm -f scripts/.h05-bundle-chunk-* scripts/.h05-bundle-part-* scripts/.h05-trigger
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
