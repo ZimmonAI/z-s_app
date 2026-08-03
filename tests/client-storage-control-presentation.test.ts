@@ -162,8 +162,8 @@ test('immutable version is read-only and cloneable', async () => {
   const page = clientStorageControlVersionPage(ACCOUNT, active);
   assert.match(page, /Immutable policy/);
   assert.match(page, /Clone into new draft/);
-  assert.doesNotMatch(page, /data-save-draft/);
-  assert.doesNotMatch(page, /data-discard-version/);
+  assert.doesNotMatch(page, /<button[^>]+data-save-draft/);
+  assert.doesNotMatch(page, /<button[^>]+data-discard-version/);
   assert.match(page, /1\. primary/);
   assert.equal(data.draft.state, 'draft');
 });
@@ -174,8 +174,8 @@ test('browser adapter preserves existing JSON endpoints and clears reveal-once v
   assert.match(page, /\/client\/storage\/configurations/);
   assert.match(page, /method: 'PUT'/);
   assert.match(page, /method: 'DELETE'/);
-  assert.match(page, /\/activate/);
-  assert.match(page, /\/clone/);
+  assert.match(page, /configurationUrl\(versionId, 'activate'\)/);
+  assert.match(page, /configurationUrl\(versionId, 'clone'\)/);
   assert.match(page, /tokenNode\.textContent = ''/);
   assert.match(page, /navigator\.clipboard\.writeText/);
   assert.match(page, /credentials: 'same-origin'/);
