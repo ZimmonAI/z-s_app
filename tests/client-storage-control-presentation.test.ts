@@ -124,8 +124,8 @@ test('workspace exposes draft, token lifecycle, confirmation, and reveal-once co
   assert.match(page, /Open editor/);
   assert.match(page, /Create integration token/);
   assert.match(page, /name="scope" value="object:write"/);
-  assert.match(page, /data-rotate-token="runtime-writer"/);
-  assert.match(page, /data-revoke-token="runtime-writer"/);
+  assert.match(page, /data-rotate-token-id="runtime-writer"/);
+  assert.match(page, /data-revoke-token-id="runtime-writer"/);
   assert.match(page, /id="client-storage-token-reveal"/);
   assert.match(page, /Token ID and bearer token are different/);
   assert.match(page, /data-token-acknowledgement/);
@@ -148,6 +148,7 @@ test('draft editor provides normal controls for vaults, routes, ordered targets,
   assert.match(page, /Move up/);
   assert.match(page, /Save and validate/);
   assert.doesNotMatch(page, /hand-written JSON|Paste JSON/i);
+  assert.doesNotMatch(page, /secretReferenceId|vault:z-s:r2-video-maker/);
 });
 
 test('immutable version is read-only and cloneable', async () => {
