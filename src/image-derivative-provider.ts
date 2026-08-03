@@ -72,7 +72,15 @@ export class ConfiguredImageDerivativeSourceReader implements ImageDerivativeSou
 
 function providerError(error: unknown): ImageDerivativeError {
   if (error instanceof ProviderExecutionError) {
-    return new ImageDerivativeError(error.category, error.code, error.retryable);
+    const category =
+      error.category === 'invalid-request' ||
+      error.category === 'duplicate-conflict' ||
+      error.category === 'not-ready' ||
+      error.category === 'dependency-unavailable' ||
+      error.category === 'internal'
+        ? error.category
+        : 'dependency-unavailable';
+    return new ImageDerivativeError(category, error.code, error.retryable);
   }
   return new ImageDerivativeError(
     'dependency-unavailable',
