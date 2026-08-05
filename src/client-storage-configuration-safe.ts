@@ -42,6 +42,10 @@ export function publicConfigurationVersion(
   });
 }
 
+function authorityMismatch(): never {
+  throw new ClientStorageConfigurationError(400, 'provider-connection-authority-mismatch');
+}
+
 function preserveConnectionAuthority(
   current: Readonly<ConfigurationVersionSnapshot>,
   input: Readonly<ConfigurationDraftDocument>,
@@ -50,21 +54,32 @@ function preserveConnectionAuthority(
     connection.connectionId,
     connection,
   ]));
+  const submittedIds = input.providerConnections.map((connection) => connection.connectionId);
+  if (
+    existing.size !== current.providerConnections.length ||
+    submittedIds.length !== current.providerConnections.length ||
+    new Set(submittedIds).size !== submittedIds.length
+  ) {
+    return authorityMismatch();
+  }
+  for (const connection of input.providerConnections) {
+    const authority = existing.get(connection.connectionId);
+    if (
+      authority === undefined ||
+      connection.secretReferenceId.trim() !== '' ||
+      connection.displayLabel !== authority.displayLabel ||
+      connection.providerType !== authority.providerType
+    ) {
+      return authorityMismatch();
+    }
+  }
   return Object.freeze({
     ...input,
-    providerConnections: Object.freeze(input.providerConnections.map((connection) => {
-      const authority = existing.get(connection.connectionId);
-      if (connection.secretReferenceId.trim() !== '') return connection;
-      if (authority === undefined) return connection;
-      return Object.freeze({
+    providerConnections: Object.freeze(current.providerConnections.map((connection) =>
+      Object.freeze({
         ...connection,
-        secretReferenceId: authority.secretReferenceId,
-        safeMetadata: Object.freeze({
-          ...(authority.safeMetadata ?? {}),
-          ...(connection.safeMetadata ?? {}),
-        }),
-      });
-    })),
+        safeMetadata: Object.freeze({ ...(connection.safeMetadata ?? {}) }),
+      }))),
   });
 }
 
