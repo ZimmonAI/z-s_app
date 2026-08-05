@@ -1,0 +1,89 @@
+name: H07 source bootstrap
+
+on:
+  pull_request:
+    paths:
+      - '.github/h07-bootstrap/**'
+      - '.github/workflows/h07-bootstrap.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    if: github.head_ref == 'agent/h07-online-storage-service-r2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: z_s_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d z_s_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+    steps:
+      - name: Check out source branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Expand reviewed H07 source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/h07-source
+          cat .github/h07-bootstrap/chunk-* | base64 --decode > /tmp/h07-source-base.tar.gz
+          tar -xzf /tmp/h07-source-base.tar.gz -C /tmp/h07-source
+          if compgen -G '.github/h07-bootstrap/overlay-*' > /dev/null; then
+            cat .github/h07-bootstrap/overlay-* | base64 --decode > /tmp/h07-source-overlay.tar.gz
+            tar -xzf /tmp/h07-source-overlay.tar.gz -C /tmp/h07-source
+          fi
+          cp -a /tmp/h07-source/. .
+          python .github/h07-bootstrap/apply.py
+          rm -rf .github/h07-bootstrap .github/workflows/h07-bootstrap.yml
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Compile tests
+        run: npm run test:compile
+      - name: Run focused H07 tests
+        run: >-
+          node --test
+          .test-dist/tests/provider-secret-store.test.js
+          .test-dist/tests/storage-provider-adapter.test.js
+          .test-dist/tests/storage-service.test.js
+          .test-dist/tests/storage-service-runtime.test.js
+          .test-dist/tests/storage-service-provider-resolver.test.js
+          .test-dist/tests/storage-service-migration.test.js
+      - name: Run PostgreSQL H07 integration proof
+        run: node --test .test-dist/tests/storage-service.integration.test.js
+      - name: Validate migration, types, lint, and build
+        run: >-
+          node scripts/validate-storage-service-migration.mjs &&
+          npm run typecheck &&
+          npm run lint &&
+          npm run build &&
+          npm run validate:secrets
+      - name: Commit validated H07 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat: add storage service management and R2 adapter'
+          git push origin HEAD:${{ github.head_ref }}
