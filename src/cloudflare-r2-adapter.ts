@@ -10,6 +10,7 @@ import {
   StorageProviderAdapterError,
   type StorageProviderAdapter,
   type StorageProviderManifest,
+  type StorageProviderSetupWorkflow,
   type StorageProviderTestInput,
   type StorageProviderTestResult,
 } from './storage-provider-adapter.js';
@@ -37,6 +38,9 @@ const MANIFEST: StorageProviderManifest = Object.freeze({
   displayName: 'Cloudflare R2',
   protocolFamily: 's3-compatible-object-storage',
   adapterStatus: 'accepted',
+  supportsClientOwned: true,
+  supportsManaged: true,
+  supportsS3Compatibility: true,
   setupFields: Object.freeze([
     { name: 'accountId', label: 'Account ID', secret: true, required: true, maximumLength: 64 },
     { name: 'accessKeyId', label: 'Access key ID', secret: true, required: true, maximumLength: 128 },
@@ -104,6 +108,54 @@ export class CloudflareR2Adapter implements StorageProviderAdapter {
 
   getProviderManifest(): Readonly<StorageProviderManifest> {
     return MANIFEST;
+  }
+
+  createSetupWorkflow(): Readonly<StorageProviderSetupWorkflow> {
+    return Object.freeze({
+      providerType: MANIFEST.providerType,
+      steps: Object.freeze([
+        Object.freeze({ id: 'metadata', label: 'Service details', secretInput: false }),
+        Object.freeze({ id: 'credentials', label: 'Write-only R2 credentials', secretInput: true }),
+        Object.freeze({ id: 'connection-test', label: 'Bounded connection test', secretInput: false }),
+      ]),
+    });
+  }
+
+  validateSetupInput(
+    step: string,
+    input: Readonly<Record<string, unknown>>,
+  ): Readonly<Record<string, unknown>> {
+    if (step === 'metadata') return this.validateSafeSetupMetadata(input);
+    if (step === 'credentials') {
+      return this.validateSecretInput(Object.fromEntries(
+        Object.entries(input).filter((entry): entry is [string, string] =>
+          typeof entry[1] === 'string'),
+      ));
+    }
+    if (step === 'connection-test') return Object.freeze({});
+    throw new StorageProviderAdapterError(400, 'invalid-r2-setup-step');
+  }
+
+  buildProviderConfig(
+    service: Readonly<Record<string, string>>,
+  ): Readonly<ResolvedS3CredentialBinding> {
+    return this.resolveRuntimeBinding(service);
+  }
+
+  describeCapabilities(): StorageProviderManifest['capabilities'] {
+    return MANIFEST.capabilities;
+  }
+
+  classifyProviderError(error: unknown): Readonly<{
+    diagnosticCode: string;
+    retryable: boolean;
+  }> {
+    const diagnosticCode = this.normalizeProviderError(error);
+    return Object.freeze({
+      diagnosticCode,
+      retryable: diagnosticCode === 'r2-provider-temporarily-unavailable' ||
+        diagnosticCode === 'r2-connection-test-failed',
+    });
   }
 
   validateSafeSetupMetadata(
@@ -203,7 +255,7 @@ export class CloudflareR2Adapter implements StorageProviderAdapter {
       connected = result.ContentLength === 1;
       if (!connected) diagnosticCode = 'r2-connection-test-verification-failed';
     } catch (error) {
-      diagnosticCode = this.normalizeProviderError(error);
+      diagnosticCode = this.classifyProviderError(error).diagnosticCode;
     } finally {
       try {
         await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
