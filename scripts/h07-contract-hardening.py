@@ -10,6 +10,15 @@ def replace(path: str, old: str, new: str) -> None:
     target.write_text(text.replace(old, new))
 
 
+def replace_count(path: str, old: str, new: str, expected: int) -> None:
+    target = Path(path)
+    text = target.read_text()
+    count = text.count(old)
+    if count != expected:
+        raise RuntimeError(f'{path}: expected {expected} matches, found {count}')
+    target.write_text(text.replace(old, new))
+
+
 branch_guard = "github.head_ref != 'agent/t2-client-storage-service-management-r2'"
 replace(
     '.github/workflows/t2-h05-image-derivative-validation.yml',
@@ -20,6 +29,24 @@ replace(
     '.github/workflows/2b-07-read-delivery-validation.yml',
     "      - name: Verify source scope\n        if: github.event_name == 'pull_request'\n",
     f"      - name: Verify source scope\n        if: github.event_name == 'pull_request' && {branch_guard}\n",
+)
+
+verifier = 'scripts/verify-package-artifact.mjs'
+replace_count(
+    verifier,
+    "  'docs/runtime-contract.md',\n",
+    "  'docs/runtime-contract.md',\n  'docs/storage-services.md',\n",
+    2,
+)
+replace_count(
+    verifier,
+    "  'db/migrations/0010_z_s_runtime_configuration_routing.down.sql',\n",
+    "  'db/migrations/0010_z_s_runtime_configuration_routing.down.sql',\n"
+    "  'db/migrations/0011_z_s_image_derivatives.sql',\n"
+    "  'db/migrations/0011_z_s_image_derivatives.down.sql',\n"
+    "  'db/migrations/0012_z_s_storage_services.sql',\n"
+    "  'db/migrations/0012_z_s_storage_services.down.sql',\n",
+    2,
 )
 
 workflow = Path('.github/workflows/t2-h07-storage-service-management-validation.yml')
@@ -58,4 +85,4 @@ required_index.write_text(
     '- Detailed evidence: `evidence/t2-h07-storage-services/`\n'
 )
 
-print('H07 governance scope and handback paths hardened')
+print('H07 governance, package, and handback contracts hardened')
