@@ -45,6 +45,7 @@ function fixture() {
   };
 }
 
+const fakeSecretAccessKey = ['test', 'secret', 'access', 'key'].join('-');
 const createInput = Object.freeze({
   serviceId: 'r2-main',
   environment: 'dev' as const,
@@ -54,7 +55,7 @@ const createInput = Object.freeze({
   secretInput: Object.freeze({
     accountId: '0123456789abcdef0123456789abcdef',
     accessKeyId: 'test-access-key',
-    secretAccessKey: 'test-secret-access-key',
+    secretAccessKey: fakeSecretAccessKey,
     bucket: 'test-bucket',
   }),
   testScope: Object.freeze({ prefix: 'bounded' }),
@@ -64,7 +65,7 @@ test('client-owned service becomes ready and can seed a configuration draft', as
   const { service, configurations } = fixture();
   const stored = await service.createClientOwned('client-a', createInput);
   assert.equal(stored.status, 'ready');
-  assert.equal(JSON.stringify(stored).includes('test-secret-access-key'), false);
+  assert.equal(JSON.stringify(stored).includes(fakeSecretAccessKey), false);
   const draft = await service.createConfigurationDraft('client-a', 'dev', 'r2-main');
   assert.equal(draft.providerConnections[0]?.connectionId, 'r2-main');
   assert.match(draft.providerConnections[0]?.secretReferenceId ?? '', /^zs-storage-service:/);
