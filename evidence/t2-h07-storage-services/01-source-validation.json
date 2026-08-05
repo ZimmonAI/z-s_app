@@ -1,19 +1,32 @@
 {
   "task": "t2-h07-online-storage-service-management-r2",
   "branch": "agent/t2-client-storage-service-management-r2",
+  "pullRequest": 32,
   "branchPoint": "3893514679003ea464958c1865624dcdb66cdd92",
+  "validatedWorkflowRun": 30993307211,
   "checks": {
-    "typescriptSyntax": "passed",
-    "strictContractCompile": "passed-with-repository-interface-stubs",
-    "migrationContract": "passed",
-    "whitespaceAndFinalNewline": "passed",
-    "focusedUnitTests": "8-passed-local-stubbed-aws"
+    "dependencyInstall": "passed",
+    "focusedStorageServiceTests": "passed",
+    "credentialResolverIsolationTest": "passed",
+    "typescriptTestCompile": "passed",
+    "strictTypecheck": "passed",
+    "lint": "passed",
+    "secretScan": "passed",
+    "fullPostgresqlBackedTestSuite": "passed-serial-schema-isolation",
+    "migrationContract": "passed"
+  },
+  "runtimeWiring": {
+    "managedCredentialResolver": "preserved",
+    "clientOwnedEncryptedResolver": "enabled",
+    "imageDerivativePath": "enabled",
+    "mainIngestAndReadPath": "enabled",
+    "clientEnvironmentScope": "enforced-by-scoped-resolution-contract"
   },
   "notExecuted": [
-    "live-postgresql-migration",
+    "live-postgresql-migration-or-rollback-rehearsal",
     "real-cloudflare-r2-connection-test",
-    "deployed-browser-verification",
-    "full-repository-npm-validation"
+    "deployed-browser-accessibility-verification",
+    "production-deployment-or-approval"
   ],
   "containsSecrets": false
 }
