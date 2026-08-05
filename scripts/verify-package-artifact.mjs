@@ -24,6 +24,7 @@ const EXPECTED_PACKAGE_FILES = [
   'dist',
   'README.md',
   'docs/runtime-contract.md',
+  'docs/storage-services.md',
   'db/migrations/0002_z_s_runtime_registry.sql',
   'db/migrations/0002_z_s_runtime_registry.down.sql',
   'db/migrations/0003_z_s_read_delivery.sql',
@@ -42,10 +43,15 @@ const EXPECTED_PACKAGE_FILES = [
   'db/migrations/0009_z_s_configuration_child_fk_deferral.down.sql',
   'db/migrations/0010_z_s_runtime_configuration_routing.sql',
   'db/migrations/0010_z_s_runtime_configuration_routing.down.sql',
+  'db/migrations/0011_z_s_image_derivatives.sql',
+  'db/migrations/0011_z_s_image_derivatives.down.sql',
+  'db/migrations/0012_z_s_storage_services.sql',
+  'db/migrations/0012_z_s_storage_services.down.sql',
 ];
 const EXPECTED_STATIC_ARTIFACT_FILES = [
   'README.md',
   'docs/runtime-contract.md',
+  'docs/storage-services.md',
   'package.json',
   'db/migrations/0002_z_s_runtime_registry.sql',
   'db/migrations/0002_z_s_runtime_registry.down.sql',
@@ -65,6 +71,10 @@ const EXPECTED_STATIC_ARTIFACT_FILES = [
   'db/migrations/0009_z_s_configuration_child_fk_deferral.down.sql',
   'db/migrations/0010_z_s_runtime_configuration_routing.sql',
   'db/migrations/0010_z_s_runtime_configuration_routing.down.sql',
+  'db/migrations/0011_z_s_image_derivatives.sql',
+  'db/migrations/0011_z_s_image_derivatives.down.sql',
+  'db/migrations/0012_z_s_storage_services.sql',
+  'db/migrations/0012_z_s_storage_services.down.sql',
 ];
 
 async function sourceModuleNames(directory, prefix = '') {
