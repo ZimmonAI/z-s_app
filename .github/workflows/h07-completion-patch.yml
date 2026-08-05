@@ -1,9 +1,7 @@
 name: H07 completion patch
 
 on:
-  push:
-    branches:
-      - agent/t2-client-storage-service-management-r2
+  pull_request:
     paths:
       - '.github/h07-fix/**'
       - '.github/workflows/h07-completion-patch.yml'
@@ -13,6 +11,7 @@ permissions:
 
 jobs:
   apply:
+    if: github.head_ref == 'agent/t2-client-storage-service-management-r2'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     services:
@@ -62,4 +61,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'fix: complete H07 runtime and validation wiring'
+          git pull --rebase origin agent/t2-client-storage-service-management-r2
           git push origin HEAD:agent/t2-client-storage-service-management-r2
