@@ -66,7 +66,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'push' && 'agent/t2-client-storage-service-management-r2' || github.event.pull_request.head.sha }}
       - name: Apply checked H07 contract transformations
-        if: github.event_name == 'push' && hashFiles('scripts/h07-contract-hardening.py') != ''
+        if: hashFiles('scripts/h07-contract-hardening.py') != ''
         run: python scripts/h07-contract-hardening.py
       - name: Use Node.js 22
         uses: actions/setup-node@v4
@@ -130,7 +130,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Publish validated contract transformations
-        if: github.event_name == 'push' && hashFiles('scripts/h07-contract-hardening.py') != ''
+        if: hashFiles('scripts/h07-contract-hardening.py') != ''
         shell: bash
         run: |
           set -euo pipefail
