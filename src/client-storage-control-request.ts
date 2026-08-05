@@ -13,6 +13,8 @@ import {
 } from './client-storage-configuration.js';
 import { ControlPlaneUiError } from './control-plane-ui-request.js';
 
+const PROVIDER_CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -46,7 +48,7 @@ export function clientStorageEnvironmentFromUrl(url: URL): ClientStorageEnvironm
   return clientStorageEnvironment(url.searchParams.get('environment') ?? 'dev');
 }
 
-function providerConnection(value: unknown): ProviderConnectionInput {
+function providerConnectionWithAuthority(value: unknown): ProviderConnectionInput {
   if (!isRecord(value)) throw new ControlPlaneUiError(400, 'invalid-provider-connection');
   const providerType = stringValue(value.providerType, 'invalid-provider-type');
   if (!['minio', 'r2', 's3-compatible'].includes(providerType)) {
@@ -62,6 +64,33 @@ function providerConnection(value: unknown): ProviderConnectionInput {
     providerType: providerType as ProviderConnectionInput['providerType'],
     secretReferenceId: stringValue(value.secretReferenceId, 'invalid-secret-reference-id'),
     ...(safeMetadata === undefined ? {} : { safeMetadata }),
+  });
+}
+
+function browserProviderConnection(value: unknown): ProviderConnectionInput {
+  if (!isRecord(value)) throw new ControlPlaneUiError(400, 'invalid-provider-connection');
+  const connectionId = stringValue(value.connectionId, 'invalid-provider-connection-id');
+  if (!PROVIDER_CONNECTION_ID_PATTERN.test(connectionId)) {
+    throw new ControlPlaneUiError(400, 'invalid-provider-connection-id');
+  }
+  const providerType = stringValue(value.providerType, 'invalid-provider-type');
+  if (!['minio', 'r2', 's3-compatible'].includes(providerType)) {
+    throw new ControlPlaneUiError(400, 'invalid-provider-type');
+  }
+  if (
+    value.secretReferenceId !== undefined &&
+    value.secretReferenceId !== ''
+  ) {
+    throw new ControlPlaneUiError(400, 'provider-connection-authority-mismatch');
+  }
+  if (value.safeMetadata !== undefined && !isRecord(value.safeMetadata)) {
+    throw new ControlPlaneUiError(400, 'invalid-safe-metadata');
+  }
+  return Object.freeze({
+    connectionId,
+    displayLabel: stringValue(value.displayLabel, 'invalid-provider-connection-label'),
+    providerType: providerType as ProviderConnectionInput['providerType'],
+    secretReferenceId: '',
   });
 }
 
@@ -155,14 +184,15 @@ function imagePreset(value: unknown): ConfigurationImagePresetInput {
   });
 }
 
-export function configurationDocumentFromPayload(
+function configurationDocument(
   payload: unknown,
+  parseProviderConnection: (value: unknown) => ProviderConnectionInput,
 ): Readonly<ConfigurationDraftDocument> {
   if (!isRecord(payload)) throw new ControlPlaneUiError(400, 'invalid-configuration-document');
   return Object.freeze({
     providerConnections: Object.freeze(
       arrayValue(payload.providerConnections, 'invalid-provider-connections')
-        .map(providerConnection),
+        .map(parseProviderConnection),
     ),
     vaults: Object.freeze(
       arrayValue(payload.vaults, 'invalid-configuration-vaults')
@@ -179,13 +209,19 @@ export function configurationDocumentFromPayload(
   });
 }
 
+export function configurationDocumentFromPayload(
+  payload: unknown,
+): Readonly<ConfigurationDraftDocument> {
+  return configurationDocument(payload, browserProviderConnection);
+}
+
 export function createConfigurationDraftFromPayload(
   payload: unknown,
 ): Readonly<CreateConfigurationDraftInput> {
   if (!isRecord(payload)) throw new ControlPlaneUiError(400, 'invalid-configuration-document');
   return Object.freeze({
     environment: clientStorageEnvironment(payload.environment),
-    ...configurationDocumentFromPayload(payload),
+    ...configurationDocument(payload, providerConnectionWithAuthority),
   });
 }
 
