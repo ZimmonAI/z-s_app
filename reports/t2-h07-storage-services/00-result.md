@@ -2,26 +2,38 @@
 
 ## Result
 
-Source implementation completed on the dedicated H07 branch. No live database migration, provider credential, remote R2 operation, or deployed browser verification was performed in this source-only handoff.
+Source implementation is complete on `agent/t2-client-storage-service-management-r2`, based on exact main revision `3893514679003ea464958c1865624dcdb66cdd92`, and is published in draft pull request #32.
+
+No live database migration, real provider credential, remote Cloudflare R2 operation, deployment, production approval, or deployed browser verification was performed in this source-only handoff.
 
 ## Implemented
 
-- Provider-neutral service lifecycle with `draft`, `awaiting-secret`, `testing`, `ready`, `failed`, `disabled`, and `archived` states.
-- Managed and client-owned ownership model.
-- AES-256-GCM provider secret store with random nonce, key version, and client/environment/service/provider AAD.
-- Ciphertext-only PostgreSQL persistence and replace/revoke lifecycle.
-- Cloudflare R2 manifest, runtime binding, bounded write/head/cleanup test, capability manifest, and safe diagnostics.
-- Client-scoped dashboard, new-service flow, detail, setup, workflow, activity, dependency visibility, and safe lifecycle actions.
-- Ready-service configuration draft creation and activation-time readiness/capability gate.
-- Safe configuration facade that removes internal secret references from public results while preserving server-owned authority during draft saves.
-- Additive migration `0012` and guarded down migration.
-- Focused unit and source-contract tests plus H07 CI workflow.
+- Provider-neutral storage-service lifecycle including draft, secret onboarding, bounded testing, ready, failure, disabled, archived, dependency-blocked, and awaiting-adapter behavior.
+- Explicit `z-s-managed` and `client-owned` ownership with separate credential authorities.
+- AES-256-GCM provider-secret storage with random per-record nonce, key version, and client/environment/service/provider associated data.
+- Ciphertext-only PostgreSQL persistence with replacement and revocation; no reveal contract.
+- Cloudflare R2 adapter manifest, setup workflow, runtime binding, capability declaration, bounded write/head/delete connection test, cleanup, and safe error classification.
+- Client-scoped dashboard, onboarding, detail, setup, workflow, activity, usage/dependency visibility, and safe lifecycle actions.
+- Safe configuration facade that removes internal secret references from browser and public API results.
+- Ready-service configuration draft creation and activation-time readiness/capability enforcement.
+- Unified credential resolver used by image derivatives and the main ingest/read runtime composition, while preserving the existing deployment-managed binding path.
+- Scoped credential-resolution contract for client/environment isolation.
+- Additive migration `0012_z_s_storage_services` and guarded rollback.
+- Exact H08 live-verification procedure under `evidence/t2-h07-storage-services/03-h08-execution-procedure.md`.
 
-## Source validation performed
+## Verified source checks
 
-- TypeScript syntax validation for all new and modified source files.
-- Strict semantic validation of the new modules and focused tests against contract stubs matching the accepted repository interfaces.
-- Migration contract validator executed locally.
-- Whitespace/final-newline checks executed locally.
+GitHub Actions run `30993307211` completed successfully and proved:
 
-Full repository `npm install`, PostgreSQL integration, full test suite, production build, package smoke, deployed browser verification, and real Cloudflare R2 verification remain H08 execution work.
+- clean dependency installation;
+- focused storage-service and resolver tests;
+- strict TypeScript test compilation and typecheck;
+- lint and repository secret scanning;
+- the complete test suite with PostgreSQL-backed tests executed serially to preserve schema isolation;
+- successful commit of the validated runtime wiring.
+
+Migration contract validation, package/build/readiness checks, and the dedicated H07 workflow remain represented in the normal pull-request workflow set. Runs marked `action_required` after the bot-authored validation commit require repository UI approval rather than source correction.
+
+## H08 boundary
+
+H08 must still apply/rehearse the live migration, use authorized real R2 credentials within a task-owned prefix, verify browser accessibility and deployed routes, prove live configuration linking and runtime delivery, clean provider test objects and task rows, and record the deployed revision. Production approval remains outside H07.
