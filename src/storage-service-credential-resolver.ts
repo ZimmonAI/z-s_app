@@ -12,6 +12,7 @@ const STORAGE_SERVICE_REFERENCE_PREFIX = 'zs-storage-service:';
 
 export class StorageServiceProviderCredentialResolver
 implements ProviderCredentialResolver {
+  readonly configured: boolean;
   readonly #services: StorageServiceRepository;
   readonly #secrets: ProviderSecretStore;
   readonly #adapters: StorageProviderAdapterRegistry;
@@ -23,6 +24,10 @@ implements ProviderCredentialResolver {
     adapters: StorageProviderAdapterRegistry;
     managedResolver: ProviderCredentialResolver;
   }>) {
+    const managedConfigured = (options.managedResolver as {
+      readonly configured?: unknown;
+    }).configured;
+    this.configured = options.secrets.configured || managedConfigured === true;
     this.#services = options.services;
     this.#secrets = options.secrets;
     this.#adapters = options.adapters;

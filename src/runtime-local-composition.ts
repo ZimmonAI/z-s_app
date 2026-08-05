@@ -429,6 +429,13 @@ export function createRuntimeProviderCredentialResolver(
   });
 }
 
+function providerCredentialResolverConfigured(
+  resolver: ProviderCredentialResolver,
+): boolean {
+  const configured = (resolver as { readonly configured?: unknown }).configured;
+  return configured === undefined || configured === true;
+}
+
 function validSigningKey(value: string | undefined): value is string {
   return value !== undefined && value.length >= 16;
 }
@@ -941,12 +948,12 @@ function rejectUnexpectedWriteDispatch(): never {
 
 export function createVideoMakerRuntimeComposition(
   environment: NodeJS.ProcessEnv = process.env,
+  credentialResolverOverride?: ProviderCredentialResolver,
 ): VideoMakerRuntimeComposition {
   const configuration = readConfiguration(environment);
   const pool = createPool(configuration);
-  const credentialResolver = createRuntimeProviderCredentialResolver(
-    configuration.providerCredentialBindingsJson,
-  );
+  const credentialResolver = credentialResolverOverride ??
+    createRuntimeProviderCredentialResolver(configuration.providerCredentialBindingsJson);
   const legacyAuthority = new DevelopmentAuthorityResolver({
     pool,
     maximumObjectByteLength: configuration.maximumObjectByteLength,
@@ -1018,7 +1025,7 @@ export function createVideoMakerRuntimeComposition(
           true,
         );
       }
-      if (!credentialResolver.configured) {
+      if (!providerCredentialResolverConfigured(credentialResolver)) {
         throw new RuntimeCompositionError(
           'dependency-unavailable',
           'provider-credential-binding-unavailable',

@@ -51,8 +51,11 @@ function controlRuntime(
 export function createVideoMakerControlRuntimeComposition(
   environment: NodeJS.ProcessEnv = process.env,
 ): VideoMakerRuntimeComposition {
-  const composition = createVideoMakerRuntimeComposition(environment);
   const clientControl = createClientControlComposition(environment);
+  const composition = createVideoMakerRuntimeComposition(
+    environment,
+    clientControl.credentialResolver,
+  );
   return Object.freeze({
     runtime: controlRuntime(
       composition.runtime,

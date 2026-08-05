@@ -30,7 +30,10 @@ import {
 import { PostgresProviderSecretEnvelopeRepository } from './provider-secret-store-postgres.js';
 import { createRuntimeProviderCredentialResolver } from './runtime-local-composition.js';
 import { S3CompatibleProviderObjectReader } from './runtime-read-delivery.js';
-import { S3CompatibleProviderObjectWriter } from './runtime-s3-provider.js';
+import {
+  type ProviderCredentialResolver,
+  S3CompatibleProviderObjectWriter,
+} from './runtime-s3-provider.js';
 import type {
   PostgresPoolLike,
   PostgresQueryable,
@@ -44,6 +47,7 @@ export interface ClientControlComposition {
   readonly authenticator: ClientCredentialAuthenticator;
   readonly configurationStore: ClientStorageConfigurationStore;
   readonly storageService: StorageServiceApplicationService | null;
+  readonly credentialResolver: ProviderCredentialResolver;
   readonly imageDerivativeStore: ImageDerivativeStore;
   readonly imageDerivativeWorker: BoundedImageDerivativeWorker | null;
   close(): Promise<void>;
@@ -70,12 +74,16 @@ function boundedInteger(
 export function createClientControlComposition(
   environment: NodeJS.ProcessEnv,
 ): ClientControlComposition {
+  const managedCredentialResolver = createRuntimeProviderCredentialResolver(
+    optionalString(environment.Z_S_PROVIDER_CREDENTIAL_BINDINGS_JSON),
+  );
   const postgresUrl = optionalString(environment.Z_S_POSTGRES_URL);
   if (postgresUrl === undefined) {
     return Object.freeze({
       authenticator: createUnavailableClientCredentialAuthenticator(),
       configurationStore: createUnavailableClientStorageConfigurationStore(),
       storageService: null,
+      credentialResolver: managedCredentialResolver,
       imageDerivativeStore: createUnavailableImageDerivativeStore(),
       imageDerivativeWorker: null,
       async close(): Promise<void> {},
@@ -133,9 +141,6 @@ export function createClientControlComposition(
         ),
     },
   );
-  const managedCredentialResolver = createRuntimeProviderCredentialResolver(
-    optionalString(environment.Z_S_PROVIDER_CREDENTIAL_BINDINGS_JSON),
-  );
   const credentialResolver = new StorageServiceProviderCredentialResolver({
     services: storageServiceRepository,
     secrets: secretStore,
@@ -176,6 +181,7 @@ export function createClientControlComposition(
     authenticator: new PostgresStorageControlClientCredentialAuthenticator(queryable),
     configurationStore,
     storageService,
+    credentialResolver,
     imageDerivativeStore,
     imageDerivativeWorker,
     close: async () => {
