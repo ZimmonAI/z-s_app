@@ -8,7 +8,9 @@ async function replace(path, before, after) {
 
 const packagePath = 'package.json';
 const packageJson = JSON.parse(await readFile(packagePath, 'utf8'));
-packageJson.scripts['test:storage-services'] = `${packageJson.scripts['test:storage-services']} .test-dist/tests/storage-service-credential-resolver.test.js`;
+if (!packageJson.scripts['test:storage-services'].includes('storage-service-credential-resolver.test.js')) {
+  packageJson.scripts['test:storage-services'] = `${packageJson.scripts['test:storage-services']} .test-dist/tests/storage-service-credential-resolver.test.js`;
+}
 packageJson.scripts.test = 'npm run test:compile && node --test --test-concurrency=1 .test-dist/tests/*.test.js';
 await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8');
 
@@ -80,20 +82,3 @@ await replace(
   `    this.#services = options.services;\n    this.#secrets = options.secrets;`,
   `    const managedConfigured = (options.managedResolver as {\n      readonly configured?: unknown;\n    }).configured;\n    this.configured = options.secrets.configured || managedConfigured === true;\n    this.#services = options.services;\n    this.#secrets = options.secrets;`,
 );
-
-const h07Scope = "|src/(client-storage-configuration-safe|cloudflare-r2-adapter|provider-secret-store(-postgres)?|storage-provider-adapter|storage-service(-[a-z-]+)?)\\.ts|tests/(client-storage-configuration-safe|cloudflare-r2-adapter|provider-secret-store|storage-service(-credential-resolver|-presentation|-migration)?)\\.test\\.ts|scripts/validate-storage-service-migration\\.mjs|db/migrations/0012_z_s_storage_services(\\.down)?\\.sql|docs/storage-services\\.md|reports/t2-h07-storage-services/[^/]+\\.md|evidence/t2-h07-storage-services/.+|\\.github/workflows/t2-h07-storage-service-management-validation\\.yml";
-for (const path of [
-  '.github/workflows/2b-05-write-intent-ingest-validation.yml',
-  '.github/workflows/2b-06-dual-provider-media-validation.yml',
-  '.github/workflows/2b-07-read-delivery-validation.yml',
-  '.github/workflows/t2-h05-image-derivative-validation.yml',
-]) {
-  const content = await readFile(path, 'utf8');
-  const lines = content.split('\n');
-  const index = lines.findIndex((line) => line.includes("allowed='^(") && line.endsWith(")$'"));
-  if (index < 0) throw new Error(`missing scope allowlist: ${path}`);
-  lines[index] = lines[index].replace(")$'", `${h07Scope})$'`);
-  await writeFile(path, lines.join('\n'), 'utf8');
-}
-
-// Trigger the completion workflow after its definition exists on the branch.
