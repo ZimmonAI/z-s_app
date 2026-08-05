@@ -4,7 +4,7 @@ import test from 'node:test';
 
 test('0012 migration creates ciphertext-only service persistence and dependency linkage', async () => {
   const migration = await readFile(
-    new URL('../db/migrations/0012_z_s_storage_services.sql', import.meta.url),
+    new URL('../../db/migrations/0012_z_s_storage_services.sql', import.meta.url),
     'utf8',
   );
   assert.match(migration, /storage_control_storage_services/);
