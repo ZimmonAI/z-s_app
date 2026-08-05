@@ -535,9 +535,83 @@ BEFORE INSERT OR UPDATE ON public.storage_image_derivative_outputs
 FOR EACH ROW EXECUTE FUNCTION public.z_s_image_derivative_output_guard();
 
 COMMENT ON TABLE public.storage_image_derivative_jobs IS
-  'Bounded image-only derivative work with immutable source configuration and preset snapshots for T2 H05.';
+  'Bounded image-only derivative work with immutable source configuration and preset snapshots for T2 H05. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/05-online-image-derivative-coding.md';
 COMMENT ON TABLE public.storage_image_derivative_outputs IS
-  'Verified one-to-one lineage from a T2 H05 derivative job to a separate normal storage object.';
+  'Verified one-to-one lineage from a T2 H05 derivative job to a separate normal storage object. Ref: z-kn/08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/05-online-image-derivative-coding.md';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.image_derivative_job_id IS
+  'Primary derivative job identity.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.source_storage_object_id IS
+  'Verified source image object that owns derivative generation.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.storage_control_client_id IS
+  'Client that owns the source object and immutable configuration snapshot.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.environment IS
+  'Configuration environment captured when the source object completed.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.configuration_version_id IS
+  'Immutable configuration version used for derivative authority.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.configuration_fingerprint IS
+  'SHA-256 fingerprint of the immutable configuration authority.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.configuration_route_id IS
+  'Image route selected by the source object configuration.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.configuration_image_preset_id IS
+  'Image preset row selected by the image route.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.preset_id IS
+  'Safe client-facing preset identifier copied from the image preset.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.target_configuration_vault_id IS
+  'Configuration vault that receives the derivative output object.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.requested_width IS
+  'Requested derivative output width in pixels.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.output_format IS
+  'Configured derivative output media format.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.quality IS
+  'Configured derivative encoder quality value.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.fit_mode IS
+  'Configured resize fit mode for the derivative.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.state IS
+  'Derivative job lifecycle state.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.attempt_count IS
+  'Number of processing attempts already started.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.maximum_attempts IS
+  'Maximum processing attempts allowed for this job.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.next_retry_at IS
+  'Next eligible retry time after a retryable failure.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.lease_owner IS
+  'Worker identity that currently owns the processing lease.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.lease_token IS
+  'Opaque processing lease token for guarded worker updates.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.lease_expires_at IS
+  'Time when the current processing lease expires.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.safe_diagnostic_category IS
+  'Safe failure category exposed without provider-private details.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.safe_diagnostic_code IS
+  'Safe failure code exposed without provider-private details.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.created_at IS
+  'Time when the derivative job row was created.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.started_at IS
+  'Time when the current or final processing attempt started.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.finished_at IS
+  'Time when the derivative job reached a terminal state.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.updated_at IS
+  'Time when the derivative job row was last updated.';
+COMMENT ON COLUMN public.storage_image_derivative_jobs.row_version IS
+  'Monotonic row version for guarded derivative job updates.';
+COMMENT ON COLUMN public.storage_image_derivative_outputs.image_derivative_output_id IS
+  'Primary derivative output lineage identity.';
+COMMENT ON COLUMN public.storage_image_derivative_outputs.image_derivative_job_id IS
+  'Derivative job that produced this output.';
+COMMENT ON COLUMN public.storage_image_derivative_outputs.source_storage_object_id IS
+  'Source image object used for derivative lineage.';
+COMMENT ON COLUMN public.storage_image_derivative_outputs.output_storage_object_id IS
+  'Separate storage object that contains the derivative output.';
+COMMENT ON COLUMN public.storage_image_derivative_outputs.width IS
+  'Verified derivative output width in pixels.';
+COMMENT ON COLUMN public.storage_image_derivative_outputs.output_format IS
+  'Verified derivative output media format.';
+COMMENT ON COLUMN public.storage_image_derivative_outputs.verified_byte_length IS
+  'Verified derivative output byte length.';
+COMMENT ON COLUMN public.storage_image_derivative_outputs.verified_checksum_sha256 IS
+  'Verified derivative output SHA-256 checksum.';
+COMMENT ON COLUMN public.storage_image_derivative_outputs.created_at IS
+  'Time when the derivative output lineage row was created.';
 COMMENT ON COLUMN public.storage_objects.image_derivative_job_id IS
   'T2 H05 job authority for a generated output object; null for source and non-derivative objects.';
 COMMENT ON COLUMN public.storage_object_copies.image_derivative_job_id IS
