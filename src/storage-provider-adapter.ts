@@ -33,10 +33,22 @@ export interface StorageProviderManifest {
   readonly displayName: string;
   readonly protocolFamily: string;
   readonly adapterStatus: 'accepted' | 'planned';
+  readonly supportsClientOwned: boolean;
+  readonly supportsManaged: boolean;
+  readonly supportsS3Compatibility: boolean;
   readonly setupFields: readonly Readonly<ProviderSetupField>[];
   readonly capabilities: StorageServiceCapabilities;
   readonly requiredOperations: readonly string[];
   readonly forbiddenOutputs: readonly string[];
+}
+
+export interface StorageProviderSetupWorkflow {
+  readonly providerType: string;
+  readonly steps: readonly Readonly<{
+    id: string;
+    label: string;
+    secretInput: boolean;
+  }>[];
 }
 
 export interface StorageProviderTestInput {
@@ -56,15 +68,32 @@ export interface StorageProviderTestResult {
 
 export interface StorageProviderAdapter {
   getProviderManifest(): Readonly<StorageProviderManifest>;
+  createSetupWorkflow(
+    input?: Readonly<Record<string, unknown>>,
+  ): Readonly<StorageProviderSetupWorkflow>;
+  validateSetupInput(
+    step: string,
+    input: Readonly<Record<string, unknown>>,
+  ): Readonly<Record<string, unknown>>;
+  testConnection(
+    input: Readonly<StorageProviderTestInput>,
+  ): Promise<Readonly<StorageProviderTestResult>>;
+  buildProviderConfig(
+    service: Readonly<Record<string, string>>,
+  ): Readonly<ResolvedS3CredentialBinding>;
+  describeCapabilities(
+    service?: Readonly<Record<string, unknown>>,
+  ): StorageServiceCapabilities;
+  classifyProviderError(error: unknown): Readonly<{
+    diagnosticCode: string;
+    retryable: boolean;
+  }>;
   validateSafeSetupMetadata(
     safeMetadata: Readonly<Record<string, unknown>>,
   ): Readonly<Record<string, unknown>>;
   validateSecretInput(
     secretInput: Readonly<Record<string, string>>,
   ): Readonly<Record<string, string>>;
-  testConnection(
-    input: Readonly<StorageProviderTestInput>,
-  ): Promise<Readonly<StorageProviderTestResult>>;
   resolveRuntimeBinding(
     credentials: Readonly<Record<string, string>>,
   ): Readonly<ResolvedS3CredentialBinding>;
