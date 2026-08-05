@@ -5,6 +5,7 @@ import type {
   ClientCredentialAuthenticator,
 } from '../src/client-control-auth.js';
 import { InMemoryClientStorageConfigurationStore } from '../src/client-storage-configuration.js';
+import { SafeClientStorageConfigurationStore } from '../src/client-storage-configuration-safe.js';
 import { createControlPlaneUiRuntime } from '../src/control-plane-ui.js';
 import type { HttpStorageRuntime } from '../src/runtime-contract.js';
 
@@ -122,6 +123,18 @@ function documentPayload() {
   };
 }
 
+function browserDocumentPayload() {
+  const payload = documentPayload();
+  return {
+    ...payload,
+    providerConnections: payload.providerConnections.map((connection) => ({
+      connectionId: connection.connectionId,
+      displayLabel: connection.displayLabel,
+      providerType: connection.providerType,
+    })),
+  };
+}
+
 function requestCookie(setCookie: string): string {
   return setCookie.split(';')[0] ?? '';
 }
@@ -177,7 +190,7 @@ function runtime() {
       adminPassword: ADMIN_PASSPHRASE,
       sessionSigningKey: SIGNING_KEY,
       clientCredentialAuthenticator: new FakeClientAuthenticator(),
-      clientStorageConfigurationStore: configurationStore,
+      clientStorageConfigurationStore: new SafeClientStorageConfigurationStore(configurationStore),
       now: () => NOW,
     }),
   };
@@ -219,7 +232,7 @@ test('authenticated client can create, inspect, activate, and clone configuratio
     {
       method: 'PUT',
       headers: { cookie, 'content-type': 'application/json' },
-      body: JSON.stringify(documentPayload()),
+      body: JSON.stringify(browserDocumentPayload()),
     },
   ));
   assert.equal(immutable.status, 409);
