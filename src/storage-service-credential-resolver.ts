@@ -4,6 +4,7 @@ import type { StorageServiceRepository } from './storage-service.js';
 import { StorageServiceError, storageServiceSecretContext } from './storage-service.js';
 import type {
   ProviderCredentialResolver,
+  ProviderCredentialScope,
   ResolvedS3CredentialBinding,
 } from './runtime-s3-provider.js';
 
@@ -30,12 +31,19 @@ implements ProviderCredentialResolver {
 
   async resolve(
     referenceId: string,
+    scope?: Readonly<ProviderCredentialScope>,
   ): Promise<Readonly<ResolvedS3CredentialBinding>> {
     if (!referenceId.startsWith(STORAGE_SERVICE_REFERENCE_PREFIX)) {
-      return this.#managedResolver.resolve(referenceId);
+      return this.#managedResolver.resolve(referenceId, scope);
     }
     const internalId = referenceId.slice(STORAGE_SERVICE_REFERENCE_PREFIX.length);
     const service = await this.#services.readByInternalId(internalId);
+    if (
+      scope !== undefined &&
+      (service.clientId !== scope.clientId || service.environment !== scope.environment)
+    ) {
+      throw new StorageServiceError(404, 'storage-service-reference-scope-mismatch');
+    }
     if (service.status !== 'ready') {
       throw new StorageServiceError(503, 'storage-service-not-ready');
     }
@@ -44,7 +52,7 @@ implements ProviderCredentialResolver {
       if (reference === undefined || reference.length < 1) {
         throw new StorageServiceError(503, 'managed-storage-service-binding-unavailable');
       }
-      return this.#managedResolver.resolve(reference);
+      return this.#managedResolver.resolve(reference, scope);
     }
     const secretId = await this.#services.activeSecretId(
       service.clientId,
