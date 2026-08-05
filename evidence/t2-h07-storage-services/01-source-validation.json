@@ -1,0 +1,19 @@
+{
+  "task": "t2-h07-online-storage-service-management-r2",
+  "branch": "agent/t2-client-storage-service-management-r2",
+  "branchPoint": "3893514679003ea464958c1865624dcdb66cdd92",
+  "checks": {
+    "typescriptSyntax": "passed",
+    "strictContractCompile": "passed-with-repository-interface-stubs",
+    "migrationContract": "passed",
+    "whitespaceAndFinalNewline": "passed",
+    "focusedUnitTests": "8-passed-local-stubbed-aws"
+  },
+  "notExecuted": [
+    "live-postgresql-migration",
+    "real-cloudflare-r2-connection-test",
+    "deployed-browser-verification",
+    "full-repository-npm-validation"
+  ],
+  "containsSecrets": false
+}

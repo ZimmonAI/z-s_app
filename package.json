@@ -46,6 +46,7 @@
     "dist",
     "README.md",
     "docs/runtime-contract.md",
+    "docs/storage-services.md",
     "db/migrations/0002_z_s_runtime_registry.sql",
     "db/migrations/0002_z_s_runtime_registry.down.sql",
     "db/migrations/0003_z_s_read_delivery.sql",
@@ -63,7 +64,11 @@
     "db/migrations/0009_z_s_configuration_child_fk_deferral.sql",
     "db/migrations/0009_z_s_configuration_child_fk_deferral.down.sql",
     "db/migrations/0010_z_s_runtime_configuration_routing.sql",
-    "db/migrations/0010_z_s_runtime_configuration_routing.down.sql"
+    "db/migrations/0010_z_s_runtime_configuration_routing.down.sql",
+    "db/migrations/0011_z_s_image_derivatives.sql",
+    "db/migrations/0011_z_s_image_derivatives.down.sql",
+    "db/migrations/0012_z_s_storage_services.sql",
+    "db/migrations/0012_z_s_storage_services.down.sql"
   ],
   "scripts": {
     "clean": "node scripts/clean.mjs",
@@ -72,6 +77,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:compile": "node scripts/clean-test.mjs && tsc -p tsconfig.test.json",
     "test:focused": "npm run test:compile && node --test .test-dist/tests/control-plane.test.js .test-dist/tests/integrity.test.js .test-dist/tests/runtime-service.test.js .test-dist/tests/runtime-ingest.test.js .test-dist/tests/runtime-dual-provider.test.js .test-dist/tests/runtime-media-verification.test.js .test-dist/tests/runtime-read-grant.test.js .test-dist/tests/runtime-read-delivery.test.js .test-dist/tests/client-storage-configuration.test.js .test-dist/tests/control-plane-client-storage.test.js .test-dist/tests/client-storage-control-presentation.test.js .test-dist/tests/storage-configuration-migration.test.js .test-dist/tests/runtime-integration-token-auth.test.js .test-dist/tests/runtime-active-configuration.test.js .test-dist/tests/runtime-configured-provider.test.js .test-dist/tests/runtime-configured-read-delivery.test.js .test-dist/tests/runtime-configuration-routing-migration.test.js",
+    "test:storage-services": "npm run test:compile && node --test .test-dist/tests/provider-secret-store.test.js .test-dist/tests/cloudflare-r2-adapter.test.js .test-dist/tests/client-storage-configuration-safe.test.js .test-dist/tests/storage-service.test.js .test-dist/tests/storage-service-presentation.test.js .test-dist/tests/storage-service-migration.test.js",
     "test:runtime-boundary": "npm run test:compile && node --test .test-dist/tests/runtime-node-boundary.test.js",
     "test:registry": "npm run test:compile && node --test .test-dist/tests/runtime-storage-registry.integration.test.js && node --test .test-dist/tests/runtime-read-grant.integration.test.js && node --test .test-dist/tests/client-storage-configuration.integration.test.js && node --test .test-dist/tests/client-storage-configuration-cleanup.integration.test.js && node --test .test-dist/tests/runtime-configuration-routing.integration.test.js",
     "test": "npm run test:compile && node --test .test-dist/tests/*.test.js",
@@ -79,14 +85,14 @@
     "start": "npm run local:start",
     "local:start": "npm run build && node --enable-source-maps dist/runtime-main.js",
     "local:readiness": "node scripts/local-readiness.mjs",
-    "validate:migration": "node scripts/validate-migration.mjs && node scripts/validate-client-storage-configuration.mjs && node scripts/validate-runtime-configuration-routing.mjs",
+    "validate:migration": "node scripts/validate-migration.mjs && node scripts/validate-client-storage-configuration.mjs && node scripts/validate-runtime-configuration-routing.mjs && node scripts/validate-image-derivative-migration.mjs && node scripts/validate-storage-service-migration.mjs",
     "validate:seed": "node scripts/validate-seed.mjs",
     "validate:secrets": "node scripts/scan-secrets.mjs",
     "validate:legacy-id": "node scripts/validate-no-legacy-delivery-id.mjs",
     "pack:check": "npm run build && node scripts/install-smoke.mjs",
     "package:verify": "node scripts/verify-package-artifact.mjs",
     "verify:2b06:providers": "npm run build && node scripts/verify-2b-06-providers.mjs",
-    "validate": "npm run test:focused && npm test && npm run typecheck && npm run lint && npm run build && npm run pack:check && npm run validate:migration && npm run validate:seed && npm run validate:secrets && npm run validate:legacy-id && npm run local:readiness",
+    "validate": "npm run test:focused && npm run test:storage-services && npm test && npm run typecheck && npm run lint && npm run build && npm run pack:check && npm run validate:migration && npm run validate:seed && npm run validate:secrets && npm run validate:legacy-id && npm run local:readiness",
     "prepack": "npm run build"
   },
   "dependencies": {
