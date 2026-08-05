@@ -1,0 +1,67 @@
+name: H07 source bootstrap
+
+on:
+  push:
+    branches:
+      - agent/h07-online-storage-service-r2
+    paths:
+      - '.github/h07-bootstrap/**'
+      - '.github/workflows/h07-source-bootstrap.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: h07-source-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out frozen implementation branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Reconstruct and verify H07 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/h07-bootstrap/chunk-* | base64 --decode > /tmp/h07-source.tar.gz
+          echo 'ca4426f1c70ddaf83433c63ece5dc8fea70123fed0a6c137c2e59fd1f4a3ecd0  /tmp/h07-source.tar.gz' | sha256sum --check --strict
+          tar -xzf /tmp/h07-source.tar.gz
+          python .github/h07-bootstrap/apply.py
+          rm -rf .github/h07-bootstrap .github/workflows/h07-source-bootstrap.yml
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Compile and run focused tests
+        run: |
+          npm run test:compile
+          npm run test:focused
+
+      - name: Validate source and migration contracts
+        run: |
+          npm run typecheck
+          npm run lint
+          npm run build
+          npm run validate:migration
+
+      - name: Commit generated H07 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: add client storage service management and R2 adapter'
+          git push origin HEAD
