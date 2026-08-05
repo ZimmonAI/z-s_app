@@ -10,6 +10,8 @@ import {
   createVideoMakerRuntimeComposition,
   type VideoMakerRuntimeComposition,
 } from './runtime-local-composition.js';
+import type { StorageServiceApplicationService } from './storage-service-application.js';
+import { createStorageServiceRuntime } from './storage-service-runtime.js';
 
 function optionalString(value: string | undefined): string | undefined {
   const normalized = value?.trim();
@@ -21,6 +23,7 @@ function controlRuntime(
   environment: NodeJS.ProcessEnv,
   clientCredentialAuthenticator: ClientCredentialAuthenticator,
   clientStorageConfigurationStore: ClientStorageConfigurationStore,
+  storageService: StorageServiceApplicationService | null,
   imageDerivativeStore: ImageDerivativeStore,
   imageDerivativeWorker: BoundedImageDerivativeWorker | null,
 ): HttpStorageRuntime {
@@ -32,7 +35,13 @@ function controlRuntime(
     ...(adminPassword === undefined ? {} : { adminPassword }),
     ...(sessionSigningKey === undefined ? {} : { sessionSigningKey }),
   });
-  return createImageDerivativeRuntime(control, {
+  const storageServices = storageService === null
+    ? control
+    : createStorageServiceRuntime(control, {
+      service: storageService,
+      ...(sessionSigningKey === undefined ? {} : { sessionSigningKey }),
+    });
+  return createImageDerivativeRuntime(storageServices, {
     store: imageDerivativeStore,
     ...(sessionSigningKey === undefined ? {} : { sessionSigningKey }),
     ...(imageDerivativeWorker === null ? {} : { worker: imageDerivativeWorker }),
@@ -42,14 +51,18 @@ function controlRuntime(
 export function createVideoMakerControlRuntimeComposition(
   environment: NodeJS.ProcessEnv = process.env,
 ): VideoMakerRuntimeComposition {
-  const composition = createVideoMakerRuntimeComposition(environment);
   const clientControl = createClientControlComposition(environment);
+  const composition = createVideoMakerRuntimeComposition(
+    environment,
+    clientControl.credentialResolver,
+  );
   return Object.freeze({
     runtime: controlRuntime(
       composition.runtime,
       environment,
       clientControl.authenticator,
       clientControl.configurationStore,
+      clientControl.storageService,
       clientControl.imageDerivativeStore,
       clientControl.imageDerivativeWorker,
     ),

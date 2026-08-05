@@ -1,0 +1,131 @@
+name: T2 H07 storage service management validation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/t2-h07-storage-service-management-validation.yml'
+      - 'db/migrations/0012_z_s_storage_services.sql'
+      - 'db/migrations/0012_z_s_storage_services.down.sql'
+      - 'docs/storage-services.md'
+      - 'evidence/t2-h07-storage-services/**'
+      - 'evidence/online-storage-service-management-r2/**'
+      - 'reports/t2-h07-storage-services/**'
+      - 'reports/07-online-storage-service-management-r2-result.md'
+      - '08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/evidence-indexes/**'
+      - '08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/**'
+      - 'scripts/validate-storage-service-migration.mjs'
+      - 'scripts/verify-package-artifact.mjs'
+      - 'src/client-control-composition.ts'
+      - 'src/client-storage-configuration-safe.ts'
+      - 'src/cloudflare-r2-adapter.ts'
+      - 'src/index.ts'
+      - 'src/provider-secret-store*.ts'
+      - 'src/runtime-active-configuration.ts'
+      - 'src/runtime-control-composition.ts'
+      - 'src/runtime-dual-provider.ts'
+      - 'src/runtime-s3-provider.ts'
+      - 'src/runtime-storage-registry-types.ts'
+      - 'src/storage-provider-adapter.ts'
+      - 'src/storage-service*.ts'
+      - 'tests/client-storage-configuration-safe.test.ts'
+      - 'tests/cloudflare-r2-adapter.test.ts'
+      - 'tests/provider-secret-store.test.ts'
+      - 'tests/storage-service*.test.ts'
+      - 'package.json'
+  push:
+    branches:
+      - agent/t2-client-storage-service-management-r2
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: z_s_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d z_s_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+      Z_S_PROVIDER_SECRET_MASTER_KEY_V1: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify frozen H07 branch point ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=3893514679003ea464958c1865624dcdb66cdd92
+          test "$(git merge-base "$baseline" HEAD)" = "$baseline"
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Compile tests
+        run: npm run test:compile
+      - name: Run focused H07 tests
+        run: npm run test:storage-services
+      - name: Validate 0012 migration contract
+        run: node scripts/validate-storage-service-migration.mjs
+      - name: Reset PostgreSQL after focused migration validation
+        env:
+          PGPASSWORD: postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -h 127.0.0.1 -U postgres -d z_s_test -v ON_ERROR_STOP=1 <<'SQL'
+          DROP SCHEMA public CASCADE;
+          CREATE SCHEMA public;
+          GRANT ALL ON SCHEMA public TO postgres;
+          GRANT ALL ON SCHEMA public TO public;
+          SQL
+      - name: Run non-database test suite
+        run: env -u TEST_DATABASE_URL -u DATABASE_URL npm test
+      - name: Run PostgreSQL integration suite serially
+        run: npm run test:registry
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build
+      - name: Package install smoke
+        run: npm run pack:check
+      - name: Package artifact verification
+        run: npm run package:verify
+      - name: Migration and seed validation
+        run: npm run validate:migration && npm run validate:seed
+      - name: Secret and legacy identifier validation
+        run: npm run validate:secrets && npm run validate:legacy-id
+      - name: Local readiness
+        run: npm run local:readiness
+      - name: Retain H07 non-secret evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: t2-h07-storage-service-evidence
+          path: |
+            evidence/t2-h07-storage-services/
+            evidence/online-storage-service-management-r2/
+            reports/t2-h07-storage-services/
+            reports/07-online-storage-service-management-r2-result.md
+            08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/evidence-indexes/
+            08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/
+          if-no-files-found: error
+          retention-days: 30

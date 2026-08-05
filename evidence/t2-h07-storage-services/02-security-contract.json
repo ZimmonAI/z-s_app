@@ -1,0 +1,20 @@
+{
+  "credentialPersistence": "aes-256-gcm-ciphertext-only",
+  "nonce": "random-96-bit-per-envelope",
+  "keyVersion": 1,
+  "aad": ["clientId", "environment", "serviceId", "providerType"],
+  "revealRoute": false,
+  "replacementRevokesPrevious": true,
+  "publicResponseExcludes": [
+    "rawCredential",
+    "ciphertextEnvelope",
+    "providerPrivateEndpoint",
+    "bucket",
+    "objectKey",
+    "signedUrl",
+    "internalSecretReference"
+  ],
+  "connectionTest": "single-object-write-head-cleanup-under-exact-prefix",
+  "crossClientIsolation": "repository-and-aad-bound",
+  "containsSecrets": false
+}

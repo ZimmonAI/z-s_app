@@ -16,6 +16,11 @@ import type { SafeDiagnostic, SafeDiagnosticCategory } from './runtime-contract.
 
 export type ProviderWriteRole = 'hot' | 'canonical' | 'primary' | 'replica';
 
+export interface ProviderCredentialScope {
+  clientId: string;
+  environment: 'dev' | 'staging' | 'prod';
+}
+
 export interface ResolvedProviderWriteTarget {
   providerRole: ProviderWriteRole;
   providerId: string;
@@ -24,6 +29,7 @@ export interface ResolvedProviderWriteTarget {
   normalizedPrefixPattern: string;
   capabilityPolicy: Readonly<ProviderCapabilityPolicy>;
   credentialSecretReferenceId: string;
+  credentialScope?: Readonly<ProviderCredentialScope>;
 }
 
 export interface ResolvedS3CredentialBinding {
@@ -38,6 +44,7 @@ export interface ResolvedS3CredentialBinding {
 export interface ProviderCredentialResolver {
   resolve(
     secretReferenceId: string,
+    scope?: Readonly<ProviderCredentialScope>,
   ): Promise<Readonly<ResolvedS3CredentialBinding>> | Readonly<ResolvedS3CredentialBinding>;
 }
 
@@ -198,7 +205,10 @@ export class S3CompatibleProviderObjectWriter implements ProviderObjectWriter {
       throw new ProviderExecutionError('invalid-request', 'provider-write-input-invalid', false);
     }
 
-    const binding = await this.#resolver.resolve(input.target.credentialSecretReferenceId);
+    const binding = await this.#resolver.resolve(
+      input.target.credentialSecretReferenceId,
+      input.target.credentialScope,
+    );
     const client = this.#createClient(clientConfig(binding));
     try {
       try {
@@ -277,7 +287,10 @@ export class S3CompatibleProviderObjectWriter implements ProviderObjectWriter {
     }
     let binding: Readonly<ResolvedS3CredentialBinding>;
     try {
-      binding = await this.#resolver.resolve(input.target.credentialSecretReferenceId);
+      binding = await this.#resolver.resolve(
+        input.target.credentialSecretReferenceId,
+        input.target.credentialScope,
+      );
     } catch {
       return Object.freeze({
         deleted: false,
