@@ -9,11 +9,13 @@ import {
 } from './storage-provider-adapter.js';
 
 export const STORAGE_SERVICE_STATUSES = [
-  'draft',
-  'awaiting-secret',
-  'testing',
+  'setup_incomplete',
+  'validating',
   'ready',
-  'failed',
+  'degraded',
+  'auth_failed',
+  'unreachable',
+  'misconfigured',
   'disabled',
   'archived',
 ] as const;
@@ -161,6 +163,34 @@ export function storageServiceSecretContext(service: Readonly<StorageServiceSnap
     serviceId: service.serviceId,
     providerType: service.providerType,
   });
+}
+
+export function storageServiceStatusForTest(
+  connected: boolean,
+  diagnosticCode: string | null,
+): StorageServiceStatus {
+  if (connected) return 'ready';
+  const diagnostic = diagnosticCode ?? '';
+  if (diagnostic.includes('authentication') || diagnostic.includes('authorization')) {
+    return 'auth_failed';
+  }
+  if (
+    diagnostic.includes('unreachable') ||
+    diagnostic.includes('temporarily-unavailable') ||
+    diagnostic.includes('timeout') ||
+    diagnostic.includes('network')
+  ) {
+    return 'unreachable';
+  }
+  if (
+    diagnostic.includes('invalid') ||
+    diagnostic.includes('target-unavailable') ||
+    diagnostic.includes('bucket') ||
+    diagnostic.includes('prefix')
+  ) {
+    return 'misconfigured';
+  }
+  return 'degraded';
 }
 
 export function requiredStorageServiceCapabilities(
