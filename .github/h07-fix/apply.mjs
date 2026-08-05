@@ -95,3 +95,5 @@ for (const path of [
   lines[index] = lines[index].replace(")$'", `${h07Scope})$'`);
   await writeFile(path, lines.join('\n'), 'utf8');
 }
+
+// Trigger the completion workflow after its definition exists on the branch.
