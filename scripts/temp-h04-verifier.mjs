@@ -19,7 +19,7 @@ function loadEnv(filePath) {
   }
 }
 
-loadEnv('D:/zimspace/workspace-os/storage/z_secret/by_entity/apps/z-s_app/.env');
+loadEnv('D:/zimspace/workspace-os/storage/z_secret/by_entity/apps/z-s_app/run-time/.env');
 loadEnv('D:/zimspace/workspace-os/storage/z_secret/by_entity/apps/z-s_app/db/.env');
 
 const publicUrl = 'http://127.0.0.1:4310';

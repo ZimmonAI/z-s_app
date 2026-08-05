@@ -20,11 +20,11 @@ function loadEnv(filePath) {
   }
 }
 
-loadEnv('D:/zimspace/workspace-os/storage/z_secret/by_entity/apps/z-s_app/.env');
+loadEnv('D:/zimspace/workspace-os/storage/z_secret/by_entity/apps/z-s_app/run-time/.env');
 loadEnv('D:/zimspace/workspace-os/storage/z_secret/by_entity/apps/z-s_app/db/.env');
 
 const vmEnvs = {};
-const vmEnvPath = 'D:/zimspace/workspace-os/storage/z_secret/by_entity/apps/video-maker_app/.env';
+const vmEnvPath = 'D:/zimspace/workspace-os/storage/z_secret/by_entity/apps/video-maker_app/run-time/.env';
 if (fs.existsSync(vmEnvPath)) {
   const lines = fs.readFileSync(vmEnvPath, 'utf8').split('\n');
   for (const line of lines) {

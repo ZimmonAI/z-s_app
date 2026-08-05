@@ -22,9 +22,9 @@ function readEnv(p) {
   return map;
 }
 
-const zEnv = readEnv('D:/zimspace/workspace-os/storage/z_secret/by_entity/apps/z-s_app/.env');
+const zEnv = readEnv('D:/zimspace/workspace-os/storage/z_secret/by_entity/apps/z-s_app/run-time/.env');
 const dbEnv = readEnv('D:/zimspace/workspace-os/storage/z_secret/by_entity/apps/z-s_app/db/.env');
-const vmEnv = readEnv('D:/zimspace/workspace-os/storage/z_secret/by_entity/apps/video-maker_app/.env');
+const vmEnv = readEnv('D:/zimspace/workspace-os/storage/z_secret/by_entity/apps/video-maker_app/run-time/.env');
 
 const postgresUrl = zEnv.Z_S_POSTGRES_URL || dbEnv.DATABASE_URL;
 const publicUrl = 'http://127.0.0.1:4310';
