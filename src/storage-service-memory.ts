@@ -5,7 +5,6 @@ import type {
   StorageServiceListFilter,
   StorageServiceRepository,
   StorageServiceSnapshot,
-  StorageServiceStatus,
 } from './storage-service.js';
 import { StorageServiceError } from './storage-service.js';
 import type { StorageServiceCapabilities } from './storage-provider-adapter.js';

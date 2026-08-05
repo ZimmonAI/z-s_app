@@ -154,9 +154,6 @@ export class StorageServiceError extends Error {
   }
 }
 
-const IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
-const LABEL_PATTERN = /^.{1,160}$/s;
-
 export function storageServiceSecretContext(service: Readonly<StorageServiceSnapshot>): ProviderSecretContext {
   return Object.freeze({
     clientId: service.clientId,
@@ -186,7 +183,6 @@ export function requiredStorageServiceCapabilities(
   }
   return Object.freeze([...required]);
 }
-
 
 export function completeCapabilities(
   value: Partial<StorageServiceCapabilities>,
