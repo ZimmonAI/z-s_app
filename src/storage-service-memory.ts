@@ -6,7 +6,10 @@ import type {
   StorageServiceRepository,
   StorageServiceSnapshot,
 } from './storage-service.js';
-import { StorageServiceError } from './storage-service.js';
+import {
+  StorageServiceError,
+  storageServiceStatusForTest,
+} from './storage-service.js';
 import type { StorageServiceCapabilities } from './storage-provider-adapter.js';
 
 interface Entry {
@@ -62,7 +65,7 @@ export class InMemoryStorageServiceRepository implements StorageServiceRepositor
       displayName: input.displayName,
       providerType: input.providerType,
       ownership: input.ownership,
-      status: 'awaiting-secret',
+      status: 'setup_incomplete',
       safeMetadata: input.safeMetadata,
       capabilities: input.capabilities,
       lastTestStatus: 'never',
@@ -130,7 +133,7 @@ export class InMemoryStorageServiceRepository implements StorageServiceRepositor
   ): Promise<void> {
     const entry = this.#entry(clientId, environment, serviceId);
     entry.activeSecretId = secretId;
-    entry.snapshot = cloneSnapshot({ ...entry.snapshot, status: 'testing', updatedAt: now.toISOString() });
+    entry.snapshot = cloneSnapshot({ ...entry.snapshot, status: 'validating', updatedAt: now.toISOString() });
   }
 
   async recordTest(
@@ -148,7 +151,7 @@ export class InMemoryStorageServiceRepository implements StorageServiceRepositor
     const entry = this.#entry(clientId, environment, serviceId);
     entry.snapshot = cloneSnapshot({
       ...entry.snapshot,
-      status: result.connected ? 'ready' : 'failed',
+      status: storageServiceStatusForTest(result.connected, result.diagnosticCode),
       capabilities: result.capabilities,
       lastTestStatus: result.connected ? 'passed' : 'failed',
       lastTestedAt: result.testedAt,
