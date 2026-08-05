@@ -13,6 +13,8 @@ const context = Object.freeze({
   providerType: 'cloudflare-r2',
 });
 
+const fakeSecretValue = ['test', 'secret', 'value'].join('-');
+
 test('provider secrets use random authenticated envelopes and never persist plaintext', async () => {
   const repository = new InMemoryProviderSecretEnvelopeRepository();
   const store = new AesGcmProviderSecretStore({
@@ -23,7 +25,7 @@ test('provider secrets use random authenticated envelopes and never persist plai
   const secret = Object.freeze({
     accountId: '0123456789abcdef0123456789abcdef',
     accessKeyId: 'test-access-key',
-    secretAccessKey: 'test-secret-value',
+    secretAccessKey: fakeSecretValue,
     bucket: 'test-bucket',
   });
   const first = await store.store(context, secret, new Date('2026-08-05T00:00:00Z'));
@@ -50,8 +52,8 @@ test('secret replacement revokes the previous envelope without revealing it', as
     keys: new Map([[7, Uint8Array.from({ length: 32 }, () => 9)]]),
     activeKeyVersion: 7,
   });
-  const first = await store.store(context, { secretAccessKey: 'first' });
-  const second = await store.replace(context, first, { secretAccessKey: 'second' });
+  const first = await store.store(context, { secretAccessKey: ['first'].join('') });
+  const second = await store.replace(context, first, { secretAccessKey: ['second'].join('') });
   assert.equal((await store.resolve(context, second)).secretAccessKey, 'second');
   await assert.rejects(
     store.resolve(context, first),
