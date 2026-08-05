@@ -9,13 +9,19 @@ on:
       - 'docs/storage-services.md'
       - 'evidence/t2-h07-storage-services/**'
       - 'reports/t2-h07-storage-services/**'
+      - '08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/evidence-indexes/**'
+      - '08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/**'
       - 'scripts/validate-storage-service-migration.mjs'
       - 'src/client-control-composition.ts'
       - 'src/client-storage-configuration-safe.ts'
       - 'src/cloudflare-r2-adapter.ts'
       - 'src/index.ts'
       - 'src/provider-secret-store*.ts'
+      - 'src/runtime-active-configuration.ts'
       - 'src/runtime-control-composition.ts'
+      - 'src/runtime-dual-provider.ts'
+      - 'src/runtime-s3-provider.ts'
+      - 'src/runtime-storage-registry-types.ts'
       - 'src/storage-provider-adapter.ts'
       - 'src/storage-service*.ts'
       - 'tests/client-storage-configuration-safe.test.ts'
@@ -75,6 +81,18 @@ jobs:
         run: npm run test:storage-services
       - name: Validate 0012 migration contract
         run: node scripts/validate-storage-service-migration.mjs
+      - name: Reset PostgreSQL after focused migration validation
+        env:
+          PGPASSWORD: postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -h 127.0.0.1 -U postgres -d z_s_test -v ON_ERROR_STOP=1 <<'SQL'
+          DROP SCHEMA public CASCADE;
+          CREATE SCHEMA public;
+          GRANT ALL ON SCHEMA public TO postgres;
+          GRANT ALL ON SCHEMA public TO public;
+          SQL
       - name: Run full test suite
         run: npm test
       - name: Typecheck
@@ -100,5 +118,7 @@ jobs:
           path: |
             evidence/t2-h07-storage-services/
             reports/t2-h07-storage-services/
+            08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/evidence-indexes/
+            08-execution/z-s_app-mvp/tasks/planning/t2-client-storage-workspace/handoffs/
           if-no-files-found: error
           retention-days: 30
