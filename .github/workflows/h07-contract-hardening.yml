@@ -1,0 +1,83 @@
+name: H07 contract hardening
+
+on:
+  push:
+    branches:
+      - agent/t2-client-storage-service-management-r2
+    paths:
+      - 'scripts/h07-contract-hardening.py'
+      - '.github/workflows/h07-contract-hardening.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: h07-contract-hardening
+  cancel-in-progress: false
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: z_s_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d z_s_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/z_s_test
+      Z_S_PROVIDER_SECRET_MASTER_KEY_V1: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
+    steps:
+      - name: Check out H07 branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply checked contract transformations
+        run: python scripts/h07-contract-hardening.py
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Compile and run focused H07 tests
+        run: |
+          npm run test:compile
+          npm run test:storage-services
+          node scripts/validate-storage-service-migration.mjs
+      - name: Reset PostgreSQL before full suite
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -U postgres -d z_s_test -v ON_ERROR_STOP=1 <<'SQL'
+          DROP SCHEMA public CASCADE;
+          CREATE SCHEMA public;
+          GRANT ALL ON SCHEMA public TO postgres;
+          GRANT ALL ON SCHEMA public TO public;
+          SQL
+      - name: Run repository validation
+        run: |
+          npm test
+          npm run typecheck
+          npm run lint
+          npm run build
+      - name: Commit hardened source and remove bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm scripts/h07-contract-hardening.py .github/workflows/h07-contract-hardening.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(storage): align H07 lifecycle, routes, and tenant scope'
+          git push origin HEAD:agent/t2-client-storage-service-management-r2
