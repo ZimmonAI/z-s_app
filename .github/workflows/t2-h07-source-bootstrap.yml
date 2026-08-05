@@ -8,12 +8,20 @@ on:
       - '.github/workflows/t2-h07-source-bootstrap.yml'
       - 'scripts/bootstrap-h07-storage-services.py'
       - '.h07-bootstrap/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/t2-h07-source-bootstrap.yml'
+      - 'scripts/bootstrap-h07-storage-services.py'
+      - '.h07-bootstrap/**'
 
 permissions:
   contents: write
 
 jobs:
   bootstrap:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
