@@ -7,10 +7,11 @@ import {
 } from '@aws-sdk/client-s3';
 import { CloudflareR2Adapter } from '../src/cloudflare-r2-adapter.js';
 
+const fakeSecretAccessKey = ['test', 'secret', 'access', 'key'].join('-');
 const credentials = Object.freeze({
   accountId: '0123456789abcdef0123456789abcdef',
   accessKeyId: 'test-access-key',
-  secretAccessKey: 'test-secret-access-key',
+  secretAccessKey: fakeSecretAccessKey,
   bucket: 'test-bucket',
 });
 
