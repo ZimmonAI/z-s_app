@@ -1,0 +1,71 @@
+name: T2 H07 source bootstrap
+
+on:
+  push:
+    branches:
+      - agent/t2-h07-storage-services-r2
+    paths:
+      - '.github/workflows/t2-h07-source-bootstrap.yml'
+      - 'scripts/bootstrap-h07-storage-services.py'
+      - '.h07-bootstrap/**'
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: agent/t2-h07-storage-services-r2
+      - name: Verify accepted branch point
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=3893514679003ea464958c1865624dcdb66cdd92
+          test "$(git merge-base "$baseline" HEAD)" = "$baseline"
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Materialize reviewed H07 source
+        run: python scripts/bootstrap-h07-storage-services.py
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Compile and run focused H07 tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run test:compile
+          node --test \
+            .test-dist/tests/provider-secret-store.test.js \
+            .test-dist/tests/storage-provider-cloudflare-r2.test.js \
+            .test-dist/tests/storage-service-application.test.js \
+            .test-dist/tests/storage-service-configuration.test.js \
+            .test-dist/tests/storage-service-migration.test.js \
+            .test-dist/tests/storage-service-presentation.test.js
+      - name: Validate source boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run typecheck
+          npm run lint
+          npm run build
+          node scripts/validate-storage-service-migration.mjs
+          npm run validate:secrets
+      - name: Commit reviewed source and remove bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .h07-bootstrap
+          rm -f scripts/bootstrap-h07-storage-services.py
+          rm -f .github/workflows/t2-h07-source-bootstrap.yml
+          git add -A
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "feat: add client storage services and Cloudflare R2"
+          git push origin HEAD:agent/t2-h07-storage-services-r2
