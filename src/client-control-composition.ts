@@ -16,8 +16,8 @@ import {
   ImageDerivativeApplicationService,
   type ImageDerivativeStore,
 } from './image-derivative.js';
-import { PngImageDerivativeProcessor } from './image-derivative-png.js';
-import { PostgresImageDerivativeStore } from './image-derivative-postgres.js';
+import { PngImageDerivativeProcessor } from './image-derivative-png-recovery.js';
+import { PostgresImageDerivativeStore } from './image-derivative-postgres-recovery.js';
 import {
   ConfiguredImageDerivativeOutputWriter,
   ConfiguredImageDerivativeSourceReader,
