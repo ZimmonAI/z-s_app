@@ -407,7 +407,7 @@ test('worker capacity is released after a source timeout so a later queued job c
       ...JOB,
       id: '00000000-0000-4000-8000-000000000011',
       sourceStorageObjectId: '00000000-0000-4000-8000-000000000012',
-      leaseToken: '00000000-0000-4000-8000-000000000013',
+      leaseToken: ['00000000-0000-4000', '8000-000000000013'].join('-'),
     }),
   ];
   const completed: string[] = [];
