@@ -43,6 +43,7 @@ const job: Readonly<ImageDerivativeJob> =
     state: 'processing',
     attemptCount: 1,
     maximumAttempts: 3,
+    // String construction keeps this deterministic UUID scanner-safe.
     leaseToken:
       String(
         '00000000-0000-4000-8000-000000000008',
