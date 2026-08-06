@@ -638,7 +638,7 @@ export class PostgresImageDerivativeStore extends BasePostgresImageDerivativeSto
            ) VALUES (
              $1, NULL, NULL, NULL, NULL, $2, $3, $4, $5, $6,
              $7, $8, 'reserved', 'derivative-write-pending', $9, $10, $11,
-             jsonb_build_object('derivative_preset_id', $12, 'derivative_width', $13, 'derivative_format', $14),
+             jsonb_build_object('derivative_preset_id', $12::text, 'derivative_width', $13::integer, 'derivative_format', $14::text),
              $15, $15, 1
            )`,
           [
