@@ -1,0 +1,46 @@
+name: H06 Vercel production smoke
+
+on:
+  push:
+    branches:
+      - agent/h06-vercel-production-smoke-20260807
+    paths:
+      - .github/workflows/h06-vercel-production-smoke.yml
+      - scripts/h06-vercel-production-smoke.mjs
+
+permissions:
+  contents: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out smoke branch
+        uses: actions/checkout@v4
+
+      - name: Run Vercel production positive derivative flow
+        run: node scripts/h06-vercel-production-smoke.mjs
+
+      - name: Commit safe smoke result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add h06-vercel-smoke-result.json
+          git commit -m "test: record H06 Vercel smoke result [skip ci]"
+          git push
+
+      - name: Enforce positive result
+        run: |
+          node --input-type=module - <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const result = JSON.parse(
+            await readFile('h06-vercel-smoke-result.json', 'utf8'),
+          );
+          if (result.passed !== true) {
+            console.error(result.failure ?? 'H06 Vercel smoke failed');
+            process.exit(1);
+          }
+          console.log('H06 Vercel positive derivative smoke passed.');
+          NODE
