@@ -44,7 +44,9 @@ const job: Readonly<ImageDerivativeJob> =
     attemptCount: 1,
     maximumAttempts: 3,
     leaseToken:
-      '00000000-0000-4000-8000-000000000008',
+      String(
+        '00000000-0000-4000-8000-000000000008',
+      ),
   });
 
 const outputBody =
