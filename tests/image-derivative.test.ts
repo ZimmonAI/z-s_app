@@ -387,6 +387,7 @@ test('source timeout closes once, records a retryable safe failure, and never in
   });
 
   const processing = service.processNext('worker-timeout');
+  await new Promise<void>((resolve) => setImmediate(resolve));
   timer.fire();
   assert.equal(await processing, 'processed');
   assert.equal(closeCount, 1);
@@ -447,6 +448,7 @@ test('worker capacity is released after a source timeout so a later queued job c
   const worker = new BoundedImageDerivativeWorker(service, 1);
 
   const firstBatch = worker.runBatch('worker-live');
+  await new Promise<void>((resolve) => setImmediate(resolve));
   timer.fire();
   assert.deepEqual(await firstBatch, { processed: 1, idleWorkers: 0 });
   assert.deepEqual(await worker.runBatch('worker-live'), { processed: 1, idleWorkers: 0 });
