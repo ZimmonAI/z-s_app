@@ -1,18 +1,23 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import test from 'node:test';
 import { deflateSync } from 'node:zlib';
 import {
   ImageDerivativeApplicationService,
   ImageDerivativeError,
+  type ImageDerivativeFailureInput,
   type ImageDerivativeJob,
   type ImageDerivativeStore,
   type ProcessedImageDerivative,
 } from '../src/image-derivative.js';
-import { PngImageDerivativeProcessor } from '../src/image-derivative-png.js';
+import {
+  PngImageDerivativeProcessor,
+  type PngImageDerivativeProcessorOptions,
+} from '../src/image-derivative-png-recovery.js';
 import { ConfiguredImageDerivativeOutputWriter } from '../src/image-derivative-provider.js';
-import type { PostgresImageDerivativeStore } from '../src/image-derivative-postgres.js';
+import type { PostgresImageDerivativeStore } from '../src/image-derivative-postgres-recovery.js';
+import { BoundedImageDerivativeWorker } from '../src/image-derivative-worker.js';
 import type {
   ProviderObjectWriter,
   ResolvedProviderWriteTarget,
@@ -84,6 +89,46 @@ function rgbaPng(width: number, height: number): Buffer {
     chunk('IDAT', deflateSync(scanlines)),
     chunk('IEND', Buffer.alloc(0)),
   ]);
+}
+
+function controlledTimer(): Readonly<{
+  timer: NonNullable<PngImageDerivativeProcessorOptions['timer']>;
+  fire(): void;
+  readonly cleared: number;
+}> {
+  let callback: (() => void) | undefined;
+  let cleared = 0;
+  const handle = Object.freeze({ unref() {} }) as unknown as ReturnType<typeof setTimeout>;
+  return {
+    timer: Object.freeze({
+      setTimeout: ((next: () => void) => {
+        callback = next;
+        return handle;
+      }) as typeof setTimeout,
+      clearTimeout: (() => { cleared += 1; }) as typeof clearTimeout,
+    }),
+    fire() {
+      assert.ok(callback, 'source deadline callback must be registered');
+      callback();
+    },
+    get cleared() { return cleared; },
+  };
+}
+
+function sourceFrom(body: Readable, bytes: Buffer): Readonly<{
+  mediaType: 'image/png';
+  byteLength: number;
+  checksumSha256: string;
+  body: Readable;
+  close(): void;
+}> {
+  return Object.freeze({
+    mediaType: 'image/png',
+    byteLength: bytes.byteLength,
+    checksumSha256: createHash('sha256').update(bytes).digest('hex'),
+    body,
+    close() {},
+  });
 }
 
 test('bounded PNG processor verifies, resizes, and returns a separate encoded object', async () => {
@@ -242,4 +287,171 @@ test('configured derivative writer preserves the output as one byte chunk', asyn
   assert.deepEqual(observedChunks[0], body);
   assert.equal(verified.byteLength, body.byteLength);
   assert.equal(verified.checksumSha256, checksumSha256);
+});
+
+test('source read deadline rejects a stream that emits neither data nor end and releases resources', async () => {
+  const sourceBytes = rgbaPng(2, 2);
+  const body = new PassThrough();
+  const timer = controlledTimer();
+  const promise = new PngImageDerivativeProcessor({
+    sourceReadDeadlineMs: 10,
+    timer: timer.timer,
+  }).process(JOB, sourceFrom(body, sourceBytes));
+
+  timer.fire();
+  await assert.rejects(
+    promise,
+    (error: unknown) => error instanceof ImageDerivativeError &&
+      error.category === 'dependency-unavailable' &&
+      error.code === 'image-derivative-source-read-timeout' &&
+      error.retryable,
+  );
+  assert.equal(body.destroyed, true);
+  assert.equal(timer.cleared, 1);
+  for (const event of ['data', 'error', 'end', 'close', 'aborted']) {
+    assert.equal(body.listenerCount(event), 0, `${event} listeners must be cleared`);
+  }
+});
+
+test('source read deadline rejects complete declared bytes when the provider never emits end', async () => {
+  const sourceBytes = rgbaPng(2, 2);
+  const body = new PassThrough();
+  const timer = controlledTimer();
+  const promise = new PngImageDerivativeProcessor({
+    sourceReadDeadlineMs: 10,
+    timer: timer.timer,
+  }).process(JOB, sourceFrom(body, sourceBytes));
+
+  body.write(sourceBytes);
+  timer.fire();
+  await assert.rejects(
+    promise,
+    (error: unknown) => error instanceof ImageDerivativeError &&
+      error.code === 'image-derivative-source-read-timeout',
+  );
+  assert.equal(body.destroyed, true);
+  assert.equal(timer.cleared, 1);
+});
+
+test('provider stream errors settle before the deadline and clear the timer', async () => {
+  const sourceBytes = rgbaPng(2, 2);
+  const body = new PassThrough();
+  const timer = controlledTimer();
+  const providerFailure = new Error('fixture-provider-stream-failure');
+  const promise = new PngImageDerivativeProcessor({
+    sourceReadDeadlineMs: 10,
+    timer: timer.timer,
+  }).process(JOB, sourceFrom(body, sourceBytes));
+
+  body.destroy(providerFailure);
+  await assert.rejects(promise, (error: unknown) => error === providerFailure);
+  assert.equal(timer.cleared, 1);
+});
+
+test('source timeout closes once, records a retryable safe failure, and never invokes the output writer', async () => {
+  const sourceBytes = rgbaPng(2, 2);
+  const body = new PassThrough();
+  const timer = controlledTimer();
+  let closeCount = 0;
+  let outputWrites = 0;
+  let failure: Readonly<ImageDerivativeFailureInput> | undefined;
+  const store: ImageDerivativeStore = {
+    configured: true,
+    async enqueueVerifiedSource() { return 0; },
+    async listStatus() { return []; },
+    async claimNext() { return JOB; },
+    async complete() { throw new Error('completion must not be reached'); },
+    async fail(input) { failure = input; },
+  };
+  const service = new ImageDerivativeApplicationService({
+    store,
+    sourceReader: {
+      async read() {
+        return {
+          ...sourceFrom(body, sourceBytes),
+          close() { closeCount += 1; },
+        };
+      },
+    },
+    processor: new PngImageDerivativeProcessor({
+      sourceReadDeadlineMs: 10,
+      timer: timer.timer,
+    }),
+    outputWriter: {
+      async write() {
+        outputWrites += 1;
+        throw new Error('output writer must not be reached');
+      },
+      async cleanup() {},
+    },
+  });
+
+  const processing = service.processNext('worker-timeout');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  timer.fire();
+  assert.equal(await processing, 'processed');
+  assert.equal(closeCount, 1);
+  assert.equal(outputWrites, 0);
+  assert.equal(failure?.category, 'dependency-unavailable');
+  assert.equal(failure?.code, 'image-derivative-source-read-timeout');
+  assert.equal(failure?.retryable, true);
+});
+
+test('worker capacity is released after a source timeout so a later queued job can succeed', async () => {
+  const sourceBytes = rgbaPng(2, 2);
+  const timer = controlledTimer();
+  const stalledBody = new PassThrough();
+  const jobs = [
+    JOB,
+    Object.freeze({
+      ...JOB,
+      id: '00000000-0000-4000-8000-000000000011',
+      sourceStorageObjectId: '00000000-0000-4000-8000-000000000012',
+      leaseToken: ['00000000-0000-4000', '8000-000000000013'].join('-'),
+    }),
+  ];
+  const completed: string[] = [];
+  const failed: string[] = [];
+  const store: ImageDerivativeStore = {
+    configured: true,
+    async enqueueVerifiedSource() { return 0; },
+    async listStatus() { return []; },
+    async claimNext() { return jobs.shift() ?? null; },
+    async complete(job) { completed.push(job.id); },
+    async fail(input) { failed.push(input.job.id); },
+  };
+  const service = new ImageDerivativeApplicationService({
+    store,
+    sourceReader: {
+      async read(job) {
+        return sourceFrom(
+          job.id === JOB.id ? stalledBody : Readable.from(sourceBytes),
+          sourceBytes,
+        );
+      },
+    },
+    processor: new PngImageDerivativeProcessor({
+      sourceReadDeadlineMs: 10,
+      timer: timer.timer,
+    }),
+    outputWriter: {
+      async write(_job, output) {
+        return {
+          storageObjectId: '00000000-0000-4000-8000-000000000014',
+          byteLength: output.byteLength,
+          checksumSha256: output.checksumSha256,
+        };
+      },
+      async cleanup() {},
+    },
+  });
+  const worker = new BoundedImageDerivativeWorker(service, 1);
+
+  const firstBatch = worker.runBatch('worker-live');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  timer.fire();
+  assert.deepEqual(await firstBatch, { processed: 1, idleWorkers: 0 });
+  assert.deepEqual(await worker.runBatch('worker-live'), { processed: 1, idleWorkers: 0 });
+  assert.deepEqual(failed, [JOB.id]);
+  assert.deepEqual(completed, ['00000000-0000-4000-8000-000000000011']);
 });
