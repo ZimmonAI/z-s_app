@@ -1,0 +1,2 @@
+Redeploy production after updating Z_S_POSTGRES_URL to the public Aiven PostgreSQL endpoint.
+Triggered at 2026-08-07T06:52:00+07:00.
