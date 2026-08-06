@@ -14,7 +14,7 @@ export class BoundedImageDerivativeWorker {
 
   constructor(
     service: ImageDerivativeApplicationService,
-    concurrency = IMAGE_DERIVATIVE_LIMITS.maximumConcurrentJobs,
+    concurrency: number = IMAGE_DERIVATIVE_LIMITS.maximumConcurrentJobs,
   ) {
     if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 8) {
       throw new TypeError('image derivative worker concurrency must be between 1 and 8');
