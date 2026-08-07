@@ -4,17 +4,9 @@
     {
       "src": "api/index.ts",
       "use": "@vercel/node"
-    },
-    {
-      "src": "api/h08-state-inspect.ts",
-      "use": "@vercel/node"
     }
   ],
   "routes": [
-    {
-      "src": "/_internal/h08-state-inspect",
-      "dest": "/api/h08-state-inspect.ts"
-    },
     {
       "src": "/(.*)",
       "dest": "/api/index.ts"
