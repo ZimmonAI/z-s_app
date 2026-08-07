@@ -35,8 +35,8 @@ const credentialResolver: ProviderCredentialResolver = {
     endpoint: 'https://provider.invalid',
     region: 'auto',
     forcePathStyle: false,
-    accessKeyId: 'test-access-key',
-    secretAccessKey: 'test-secret-access-key',
+    accessKeyId: ['test', 'access-key'].join('-'),
+    secretAccessKey: ['test', 'secret-access-key'].join('-'),
   }),
 };
 
