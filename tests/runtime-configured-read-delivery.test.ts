@@ -24,9 +24,9 @@ function configuredCopy(
     role,
     order,
     state,
-    observedChecksumSha256: state === 'verified' ? CHECKSUM : null,
-    observedByteLength: state === 'verified' ? 10 : null,
-    latestVerifiedAt: state === 'verified' ? '2026-08-01T00:00:00.000Z' : null,
+    observedChecksumSha256: CHECKSUM,
+    observedByteLength: 10,
+    latestVerifiedAt: '2026-08-01T00:00:00.000Z',
     target: Object.freeze({
       providerRole: role,
       providerId: `connection-${suffix}`,
@@ -50,9 +50,9 @@ function snapshot(
     storageObjectCopyId: copy.storageObjectCopyId,
     providerRole: role,
     state: copy.state,
-    observedChecksumSha256: copy.observedChecksumSha256 ?? CHECKSUM,
-    observedByteLength: copy.observedByteLength ?? 10,
-    latestVerifiedAt: copy.latestVerifiedAt ?? '2026-08-01T00:00:00.000Z',
+    observedChecksumSha256: copy.observedChecksumSha256,
+    observedByteLength: copy.observedByteLength,
+    latestVerifiedAt: copy.latestVerifiedAt,
     target: Object.freeze({ ...copy.target, providerRole: role }),
   });
   return Object.freeze({
