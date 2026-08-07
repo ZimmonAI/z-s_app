@@ -13,14 +13,20 @@ function sendJson(response: ResponseLike, body: unknown, status = 200): void {
   response.setHeader('cache-control', 'no-store');
   response.end(JSON.stringify(body));
 }
-
 function authorized(url: URL): boolean {
   const token = url.searchParams.get('token') ?? '';
   return createHash('sha256').update(token, 'utf8').digest('hex') === EXPECTED_TOKEN_SHA256;
 }
-
 function validServiceId(value: string): boolean {
   return /^h08-vercel-negative-[a-z0-9]{8}$/.test(value);
+}
+function safeDatabaseError(error: unknown) {
+  const candidate = error as { code?: unknown; constraint?: unknown; message?: unknown };
+  return {
+    sqlstate: typeof candidate?.code === 'string' ? candidate.code : null,
+    constraint: typeof candidate?.constraint === 'string' ? candidate.constraint : null,
+    message: typeof candidate?.message === 'string' ? candidate.message : null,
+  };
 }
 
 export default async function handler(request: RequestLike, response: ResponseLike): Promise<void> {
@@ -35,10 +41,54 @@ export default async function handler(request: RequestLike, response: ResponseLi
     return;
   }
   const pool = new Pool({ connectionString, max: 1, connectionTimeoutMillis: 5_000, idleTimeoutMillis: 5_000, application_name: 'h08-safe-state-inspect' });
-
   try {
     const mode = url.searchParams.get('mode');
     const serviceId = url.searchParams.get('serviceId')?.trim() ?? '';
+
+    if (mode === 'probe-set-status') {
+      if (!validServiceId(serviceId)) {
+        sendJson(response, { error: { code: 'service-id-invalid' } }, 400);
+        return;
+      }
+      const identity = await pool.query(`
+        SELECT clients.client_id, services.environment
+        FROM public.storage_control_storage_services AS services
+        JOIN public.storage_control_clients AS clients ON clients.id = services.storage_control_client_id
+        WHERE services.service_id = $1
+        LIMIT 1
+      `, [serviceId]);
+      const row = identity.rows[0];
+      if (!row) {
+        sendJson(response, { error: { code: 'service-not-found' } }, 404);
+        return;
+      }
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const now = new Date();
+        const result = await client.query(`
+UPDATE public.storage_control_storage_services AS services
+SET status = $4,
+    disabled_at = CASE WHEN $4 = 'disabled' THEN $5 ELSE NULL END,
+    archived_at = CASE WHEN $4 = 'archived' THEN $5 ELSE NULL END,
+    updated_at = $5
+FROM public.storage_control_clients AS clients
+WHERE clients.id = services.storage_control_client_id
+  AND clients.client_id = $1
+  AND services.environment = $2
+  AND services.service_id = $3
+RETURNING services.id
+`, [row.client_id, row.environment, serviceId, 'archived', now]);
+        await client.query('ROLLBACK');
+        sendJson(response, { result: { setStatusWouldSucceed: result.rowCount === 1 } });
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        sendJson(response, { result: { setStatusWouldSucceed: false, ...safeDatabaseError(error) } });
+      } finally {
+        client.release();
+      }
+      return;
+    }
 
     if (mode === 'probe-dependencies') {
       if (!validServiceId(serviceId)) {
@@ -83,45 +133,7 @@ SELECT
 `, [serviceId]);
         sendJson(response, { result: { dependencyQuerySucceeded: true, counts: result.rows[0] ?? null } });
       } catch (error) {
-        const candidate = error as { code?: unknown; constraint?: unknown; message?: unknown };
-        sendJson(response, { result: {
-          dependencyQuerySucceeded: false,
-          sqlstate: typeof candidate.code === 'string' ? candidate.code : null,
-          constraint: typeof candidate.constraint === 'string' ? candidate.constraint : null,
-          message: typeof candidate.message === 'string' ? candidate.message : null,
-        }});
-      }
-      return;
-    }
-
-    if (mode === 'probe-archive') {
-      if (!validServiceId(serviceId)) {
-        sendJson(response, { error: { code: 'service-id-invalid' } }, 400);
-        return;
-      }
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        const result = await client.query(`
-          UPDATE public.storage_control_storage_services AS services
-          SET status = 'archived', disabled_at = NULL, archived_at = clock_timestamp(), updated_at = clock_timestamp()
-          WHERE services.service_id = $1
-          RETURNING services.service_id
-        `, [serviceId]);
-        await client.query('ROLLBACK');
-        sendJson(response, { result: { serviceId, archiveUpdateWouldSucceed: result.rowCount === 1 } });
-      } catch (error) {
-        await client.query('ROLLBACK').catch(() => undefined);
-        const candidate = error as { code?: unknown; constraint?: unknown; message?: unknown };
-        sendJson(response, { result: {
-          serviceId,
-          archiveUpdateWouldSucceed: false,
-          sqlstate: typeof candidate.code === 'string' ? candidate.code : null,
-          constraint: typeof candidate.constraint === 'string' ? candidate.constraint : null,
-          message: typeof candidate.message === 'string' ? candidate.message : null,
-        }});
-      } finally {
-        client.release();
+        sendJson(response, { result: { dependencyQuerySucceeded: false, ...safeDatabaseError(error) } });
       }
       return;
     }
