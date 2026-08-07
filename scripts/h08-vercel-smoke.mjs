@@ -1,7 +1,8 @@
-import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 
 const BASE_URL = 'https://z-s-app.vercel.app';
+const TEST_PREFIX = 'h08-vercel-negative-';
 
 function parseAccount(text) {
   const values = new Map();
@@ -22,7 +23,7 @@ function cookieFrom(response) {
   return cookie;
 }
 
-async function payload(response) {
+async function responseBody(response) {
   const type = response.headers.get('content-type') ?? '';
   return type.toLowerCase().includes('application/json')
     ? response.json().catch(() => null)
@@ -34,7 +35,7 @@ async function call(path, init = {}) {
     redirect: 'follow',
     ...init,
   });
-  return { response, body: await payload(response) };
+  return { response, body: await responseBody(response) };
 }
 
 function errorCode(body) {
@@ -48,7 +49,8 @@ function forbiddenHits(value) {
     'secret_key', 'secretAccessKey', 'private_key', 'connection_string',
     'signed_url', 'signedUrl', 'secret_reference', 'secretReferenceId',
     'managed_secret_reference_id', 'active_provider_secret_id',
-    'ciphertext', 'nonce', 'authenticationTag', 'authentication_tag', 'keyVersion', 'key_version',
+    'ciphertext', 'nonce', 'authenticationTag', 'authentication_tag',
+    'keyVersion', 'key_version',
   ]);
   const hits = [];
   function visit(item, path = '$') {
@@ -69,34 +71,40 @@ function forbiddenHits(value) {
 function safeService(service) {
   return {
     serviceId: service?.serviceId ?? null,
-    environment: service?.environment ?? null,
     providerType: service?.providerType ?? null,
     ownership: service?.ownership ?? null,
     status: service?.status ?? null,
     lastTestStatus: service?.lastTestStatus ?? null,
     lastDiagnosticCode: service?.lastDiagnosticCode ?? null,
-    safeMetadataKeys:
-      service?.safeMetadata && typeof service.safeMetadata === 'object'
-        ? Object.keys(service.safeMetadata).sort()
-        : [],
-    capabilityKeys:
-      service?.capabilities && typeof service.capabilities === 'object'
-        ? Object.keys(service.capabilities).sort()
-        : [],
   };
+}
+
+async function archive(cookie, serviceId) {
+  return call(
+    `/client/storage/services/${encodeURIComponent(serviceId)}/archive?environment=dev`,
+    {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        cookie,
+        origin: BASE_URL,
+      },
+      body: JSON.stringify({}),
+    },
+  );
 }
 
 const result = {
   passed: false,
-  mode: 'client-owned-negative-lifecycle',
   readiness: null,
   signedOutBoundary: null,
   loginStatus: null,
   listStatus: null,
-  initialServiceCount: null,
+  priorDisposableServices: [],
+  priorCleanup: [],
   createStatus: null,
   createdService: null,
-  selectedServiceId: null,
   detailStatus: null,
   activityStatus: null,
   activityEventTypes: [],
@@ -130,10 +138,7 @@ try {
   const account = parseAccount(await readFile('.test_account', 'utf8'));
   const login = await call('/client/session', {
     method: 'POST',
-    headers: {
-      accept: 'application/json',
-      'content-type': 'application/json',
-    },
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify({
       clientId: account.clientId,
       clientCredential: account.clientCredential,
@@ -151,11 +156,31 @@ try {
   if (list.response.status !== 200) {
     throw new Error(`service-list-${list.response.status}-${errorCode(list.body) ?? 'unknown'}`);
   }
-  const services = Array.isArray(list.body?.result) ? list.body.result : [];
-  result.initialServiceCount = services.length;
   result.publicRedactionHits.push(...forbiddenHits(list.body));
 
-  disposableServiceId = `h08-vercel-negative-${randomUUID().slice(0, 8)}`;
+  const services = Array.isArray(list.body?.result) ? list.body.result : [];
+  const prior = services.filter((service) =>
+    typeof service?.serviceId === 'string' &&
+    service.serviceId.startsWith(TEST_PREFIX) &&
+    service.status !== 'archived',
+  );
+  result.priorDisposableServices = prior.map((service) => service.serviceId);
+
+  for (const service of prior) {
+    const cleanup = await archive(cookie, service.serviceId);
+    result.publicRedactionHits.push(...forbiddenHits(cleanup.body));
+    result.priorCleanup.push({
+      serviceId: service.serviceId,
+      status: cleanup.response.status,
+      serviceStatus: cleanup.body?.result?.status ?? null,
+      code: errorCode(cleanup.body),
+    });
+    if (cleanup.response.status !== 200 || cleanup.body?.result?.status !== 'archived') {
+      throw new Error(`prior-cleanup-${service.serviceId}-${cleanup.response.status}-${errorCode(cleanup.body) ?? 'unknown'}`);
+    }
+  }
+
+  disposableServiceId = `${TEST_PREFIX}${randomUUID().slice(0, 8)}`;
   const created = await call('/client/storage/services', {
     method: 'POST',
     headers: {
@@ -181,14 +206,12 @@ try {
   });
   result.createStatus = created.response.status;
   result.createdService = safeService(created.body?.result);
-  result.selectedServiceId = created.body?.result?.serviceId ?? disposableServiceId;
   result.publicRedactionHits.push(...forbiddenHits(created.body));
-
   if (created.response.status !== 201) {
     throw new Error(`service-create-${created.response.status}-${errorCode(created.body) ?? 'unknown'}`);
   }
 
-  const servicePath = `/client/storage/services/${encodeURIComponent(result.selectedServiceId)}`;
+  const servicePath = `/client/storage/services/${encodeURIComponent(disposableServiceId)}`;
   const detail = await call(`${servicePath}?environment=dev`, {
     headers: { accept: 'application/json', cookie },
   });
@@ -206,12 +229,19 @@ try {
     .filter((value) => typeof value === 'string')
     .slice(0, 20);
 
+  const archived = await archive(cookie, disposableServiceId);
+  result.archiveStatus = archived.response.status;
+  result.archivedServiceStatus = archived.body?.result?.status ?? null;
+  result.publicRedactionHits.push(...forbiddenHits(archived.body));
+
   result.passed =
     result.readiness?.status === 200 &&
+    result.readiness?.overall === 'ready' &&
     result.signedOutBoundary?.status === 401 &&
     result.signedOutBoundary?.code === 'client-login-required' &&
     result.loginStatus === 204 &&
     result.listStatus === 200 &&
+    result.priorCleanup.every((item) => item.status === 200 && item.serviceStatus === 'archived') &&
     result.createStatus === 201 &&
     result.createdService?.providerType === 'cloudflare-r2' &&
     result.createdService?.ownership === 'client-owned' &&
@@ -221,42 +251,18 @@ try {
     result.createdService.lastDiagnosticCode.startsWith('r2-') &&
     result.detailStatus === 200 &&
     result.activityStatus === 200 &&
+    result.activityEventTypes.includes('storage-service-created') &&
     result.activityEventTypes.includes('storage-service-test-failed') &&
+    result.archiveStatus === 200 &&
+    result.archivedServiceStatus === 'archived' &&
     result.publicRedactionHits.length === 0;
 
   if (!result.passed) result.failure = 'h08-vercel-negative-lifecycle-gate-failed';
 } catch (error) {
   result.failure = error instanceof Error ? error.message : String(error);
 } finally {
-  if (cookie && disposableServiceId) {
-    const archived = await call(
-      `/client/storage/services/${encodeURIComponent(disposableServiceId)}/archive?environment=dev`,
-      {
-        method: 'POST',
-        headers: {
-          accept: 'application/json',
-          'content-type': 'application/json',
-          cookie,
-          origin: BASE_URL,
-        },
-        body: JSON.stringify({}),
-      },
-    ).catch(() => null);
-    if (archived) {
-      result.archiveStatus = archived.response.status;
-      result.archivedServiceStatus = archived.body?.result?.status ?? null;
-      result.publicRedactionHits.push(...forbiddenHits(archived.body));
-      result.passed = result.passed &&
-        result.archiveStatus === 200 &&
-        result.archivedServiceStatus === 'archived' &&
-        result.publicRedactionHits.length === 0;
-      if (!result.passed && result.failure === null) {
-        result.failure = 'h08-vercel-cleanup-gate-failed';
-      }
-    } else {
-      result.passed = false;
-      result.failure ??= 'h08-vercel-cleanup-request-failed';
-    }
+  if (cookie && disposableServiceId && result.archivedServiceStatus !== 'archived') {
+    await archive(cookie, disposableServiceId).catch(() => undefined);
   }
   if (cookie) {
     await fetch(new URL('/client/session', BASE_URL), {
