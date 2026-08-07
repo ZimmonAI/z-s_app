@@ -4,17 +4,9 @@
     {
       "src": "api/index.ts",
       "use": "@vercel/node"
-    },
-    {
-      "src": "api/h09-smoke.ts",
-      "use": "@vercel/node"
     }
   ],
   "routes": [
-    {
-      "src": "/__h09-smoke",
-      "dest": "/api/h09-smoke.ts"
-    },
     {
       "src": "/(.*)",
       "dest": "/api/index.ts"
