@@ -1,0 +1,27 @@
+name: H08 Vercel API smoke
+
+on:
+  push:
+    branches:
+      - agent/h08-vercel-smoke-20260807
+    paths:
+      - '.github/workflows/h08-vercel-smoke.yml'
+      - 'scripts/h08-vercel-smoke.mjs'
+      - '.test_account'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run bounded Vercel storage-service smoke
+        run: node scripts/h08-vercel-smoke.mjs
