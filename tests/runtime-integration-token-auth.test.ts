@@ -38,6 +38,27 @@ test('valid integration token returns only safe runtime principal fields', async
   assert.equal(JSON.stringify(principal).includes('digest'), false);
 });
 
+test('trusted Video Maker bearer resolves to governed dev runtime principal without exposing token material', async () => {
+  const previous = process.env.Z_S_VIDEO_MAKER_BEARER_TOKEN;
+  const token = 'video-maker-server-token-for-test-only';
+  process.env.Z_S_VIDEO_MAKER_BEARER_TOKEN = token;
+  try {
+    const store = new InMemoryClientStorageConfigurationStore();
+    const principal = await new ConfigurationStoreRuntimeIntegrationTokenAuthenticator(store)
+      .authenticate(token, 'object:manage', NOW);
+    assert.deepEqual(principal, {
+      clientId: 'video-maker_app',
+      environment: 'dev',
+      tokenId: 'video-maker-runtime-compatibility',
+      scopes: ['object:write', 'object:read', 'object:manage'],
+    });
+    assert.equal(JSON.stringify(principal).includes(token), false);
+  } finally {
+    if (previous === undefined) delete process.env.Z_S_VIDEO_MAKER_BEARER_TOKEN;
+    else process.env.Z_S_VIDEO_MAKER_BEARER_TOKEN = previous;
+  }
+});
+
 test('invalid, expired, revoked and wrong-scope tokens return bounded safe errors', async () => {
   const store = new InMemoryClientStorageConfigurationStore();
   store.registerClient('client-a');
