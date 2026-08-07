@@ -10,7 +10,7 @@ import {
   BoundedReplicaProtectionWorker,
   ReplicaProtectionError,
 } from './runtime-replica-protection.js';
-import { PostgresLeasedReplicaProtectionStore } from './runtime-replica-protection-postgres.js';
+import { PostgresReplicaProtectionRuntimeStore } from './runtime-replica-protection-store.js';
 import {
   S3CompatibleProviderObjectReader,
 } from './runtime-read-delivery.js';
@@ -150,7 +150,7 @@ export function createReplicaProtectionRuntimeComposition(input: Readonly<{
       async close(): Promise<void> {},
     });
   }
-  const store = new PostgresLeasedReplicaProtectionStore(pool);
+  const store = new PostgresReplicaProtectionRuntimeStore(pool);
   const worker = new BoundedReplicaProtectionWorker({
     store,
     reader: new S3CompatibleProviderObjectReader({ credentialResolver: input.credentialResolver }),
