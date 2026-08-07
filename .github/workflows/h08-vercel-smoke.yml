@@ -8,6 +8,11 @@ on:
       - '.github/workflows/h08-vercel-smoke.yml'
       - 'scripts/h08-vercel-smoke.mjs'
       - '.test_account'
+  pull_request:
+    paths:
+      - '.github/workflows/h08-vercel-smoke.yml'
+      - 'scripts/h08-vercel-smoke.mjs'
+      - '.test_account'
 
 permissions:
   contents: read
