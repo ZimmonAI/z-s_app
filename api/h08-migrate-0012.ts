@@ -26,8 +26,8 @@ export default async function handler(
   response: ResponseLike,
 ): Promise<void> {
   const url = new URL(request.url ?? '/', 'https://internal.invalid');
-  if (request.method !== 'GET' || url.searchParams.get('confirm') !== 'apply-0012') {
-    sendJson(response, { error: { code: 'migration-confirmation-required' } }, 400);
+  if (request.method !== 'GET') {
+    sendJson(response, { error: { code: 'method-not-allowed' } }, 405);
     return;
   }
 
@@ -42,10 +42,92 @@ export default async function handler(
     max: 1,
     connectionTimeoutMillis: 5_000,
     idleTimeoutMillis: 5_000,
-    application_name: 'h08-0012-migration-executor',
+    application_name: 'h08-schema-inspect-and-0012-migration',
   });
 
   try {
+    if (url.searchParams.get('mode') === 'inspect') {
+      const result = await pool.query(`
+        SELECT
+          (
+            SELECT count(*)::integer
+            FROM pg_class AS c
+            JOIN pg_namespace AS n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relkind = 'r'
+          ) AS public_table_count,
+          to_regclass('public.storage_control_clients') IS NOT NULL AS storage_control_clients,
+          to_regclass('public.storage_control_provider_connections') IS NOT NULL AS storage_control_provider_connections,
+          to_regclass('public.storage_control_configuration_versions') IS NOT NULL AS storage_control_configuration_versions,
+          to_regclass('public.storage_control_configuration_vaults') IS NOT NULL AS storage_control_configuration_vaults,
+          to_regclass('public.storage_control_configuration_image_presets') IS NOT NULL AS storage_control_configuration_image_presets,
+          to_regclass('public.storage_control_configuration_routes') IS NOT NULL AS storage_control_configuration_routes,
+          to_regclass('public.storage_control_configuration_route_targets') IS NOT NULL AS storage_control_configuration_route_targets,
+          to_regclass('public.storage_objects') IS NOT NULL AS storage_objects,
+          to_regclass('public.storage_object_copies') IS NOT NULL AS storage_object_copies,
+          to_regclass('public.storage_image_derivative_jobs') IS NOT NULL AS storage_image_derivative_jobs,
+          to_regclass('public.storage_image_derivative_outputs') IS NOT NULL AS storage_image_derivative_outputs,
+          to_regclass('public.storage_control_storage_services') IS NOT NULL AS storage_control_storage_services,
+          to_regclass('public.storage_control_provider_secrets') IS NOT NULL AS storage_control_provider_secrets,
+          to_regclass('public.storage_control_storage_service_events') IS NOT NULL AS storage_control_storage_service_events,
+          EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'storage_objects'
+              AND column_name = 'configuration_version_id'
+          ) AS storage_objects_configuration_version_id,
+          EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'storage_objects'
+              AND column_name = 'configuration_fingerprint'
+          ) AS storage_objects_configuration_fingerprint,
+          EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'storage_objects'
+              AND column_name = 'configuration_route_id'
+          ) AS storage_objects_configuration_route_id,
+          EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'storage_object_copies'
+              AND column_name = 'configuration_route_target_id'
+          ) AS storage_object_copies_configuration_route_target_id,
+          EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'storage_object_copies'
+              AND column_name = 'configuration_vault_id'
+          ) AS storage_object_copies_configuration_vault_id,
+          EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'storage_object_copies'
+              AND column_name = 'provider_connection_id'
+          ) AS storage_object_copies_provider_connection_id,
+          EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'storage_object_copies'
+              AND column_name = 'target_role'
+          ) AS storage_object_copies_target_role,
+          EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'storage_object_copies'
+              AND column_name = 'target_order'
+          ) AS storage_object_copies_target_order
+      `);
+      sendJson(response, { result: result.rows[0] });
+      return;
+    }
+
+    if (url.searchParams.get('confirm') !== 'apply-0012') {
+      sendJson(response, { error: { code: 'migration-confirmation-required' } }, 400);
+      return;
+    }
+
     const before = await pool.query(`
       SELECT
         to_regclass('public.storage_control_storage_services') IS NOT NULL AS services,
@@ -110,9 +192,9 @@ export default async function handler(
     const candidate = error as { code?: unknown; message?: unknown };
     sendJson(response, {
       error: {
-        code: 'migration-0012-failed',
+        code: 'h08-schema-operation-failed',
         sqlstate: typeof candidate?.code === 'string' ? candidate.code : null,
-        message: typeof candidate?.message === 'string' ? candidate.message : 'migration failed',
+        message: typeof candidate?.message === 'string' ? candidate.message : 'schema operation failed',
       },
     }, 500);
   } finally {
