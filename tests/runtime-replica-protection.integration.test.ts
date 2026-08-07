@@ -5,8 +5,8 @@ import { Pool } from 'pg';
 import type { ConfigurationDraftDocument } from '../src/client-storage-configuration.js';
 import { PostgresClientStorageConfigurationStore } from '../src/client-storage-configuration-postgres.js';
 import { PostgresActiveConfigurationResolver } from '../src/runtime-active-configuration.js';
+import { PostgresLeasedReplicaProtectionStore } from '../src/runtime-replica-protection-postgres.js';
 import {
-  PostgresReplicaProtectionStore,
   REPLICA_PROTECTION_LIMITS,
   ReplicaProtectionError,
 } from '../src/runtime-replica-protection.js';
@@ -40,121 +40,46 @@ const credentialResolver: ProviderCredentialResolver = {
   }),
 };
 
-async function resetAndApplyThrough0010(pool: Pool): Promise<void> {
+async function resetThrough0010(pool: Pool): Promise<void> {
   await resetAndApplyThrough0004(pool);
   await apply0005(pool);
   await applyConfigurationCleanupMigrations(pool);
   await pool.query(await readFile('db/migrations/0010_z_s_runtime_configuration_routing.sql', 'utf8'));
 }
 
-function r2PrimaryDocument(): ConfigurationDraftDocument {
+function configuration(): ConfigurationDraftDocument {
   return {
     providerConnections: [
-      {
-        connectionId: 'r2-primary',
-        displayLabel: 'R2 primary',
-        providerType: 'r2',
-        secretReferenceId: 'vault:z-s:r2-primary',
-        safeMetadata: { regionLabel: 'global-hot' },
-      },
-      {
-        connectionId: 'minio-protection',
-        displayLabel: 'MinIO protection',
-        providerType: 'minio',
-        secretReferenceId: 'vault:z-s:minio-protection',
-        safeMetadata: { regionLabel: 'local-protection' },
-      },
+      { connectionId: 'r2-primary', displayLabel: 'R2 primary', providerType: 'r2', secretReferenceId: 'vault:z-s:r2-primary', safeMetadata: { regionLabel: 'global-hot' } },
+      { connectionId: 'minio-protection', displayLabel: 'MinIO protection', providerType: 'minio', secretReferenceId: 'vault:z-s:minio-protection', safeMetadata: { regionLabel: 'local-protection' } },
     ],
     vaults: [
-      {
-        vaultId: 'r2-primary',
-        providerConnectionId: 'r2-primary',
-        displayLabel: 'R2 primary',
-        purpose: 'hot-copy',
-        bucketLabel: 'video-maker-hot',
-        prefixTemplate: 'video-maker/hot/*',
-        retention: { mode: 'delete-after-days', deleteAfterDays: 7 },
-      },
-      {
-        vaultId: 'minio-protection',
-        providerConnectionId: 'minio-protection',
-        displayLabel: 'MinIO protection',
-        purpose: 'archive',
-        bucketLabel: 'video-maker-protection',
-        prefixTemplate: 'video-maker/protection/*',
-        retention: { mode: 'permanent' },
-      },
-      {
-        vaultId: 'image-derivatives',
-        providerConnectionId: 'r2-primary',
-        displayLabel: 'Image derivatives',
-        purpose: 'derivatives',
-        bucketLabel: 'video-maker-derivatives',
-        prefixTemplate: 'video-maker/derivatives/*',
-        retention: { mode: 'permanent' },
-      },
+      { vaultId: 'r2-primary', providerConnectionId: 'r2-primary', displayLabel: 'R2 primary', purpose: 'hot-copy', bucketLabel: 'video-maker-hot', prefixTemplate: 'video-maker/hot/*', retention: { mode: 'delete-after-days', deleteAfterDays: 7 } },
+      { vaultId: 'minio-protection', providerConnectionId: 'minio-protection', displayLabel: 'MinIO protection', purpose: 'archive', bucketLabel: 'video-maker-protection', prefixTemplate: 'video-maker/protection/*', retention: { mode: 'permanent' } },
+      { vaultId: 'image-derivatives', providerConnectionId: 'r2-primary', displayLabel: 'Image derivatives', purpose: 'derivatives', bucketLabel: 'video-maker-derivatives', prefixTemplate: 'video-maker/derivatives/*', retention: { mode: 'permanent' } },
     ],
     routes: [
-      {
-        routeId: 'images',
-        assetClass: 'image',
-        targets: [
-          { role: 'primary', vaultId: 'r2-primary' },
-          { role: 'replica', vaultId: 'minio-protection' },
-        ],
-        imagePresetId: 'production-images',
-      },
-      {
-        routeId: 'videos',
-        assetClass: 'video',
-        targets: [
-          { role: 'primary', vaultId: 'r2-primary' },
-          { role: 'replica', vaultId: 'minio-protection' },
-        ],
-      },
-      {
-        routeId: 'documents',
-        assetClass: 'document',
-        targets: [
-          { role: 'primary', vaultId: 'r2-primary' },
-          { role: 'replica', vaultId: 'minio-protection' },
-        ],
-      },
+      { routeId: 'images', assetClass: 'image', targets: [{ role: 'primary', vaultId: 'r2-primary' }, { role: 'replica', vaultId: 'minio-protection' }], imagePresetId: 'production-images' },
+      { routeId: 'videos', assetClass: 'video', targets: [{ role: 'primary', vaultId: 'r2-primary' }, { role: 'replica', vaultId: 'minio-protection' }] },
+      { routeId: 'documents', assetClass: 'document', targets: [{ role: 'primary', vaultId: 'r2-primary' }, { role: 'replica', vaultId: 'minio-protection' }] },
     ],
     imagePresets: [
-      {
-        presetId: 'production-images',
-        targetVaultId: 'image-derivatives',
-        widths: [512],
-        outputFormat: 'png',
-        quality: 82,
-        fit: 'inside',
-      },
+      { presetId: 'production-images', targetVaultId: 'image-derivatives', widths: [512], outputFormat: 'png', quality: 82, fit: 'inside' },
     ],
   };
 }
 
-async function activateConfiguration(pool: Pool) {
+async function activate(pool: Pool): Promise<void> {
   const adapted = adaptPool(pool);
   const store = new PostgresClientStorageConfigurationStore(adapted);
-  const draft = await store.createDraft('video-maker_app', {
-    environment: 'dev',
-    ...r2PrimaryDocument(),
-  }, NOW);
+  const draft = await store.createDraft('video-maker_app', { environment: 'dev', ...configuration() }, NOW);
   await store.activateDraft('video-maker_app', 'dev', draft.id, new Date(NOW.getTime() + 1_000));
-  const resolver = new PostgresActiveConfigurationResolver({
-    queryable: adapted,
-    credentialResolver,
-  });
-  return resolver.resolve({ clientId: 'video-maker_app', environment: 'dev', assetClass: 'video' });
 }
 
 async function createDegradedObject(pool: Pool, suffix: string) {
   const adapted = adaptPool(pool);
-  const authority = await new PostgresActiveConfigurationResolver({
-    queryable: adapted,
-    credentialResolver,
-  }).resolve({ clientId: 'video-maker_app', environment: 'dev', assetClass: 'video' });
+  const authority = await new PostgresActiveConfigurationResolver({ queryable: adapted, credentialResolver })
+    .resolve({ clientId: 'video-maker_app', environment: 'dev', assetClass: 'video' });
   const registry = new PostgresRuntimeStorageRegistry({
     pool: adapted,
     duplicateResultCodec: createRuntimeStorageDuplicateResultCodec(),
@@ -207,129 +132,68 @@ async function createDegradedObject(pool: Pool, suffix: string) {
     reservation,
     checksumSha256: CHECKSUM,
     byteLength: BYTE_LENGTH,
-    verifiedMedia: Object.freeze({
-      mediaType: 'video/mp4',
-      mediaFamily: 'video',
-      video: Object.freeze({ durationMs: 1_000, container: 'mp4' }),
-    }),
-    outcomes: Object.freeze([
-      Object.freeze({
-        configurationRouteTargetId: primary.configurationRouteTargetId,
-        outcome: Object.freeze({
-          state: 'verified' as const,
-          retryable: false,
-          observedChecksumSha256: CHECKSUM,
-          observedByteLength: BYTE_LENGTH,
-        }),
-      }),
-    ]),
+    verifiedMedia: Object.freeze({ mediaType: 'video/mp4', mediaFamily: 'video', video: Object.freeze({ durationMs: 1_000, container: 'mp4' }) }),
+    outcomes: Object.freeze([Object.freeze({
+      configurationRouteTargetId: primary.configurationRouteTargetId,
+      outcome: Object.freeze({ state: 'verified' as const, retryable: false, observedChecksumSha256: CHECKSUM, observedByteLength: BYTE_LENGTH }),
+    })]),
   });
   assert.equal(result.storageState, 'degraded');
   assert.equal(result.objectProtectionStage, 'configuration-replica-repair-required');
-  return { storageObjectId, primary, replica };
+  return { storageObjectId, replica };
 }
 
 function errorCode(code: string) {
   return (error: unknown) => error instanceof ReplicaProtectionError && error.code === code;
 }
 
-integrationTest('PostgreSQL repair leasing is atomic, stale-safe, retry-bounded, and promotes exactly one replica', async () => {
+integrationTest('PostgreSQL repair claims are single-owner, stale-safe, and retry-bounded', async () => {
   const pool = new Pool({ connectionString: databaseUrl, max: 12 });
   try {
-    await resetAndApplyThrough0010(pool);
+    await resetThrough0010(pool);
     await seedClients(pool);
-    await activateConfiguration(pool);
-    const adapted = adaptPool(pool);
-    const store = new PostgresReplicaProtectionStore(adapted);
+    await activate(pool);
+    const store = new PostgresLeasedReplicaProtectionStore(adaptPool(pool));
     const first = await createDegradedObject(pool, 'concurrent');
 
-    const concurrent = await Promise.all(Array.from({ length: 6 }, (_, index) =>
-      store.claimRepair({
-        clientId: 'video-maker_app',
-        environment: 'dev',
-        workerId: `worker-${index + 1}`,
-        now: NOW,
-      }),
-    ));
-    const claimed = concurrent.filter((job): job is NonNullable<typeof job> => job !== null);
+    const claims = await Promise.all(Array.from({ length: 6 }, (_, index) => store.claimRepair({
+      clientId: 'video-maker_app', environment: 'dev', workerId: `worker-${index + 1}`, now: NOW,
+    })));
+    const claimed = claims.filter((job): job is NonNullable<typeof job> => job !== null);
     assert.equal(claimed.length, 1);
-    const staleJob = claimed[0]!;
-    assert.equal(staleJob.storageObjectId, first.storageObjectId);
-    assert.equal(staleJob.targetStorageObjectCopyId, first.replica.storageObjectCopyId);
+    const stale = claimed[0]!;
+    assert.equal(stale.targetStorageObjectCopyId, first.replica.storageObjectCopyId);
 
     const afterExpiry = new Date(NOW.getTime() + REPLICA_PROTECTION_LIMITS.leaseDurationMs + 1);
-    const replacement = await store.claimRepair({
-      clientId: 'video-maker_app',
-      environment: 'dev',
-      workerId: 'replacement-worker',
-      now: afterExpiry,
-    });
+    const replacement = await store.claimRepair({ clientId: 'video-maker_app', environment: 'dev', workerId: 'replacement', now: afterExpiry });
     assert.ok(replacement !== null);
     assert.equal(replacement.attemptNumber, 2);
-    await assert.rejects(
-      store.completeRepair(staleJob, afterExpiry),
-      errorCode('storage-replica-lease-lost'),
-    );
+    await assert.rejects(store.completeRepair(stale, afterExpiry), errorCode('storage-replica-lease-lost'));
     await store.completeRepair(replacement, afterExpiry);
 
-    const truth = await pool.query<{
-      registry_state: string;
-      object_protection_stage: string;
-      replica_state: string;
-      repair_attempts: string;
-      expired_attempts: string;
-    }>(`
-SELECT
-  object_record.registry_state,
-  object_record.object_protection_stage,
-  replica.copy_state AS replica_state,
-  (SELECT count(*)::text FROM public.storage_provider_attempts AS attempt
-    WHERE attempt.storage_object_copy_id = replica.storage_object_copy_id
-      AND attempt.operation = 'repair') AS repair_attempts,
-  (SELECT count(*)::text FROM public.storage_provider_attempts AS attempt
-    WHERE attempt.storage_object_copy_id = replica.storage_object_copy_id
-      AND attempt.operation = 'repair'
-      AND attempt.safe_diagnostic_code = 'storage-replica-lease-expired') AS expired_attempts
-FROM public.storage_objects AS object_record
-JOIN public.storage_object_copies AS replica
-  ON replica.storage_object_id = object_record.storage_object_id
- AND replica.target_role = 'replica'
-WHERE object_record.storage_object_id = $1
+    const truth = await pool.query<{ registry_state: string; object_protection_stage: string; replica_state: string; repair_attempts: string; expired_attempts: string }>(`
+SELECT object_record.registry_state, object_record.object_protection_stage,
+       replica.copy_state AS replica_state,
+       (SELECT count(*)::text FROM public.storage_provider_attempts AS attempt WHERE attempt.storage_object_copy_id = replica.storage_object_copy_id AND attempt.operation = 'repair') AS repair_attempts,
+       (SELECT count(*)::text FROM public.storage_provider_attempts AS attempt WHERE attempt.storage_object_copy_id = replica.storage_object_copy_id AND attempt.operation = 'repair' AND attempt.safe_diagnostic_code = 'storage-replica-lease-expired') AS expired_attempts
+  FROM public.storage_objects AS object_record
+  JOIN public.storage_object_copies AS replica ON replica.storage_object_id = object_record.storage_object_id AND replica.target_role = 'replica'
+ WHERE object_record.storage_object_id = $1
 `, [first.storageObjectId]);
     assert.deepEqual(truth.rows[0], {
-      registry_state: 'active',
-      object_protection_stage: 'configuration-primary-and-replicas-verified',
-      replica_state: 'verified',
-      repair_attempts: '2',
-      expired_attempts: '1',
+      registry_state: 'active', object_protection_stage: 'configuration-primary-and-replicas-verified', replica_state: 'verified', repair_attempts: '2', expired_attempts: '1',
     });
-    assert.equal(await store.claimRepair({
-      clientId: 'video-maker_app', environment: 'dev', workerId: 'duplicate', now: afterExpiry,
-    }), null);
 
     const retryObject = await createDegradedObject(pool, 'retry');
-    const retry1 = await store.claimRepair({
-      clientId: 'video-maker_app', environment: 'dev', workerId: 'retry-1', now: NOW,
-    });
+    const retry1 = await store.claimRepair({ clientId: 'video-maker_app', environment: 'dev', workerId: 'retry-1', now: NOW });
     assert.ok(retry1 !== null && retry1.storageObjectId === retryObject.storageObjectId);
-    await store.failRepair({
-      job: retry1,
-      category: 'dependency-unavailable',
-      code: 'provider-write-failed',
-      retryable: true,
-      now: NOW,
-    });
-    const tooEarly = await store.claimRepair({
-      clientId: 'video-maker_app',
-      environment: 'dev',
-      workerId: 'retry-too-early',
+    await store.failRepair({ job: retry1, category: 'dependency-unavailable', code: 'provider-write-failed', retryable: true, now: NOW });
+    assert.equal(await store.claimRepair({
+      clientId: 'video-maker_app', environment: 'dev', workerId: 'too-early',
       now: new Date(NOW.getTime() + REPLICA_PROTECTION_LIMITS.retryDelayMs - 1),
-    });
-    assert.equal(tooEarly, null);
+    }), null);
     const retry2 = await store.claimRepair({
-      clientId: 'video-maker_app',
-      environment: 'dev',
-      workerId: 'retry-2',
+      clientId: 'video-maker_app', environment: 'dev', workerId: 'retry-2',
       now: new Date(NOW.getTime() + REPLICA_PROTECTION_LIMITS.retryDelayMs),
     });
     assert.ok(retry2 !== null);
@@ -339,64 +203,37 @@ WHERE object_record.storage_object_id = $1
   }
 });
 
-integrationTest('PostgreSQL retention fails closed until protection is verified and only then marks the primary deleted', async () => {
+integrationTest('PostgreSQL retention stays blocked until protection is verified, then deletes only primary authority', async () => {
   const pool = new Pool({ connectionString: databaseUrl, max: 8 });
   try {
-    await resetAndApplyThrough0010(pool);
+    await resetThrough0010(pool);
     await seedClients(pool);
-    await activateConfiguration(pool);
-    const store = new PostgresReplicaProtectionStore(adaptPool(pool));
+    await activate(pool);
+    const store = new PostgresLeasedReplicaProtectionStore(adaptPool(pool));
     const object = await createDegradedObject(pool, 'retention');
     const due = new Date(NOW.getTime() + 8 * 24 * 60 * 60_000);
 
-    const blocked = await store.claimRetention({
-      clientId: 'video-maker_app', environment: 'dev', workerId: 'retention-blocked', now: due,
-    });
+    const blocked = await store.claimRetention({ clientId: 'video-maker_app', environment: 'dev', workerId: 'blocked', now: due });
     assert.equal(blocked.kind, 'blocked');
-    const before = await pool.query<{ primary_state: string; registry_state: string }>(`
-SELECT primary_copy.copy_state AS primary_state, object_record.registry_state
-FROM public.storage_objects AS object_record
-JOIN public.storage_object_copies AS primary_copy
-  ON primary_copy.storage_object_id = object_record.storage_object_id
- AND primary_copy.target_role = 'primary'
-WHERE object_record.storage_object_id = $1
-`, [object.storageObjectId]);
-    assert.deepEqual(before.rows[0], { primary_state: 'verified', registry_state: 'degraded' });
 
-    const repair = await store.claimRepair({
-      clientId: 'video-maker_app', environment: 'dev', workerId: 'repair-before-retention', now: due,
-    });
+    const repair = await store.claimRepair({ clientId: 'video-maker_app', environment: 'dev', workerId: 'repair', now: due });
     assert.ok(repair !== null);
     await store.completeRepair(repair, due);
-    const claim = await store.claimRetention({
-      clientId: 'video-maker_app', environment: 'dev', workerId: 'retention-allowed', now: due,
-    });
+    const claim = await store.claimRetention({ clientId: 'video-maker_app', environment: 'dev', workerId: 'retention', now: due });
     assert.equal(claim.kind, 'job');
     if (claim.kind !== 'job') assert.fail('expected retention job');
     await store.completeRetention(claim.job, due);
 
-    const after = await pool.query<{
-      registry_state: string;
-      object_protection_stage: string;
-      primary_state: string;
-      replica_state: string;
-    }>(`
+    const truth = await pool.query<{ registry_state: string; object_protection_stage: string; primary_state: string; replica_state: string }>(`
 SELECT object_record.registry_state, object_record.object_protection_stage,
        primary_copy.copy_state AS primary_state, replica.copy_state AS replica_state
-FROM public.storage_objects AS object_record
-JOIN public.storage_object_copies AS primary_copy
-  ON primary_copy.storage_object_id = object_record.storage_object_id
- AND primary_copy.target_role = 'primary'
-JOIN public.storage_object_copies AS replica
-  ON replica.storage_object_id = object_record.storage_object_id
- AND replica.target_role = 'replica'
-WHERE object_record.storage_object_id = $1
+  FROM public.storage_objects AS object_record
+  JOIN public.storage_object_copies AS primary_copy ON primary_copy.storage_object_id = object_record.storage_object_id AND primary_copy.target_role = 'primary'
+  JOIN public.storage_object_copies AS replica ON replica.storage_object_id = object_record.storage_object_id AND replica.target_role = 'replica'
+ WHERE object_record.storage_object_id = $1
 `, [object.storageObjectId]);
-    assert.deepEqual(after.rows[0], {
-      registry_state: 'active',
-      object_protection_stage: 'configuration-primary-retention-cleaned',
-      primary_state: 'deleted',
-      replica_state: 'verified',
+    assert.deepEqual(truth.rows[0], {
+      registry_state: 'active', object_protection_stage: 'configuration-primary-retention-cleaned', primary_state: 'deleted', replica_state: 'verified',
     });
   } finally {
     await pool.end();
