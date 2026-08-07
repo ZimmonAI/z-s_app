@@ -1,0 +1,25 @@
+name: Video Maker R2 primary configuration
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/video-maker-r2-primary-config.yml'
+      - 'scripts/video-maker-r2-primary-config.mjs'
+      - '.test_account'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Inspect active Video Maker storage routing
+        run: node scripts/video-maker-r2-primary-config.mjs
