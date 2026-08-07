@@ -1,13 +1,6 @@
 name: H08 Vercel API smoke
 
 on:
-  push:
-    branches:
-      - agent/h08-vercel-smoke-20260807
-    paths:
-      - '.github/workflows/h08-vercel-smoke.yml'
-      - 'scripts/h08-vercel-smoke.mjs'
-      - '.test_account'
   pull_request:
     paths:
       - '.github/workflows/h08-vercel-smoke.yml'
