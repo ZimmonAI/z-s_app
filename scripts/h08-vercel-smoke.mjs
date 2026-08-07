@@ -48,6 +48,7 @@ function forbiddenHits(value) {
     'secret_key', 'secretAccessKey', 'private_key', 'connection_string',
     'signed_url', 'signedUrl', 'secret_reference', 'secretReferenceId',
     'managed_secret_reference_id', 'active_provider_secret_id',
+    'ciphertext', 'nonce', 'authenticationTag', 'authentication_tag', 'keyVersion', 'key_version',
   ]);
   const hits = [];
   function visit(item, path = '$') {
@@ -87,23 +88,26 @@ function safeService(service) {
 
 const result = {
   passed: false,
+  mode: 'client-owned-negative-lifecycle',
   readiness: null,
   signedOutBoundary: null,
   loginStatus: null,
   listStatus: null,
-  serviceCount: null,
-  services: [],
+  initialServiceCount: null,
+  createStatus: null,
+  createdService: null,
   selectedServiceId: null,
-  testStatus: null,
-  testResult: null,
   detailStatus: null,
   activityStatus: null,
   activityEventTypes: [],
+  archiveStatus: null,
+  archivedServiceStatus: null,
   publicRedactionHits: [],
   failure: null,
 };
 
 let cookie = null;
+let disposableServiceId = null;
 
 try {
   const ready = await call('/readyz', { headers: { accept: 'application/json' } });
@@ -147,60 +151,60 @@ try {
   if (list.response.status !== 200) {
     throw new Error(`service-list-${list.response.status}-${errorCode(list.body) ?? 'unknown'}`);
   }
-
   const services = Array.isArray(list.body?.result) ? list.body.result : [];
-  result.serviceCount = services.length;
-  result.services = services.map(safeService);
+  result.initialServiceCount = services.length;
   result.publicRedactionHits.push(...forbiddenHits(list.body));
 
-  const selected = services.find((service) =>
-    service?.providerType === 'cloudflare-r2' &&
-    service?.ownership === 'client-owned' &&
-    service?.status !== 'disabled' &&
-    service?.status !== 'archived',
-  );
-
-  if (!selected?.serviceId) {
-    result.failure = 'no-existing-client-owned-r2-service';
-  } else {
-    result.selectedServiceId = selected.serviceId;
-    const servicePath = `/client/storage/services/${encodeURIComponent(selected.serviceId)}`;
-
-    const tested = await call(`${servicePath}/test?environment=dev`, {
-      method: 'POST',
-      headers: {
-        accept: 'application/json',
-        'content-type': 'application/json',
-        cookie,
-        origin: BASE_URL,
+  disposableServiceId = `h08-vercel-negative-${randomUUID().slice(0, 8)}`;
+  const created = await call('/client/storage/services', {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      cookie,
+      origin: BASE_URL,
+    },
+    body: JSON.stringify({
+      serviceId: disposableServiceId,
+      environment: 'dev',
+      displayName: 'H08 Vercel negative-path probe',
+      providerType: 'cloudflare-r2',
+      safeMetadata: { accountLabel: 'H08 Vercel negative probe' },
+      secretInput: {
+        accountId: '00000000000000000000000000000000',
+        accessKeyId: 'H08INVALIDACCESSKEY12345',
+        secretAccessKey: 'h08-intentionally-invalid-secret-access-key',
+        bucket: 'video-maker-hot',
       },
-      body: JSON.stringify({
-        testScope: { prefix: `h08-vercel-smoke/${randomUUID()}` },
-      }),
-    });
-    result.testStatus = tested.response.status;
-    result.testResult = tested.body?.result ? safeService(tested.body.result) : {
-      code: errorCode(tested.body),
-    };
-    result.publicRedactionHits.push(...forbiddenHits(tested.body));
+      testScope: { prefix: `h08-vercel-negative/${randomUUID()}` },
+    }),
+  });
+  result.createStatus = created.response.status;
+  result.createdService = safeService(created.body?.result);
+  result.selectedServiceId = created.body?.result?.serviceId ?? disposableServiceId;
+  result.publicRedactionHits.push(...forbiddenHits(created.body));
 
-    const detail = await call(`${servicePath}?environment=dev`, {
-      headers: { accept: 'application/json', cookie },
-    });
-    result.detailStatus = detail.response.status;
-    result.publicRedactionHits.push(...forbiddenHits(detail.body));
-
-    const activity = await call(`${servicePath}/activity?environment=dev`, {
-      headers: { accept: 'application/json', cookie },
-    });
-    result.activityStatus = activity.response.status;
-    result.publicRedactionHits.push(...forbiddenHits(activity.body));
-    const events = Array.isArray(activity.body?.result) ? activity.body.result : [];
-    result.activityEventTypes = events
-      .map((event) => event?.eventType)
-      .filter((value) => typeof value === 'string')
-      .slice(0, 20);
+  if (created.response.status !== 201) {
+    throw new Error(`service-create-${created.response.status}-${errorCode(created.body) ?? 'unknown'}`);
   }
+
+  const servicePath = `/client/storage/services/${encodeURIComponent(result.selectedServiceId)}`;
+  const detail = await call(`${servicePath}?environment=dev`, {
+    headers: { accept: 'application/json', cookie },
+  });
+  result.detailStatus = detail.response.status;
+  result.publicRedactionHits.push(...forbiddenHits(detail.body));
+
+  const activity = await call(`${servicePath}/activity?environment=dev`, {
+    headers: { accept: 'application/json', cookie },
+  });
+  result.activityStatus = activity.response.status;
+  result.publicRedactionHits.push(...forbiddenHits(activity.body));
+  const events = Array.isArray(activity.body?.result) ? activity.body.result : [];
+  result.activityEventTypes = events
+    .map((event) => event?.eventType)
+    .filter((value) => typeof value === 'string')
+    .slice(0, 20);
 
   result.passed =
     result.readiness?.status === 200 &&
@@ -208,22 +212,52 @@ try {
     result.signedOutBoundary?.code === 'client-login-required' &&
     result.loginStatus === 204 &&
     result.listStatus === 200 &&
-    result.selectedServiceId !== null &&
-    result.testStatus === 200 &&
-    result.testResult?.status === 'ready' &&
-    result.testResult?.lastTestStatus === 'passed' &&
-    result.testResult?.lastDiagnosticCode === null &&
+    result.createStatus === 201 &&
+    result.createdService?.providerType === 'cloudflare-r2' &&
+    result.createdService?.ownership === 'client-owned' &&
+    result.createdService?.status === 'failed' &&
+    result.createdService?.lastTestStatus === 'failed' &&
+    typeof result.createdService?.lastDiagnosticCode === 'string' &&
+    result.createdService.lastDiagnosticCode.startsWith('r2-') &&
     result.detailStatus === 200 &&
     result.activityStatus === 200 &&
-    result.activityEventTypes.includes('storage-service-test-passed') &&
+    result.activityEventTypes.includes('storage-service-test-failed') &&
     result.publicRedactionHits.length === 0;
 
-  if (!result.passed && result.failure === null) {
-    result.failure = 'h08-vercel-smoke-gate-failed';
-  }
+  if (!result.passed) result.failure = 'h08-vercel-negative-lifecycle-gate-failed';
 } catch (error) {
   result.failure = error instanceof Error ? error.message : String(error);
 } finally {
+  if (cookie && disposableServiceId) {
+    const archived = await call(
+      `/client/storage/services/${encodeURIComponent(disposableServiceId)}/archive?environment=dev`,
+      {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+          cookie,
+          origin: BASE_URL,
+        },
+        body: JSON.stringify({}),
+      },
+    ).catch(() => null);
+    if (archived) {
+      result.archiveStatus = archived.response.status;
+      result.archivedServiceStatus = archived.body?.result?.status ?? null;
+      result.publicRedactionHits.push(...forbiddenHits(archived.body));
+      result.passed = result.passed &&
+        result.archiveStatus === 200 &&
+        result.archivedServiceStatus === 'archived' &&
+        result.publicRedactionHits.length === 0;
+      if (!result.passed && result.failure === null) {
+        result.failure = 'h08-vercel-cleanup-gate-failed';
+      }
+    } else {
+      result.passed = false;
+      result.failure ??= 'h08-vercel-cleanup-request-failed';
+    }
+  }
   if (cookie) {
     await fetch(new URL('/client/session', BASE_URL), {
       method: 'DELETE',
