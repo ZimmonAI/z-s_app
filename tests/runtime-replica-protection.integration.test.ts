@@ -5,7 +5,7 @@ import { Pool } from 'pg';
 import type { ConfigurationDraftDocument } from '../src/client-storage-configuration.js';
 import { PostgresClientStorageConfigurationStore } from '../src/client-storage-configuration-postgres.js';
 import { PostgresActiveConfigurationResolver } from '../src/runtime-active-configuration.js';
-import { PostgresLeasedReplicaProtectionStore } from '../src/runtime-replica-protection-postgres.js';
+import { PostgresReplicaProtectionRuntimeStore } from '../src/runtime-replica-protection-store.js';
 import {
   REPLICA_PROTECTION_LIMITS,
   ReplicaProtectionError,
@@ -153,7 +153,7 @@ integrationTest('PostgreSQL repair claims are single-owner, stale-safe, and retr
     await resetThrough0010(pool);
     await seedClients(pool);
     await activate(pool);
-    const store = new PostgresLeasedReplicaProtectionStore(adaptPool(pool));
+    const store = new PostgresReplicaProtectionRuntimeStore(adaptPool(pool));
     const first = await createDegradedObject(pool, 'concurrent');
 
     const claims = await Promise.all(Array.from({ length: 6 }, (_, index) => store.claimRepair({
@@ -209,7 +209,7 @@ integrationTest('PostgreSQL retention stays blocked until protection is verified
     await resetThrough0010(pool);
     await seedClients(pool);
     await activate(pool);
-    const store = new PostgresLeasedReplicaProtectionStore(adaptPool(pool));
+    const store = new PostgresReplicaProtectionRuntimeStore(adaptPool(pool));
     const object = await createDegradedObject(pool, 'retention');
     const due = new Date(NOW.getTime() + 8 * 24 * 60 * 60_000);
 
