@@ -6,14 +6,14 @@
       "use": "@vercel/node"
     },
     {
-      "src": "api/h06-smoke-retry.mjs",
+      "src": "api/h06-smoke-final.mjs",
       "use": "@vercel/node"
     }
   ],
   "routes": [
     {
-      "src": "/__h06-vercel-smoke-retry-20260807",
-      "dest": "/api/h06-smoke-retry.mjs"
+      "src": "/__h06-vercel-smoke-final-20260807",
+      "dest": "/api/h06-smoke-final.mjs"
     },
     {
       "src": "/(.*)",
