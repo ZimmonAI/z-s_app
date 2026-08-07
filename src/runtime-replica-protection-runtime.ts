@@ -8,9 +8,9 @@ import {
 } from './runtime-integration-token-auth.js';
 import {
   BoundedReplicaProtectionWorker,
-  PostgresReplicaProtectionStore,
   ReplicaProtectionError,
 } from './runtime-replica-protection.js';
+import { PostgresLeasedReplicaProtectionStore } from './runtime-replica-protection-postgres.js';
 import {
   S3CompatibleProviderObjectReader,
 } from './runtime-read-delivery.js';
@@ -150,7 +150,7 @@ export function createReplicaProtectionRuntimeComposition(input: Readonly<{
       async close(): Promise<void> {},
     });
   }
-  const store = new PostgresReplicaProtectionStore(pool);
+  const store = new PostgresLeasedReplicaProtectionStore(pool);
   const worker = new BoundedReplicaProtectionWorker({
     store,
     reader: new S3CompatibleProviderObjectReader({ credentialResolver: input.credentialResolver }),
