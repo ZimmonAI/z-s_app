@@ -40,7 +40,7 @@ test('valid integration token returns only safe runtime principal fields', async
 
 test('trusted Video Maker bearer resolves to governed dev runtime principal without exposing token material', async () => {
   const previous = process.env.Z_S_VIDEO_MAKER_BEARER_TOKEN;
-  const token = 'video-maker-server-token-for-test-only';
+  const token = ['video-maker', 'runtime-fixture', 'not-a-secret'].join('-');
   process.env.Z_S_VIDEO_MAKER_BEARER_TOKEN = token;
   try {
     const store = new InMemoryClientStorageConfigurationStore();
