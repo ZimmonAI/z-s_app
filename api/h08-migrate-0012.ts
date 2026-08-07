@@ -14,7 +14,7 @@ function json(body: unknown, status = 200): Response {
 }
 
 export default async function handler(request: Request): Promise<Response> {
-  const url = new URL(request.url);
+  const url = new URL(request.url, 'https://internal.invalid');
   if (request.method !== 'GET' || url.searchParams.get('confirm') !== 'apply-0012') {
     return json({ error: { code: 'migration-confirmation-required' } }, 400);
   }
