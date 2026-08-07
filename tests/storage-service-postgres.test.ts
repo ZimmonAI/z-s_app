@@ -41,7 +41,7 @@ test('storage service lifecycle status query types timestamp parameters explicit
             last_diagnostic_code: 'r2-connection-test-failed',
             created_at: now,
             updated_at: now,
-          } as Row],
+          } as unknown as Row],
           rowCount: 1,
         };
       }
