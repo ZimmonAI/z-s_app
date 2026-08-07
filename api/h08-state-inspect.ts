@@ -45,6 +45,54 @@ export default async function handler(request: RequestLike, response: ResponseLi
   });
 
   try {
+    if (url.searchParams.get('mode') === 'probe-archive') {
+      const serviceId = url.searchParams.get('serviceId')?.trim() ?? '';
+      if (!/^h08-vercel-negative-[a-z0-9]{8}$/.test(serviceId)) {
+        sendJson(response, { error: { code: 'service-id-invalid' } }, 400);
+        return;
+      }
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await client.query(`
+          UPDATE public.storage_control_storage_services AS services
+          SET status = 'archived',
+              disabled_at = NULL,
+              archived_at = clock_timestamp(),
+              updated_at = clock_timestamp()
+          WHERE services.service_id = $1
+          RETURNING services.service_id
+        `, [serviceId]);
+        await client.query('ROLLBACK');
+        sendJson(response, {
+          result: {
+            serviceId,
+            archiveUpdateWouldSucceed: result.rowCount === 1,
+          },
+        });
+        return;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        const candidate = error as {
+          code?: unknown;
+          constraint?: unknown;
+          message?: unknown;
+        };
+        sendJson(response, {
+          result: {
+            serviceId,
+            archiveUpdateWouldSucceed: false,
+            sqlstate: typeof candidate.code === 'string' ? candidate.code : null,
+            constraint: typeof candidate.constraint === 'string' ? candidate.constraint : null,
+            message: typeof candidate.message === 'string' ? candidate.message : null,
+          },
+        });
+        return;
+      } finally {
+        client.release();
+      }
+    }
+
     const services = await pool.query(`
       SELECT
         services.service_id,
