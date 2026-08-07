@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import test from 'node:test';
 import { Pool } from 'pg';
 import type { ConfigurationDraftDocument } from '../src/client-storage-configuration.js';
 import { PostgresClientStorageConfigurationStore } from '../src/client-storage-configuration-postgres.js';
