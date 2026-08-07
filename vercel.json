@@ -4,9 +4,17 @@
     {
       "src": "api/index.ts",
       "use": "@vercel/node"
+    },
+    {
+      "src": "api/h06-smoke-retry.mjs",
+      "use": "@vercel/node"
     }
   ],
   "routes": [
+    {
+      "src": "/__h06-vercel-smoke-retry-20260807",
+      "dest": "/api/h06-smoke-retry.mjs"
+    },
     {
       "src": "/(.*)",
       "dest": "/api/index.ts"
