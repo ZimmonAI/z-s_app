@@ -1,0 +1,107 @@
+import { readFile } from 'node:fs/promises';
+import pg from 'pg';
+
+const { Pool } = pg;
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+    },
+  });
+}
+
+export default async function handler(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return json({ error: { code: 'method-not-allowed' } }, 405);
+  }
+
+  const connectionString = process.env.Z_S_POSTGRES_URL?.trim();
+  if (!connectionString) {
+    return json({ error: { code: 'postgres-url-not-configured' } }, 503);
+  }
+
+  const pool = new Pool({
+    connectionString,
+    max: 1,
+    connectionTimeoutMillis: 5_000,
+    idleTimeoutMillis: 5_000,
+    application_name: 'h08-0012-migration-executor',
+  });
+
+  try {
+    const before = await pool.query(`
+      SELECT
+        to_regclass('public.storage_control_storage_services') IS NOT NULL AS services,
+        to_regclass('public.storage_control_provider_secrets') IS NOT NULL AS secrets,
+        to_regclass('public.storage_control_storage_service_events') IS NOT NULL AS events,
+        EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'storage_control_provider_connections'
+            AND column_name = 'storage_service_id'
+        ) AS connection_column
+    `);
+
+    const state = before.rows[0];
+    const alreadyApplied = Boolean(
+      state?.services && state?.secrets && state?.events && state?.connection_column,
+    );
+
+    if (!alreadyApplied) {
+      const migration = await readFile(
+        new URL('../db/migrations/0012_z_s_storage_services.sql', import.meta.url),
+        'utf8',
+      );
+      await pool.query(migration);
+    }
+
+    const after = await pool.query(`
+      SELECT
+        to_regclass('public.storage_control_storage_services') IS NOT NULL AS services,
+        to_regclass('public.storage_control_provider_secrets') IS NOT NULL AS secrets,
+        to_regclass('public.storage_control_storage_service_events') IS NOT NULL AS events,
+        EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'storage_control_provider_connections'
+            AND column_name = 'storage_service_id'
+        ) AS connection_column
+    `);
+
+    const verified = after.rows[0];
+    const complete = Boolean(
+      verified?.services && verified?.secrets && verified?.events && verified?.connection_column,
+    );
+
+    return json({
+      result: {
+        migration: '0012_z_s_storage_services',
+        appliedNow: !alreadyApplied,
+        alreadyApplied,
+        verified: complete,
+        objects: {
+          storageControlStorageServices: Boolean(verified?.services),
+          storageControlProviderSecrets: Boolean(verified?.secrets),
+          storageControlStorageServiceEvents: Boolean(verified?.events),
+          providerConnectionStorageServiceId: Boolean(verified?.connection_column),
+        },
+      },
+    }, complete ? 200 : 500);
+  } catch (error) {
+    const candidate = error as { code?: unknown; message?: unknown };
+    return json({
+      error: {
+        code: 'migration-0012-failed',
+        sqlstate: typeof candidate?.code === 'string' ? candidate.code : null,
+        message: typeof candidate?.message === 'string' ? candidate.message : 'migration failed',
+      },
+    }, 500);
+  } finally {
+    await pool.end().catch(() => undefined);
+  }
+}
