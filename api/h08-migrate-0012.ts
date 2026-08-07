@@ -21,6 +21,43 @@ function sendJson(response: ResponseLike, body: unknown, status = 200): void {
   response.end(JSON.stringify(body));
 }
 
+async function inspect(pool: pg.Pool) {
+  const result = await pool.query(`
+    SELECT
+      (
+        SELECT count(*)::integer
+        FROM pg_class AS c
+        JOIN pg_namespace AS n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+      ) AS public_table_count,
+      to_regclass('public.storage_image_derivative_jobs') IS NOT NULL AS derivative_jobs,
+      to_regclass('public.storage_image_derivative_outputs') IS NOT NULL AS derivative_outputs,
+      EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'storage_objects'
+          AND column_name = 'image_derivative_job_id'
+      ) AS storage_objects_derivative_column,
+      EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'storage_object_copies'
+          AND column_name = 'image_derivative_job_id'
+      ) AS storage_copies_derivative_column,
+      to_regclass('public.storage_control_storage_services') IS NOT NULL AS storage_services,
+      to_regclass('public.storage_control_provider_secrets') IS NOT NULL AS provider_secrets,
+      to_regclass('public.storage_control_storage_service_events') IS NOT NULL AS storage_service_events,
+      EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'storage_control_provider_connections'
+          AND column_name = 'storage_service_id'
+      ) AS provider_connection_service_column
+  `);
+  return result.rows[0];
+}
+
 export default async function handler(
   request: RequestLike,
   response: ResponseLike,
@@ -42,109 +79,66 @@ export default async function handler(
     max: 1,
     connectionTimeoutMillis: 5_000,
     idleTimeoutMillis: 5_000,
-    application_name: 'h08-schema-inspect-and-0012-migration',
+    application_name: 'h08-guarded-migration-executor',
   });
 
   try {
-    if (url.searchParams.get('mode') === 'inspect') {
-      const result = await pool.query(`
-        SELECT
-          (
-            SELECT count(*)::integer
-            FROM pg_class AS c
-            JOIN pg_namespace AS n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'public'
-              AND c.relkind = 'r'
-          ) AS public_table_count,
-          to_regclass('public.storage_control_clients') IS NOT NULL AS storage_control_clients,
-          to_regclass('public.storage_control_provider_connections') IS NOT NULL AS storage_control_provider_connections,
-          to_regclass('public.storage_control_configuration_versions') IS NOT NULL AS storage_control_configuration_versions,
-          to_regclass('public.storage_control_configuration_vaults') IS NOT NULL AS storage_control_configuration_vaults,
-          to_regclass('public.storage_control_configuration_image_presets') IS NOT NULL AS storage_control_configuration_image_presets,
-          to_regclass('public.storage_control_configuration_routes') IS NOT NULL AS storage_control_configuration_routes,
-          to_regclass('public.storage_control_configuration_route_targets') IS NOT NULL AS storage_control_configuration_route_targets,
-          to_regclass('public.storage_objects') IS NOT NULL AS storage_objects,
-          to_regclass('public.storage_object_copies') IS NOT NULL AS storage_object_copies,
-          to_regclass('public.storage_image_derivative_jobs') IS NOT NULL AS storage_image_derivative_jobs,
-          to_regclass('public.storage_image_derivative_outputs') IS NOT NULL AS storage_image_derivative_outputs,
-          to_regclass('public.storage_control_storage_services') IS NOT NULL AS storage_control_storage_services,
-          to_regclass('public.storage_control_provider_secrets') IS NOT NULL AS storage_control_provider_secrets,
-          to_regclass('public.storage_control_storage_service_events') IS NOT NULL AS storage_control_storage_service_events,
-          EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'storage_objects'
-              AND column_name = 'configuration_version_id'
-          ) AS storage_objects_configuration_version_id,
-          EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'storage_objects'
-              AND column_name = 'configuration_fingerprint'
-          ) AS storage_objects_configuration_fingerprint,
-          EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'storage_objects'
-              AND column_name = 'configuration_route_id'
-          ) AS storage_objects_configuration_route_id,
-          EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'storage_object_copies'
-              AND column_name = 'configuration_route_target_id'
-          ) AS storage_object_copies_configuration_route_target_id,
-          EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'storage_object_copies'
-              AND column_name = 'configuration_vault_id'
-          ) AS storage_object_copies_configuration_vault_id,
-          EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'storage_object_copies'
-              AND column_name = 'provider_connection_id'
-          ) AS storage_object_copies_provider_connection_id,
-          EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'storage_object_copies'
-              AND column_name = 'target_role'
-          ) AS storage_object_copies_target_role,
-          EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'storage_object_copies'
-              AND column_name = 'target_order'
-          ) AS storage_object_copies_target_order
-      `);
-      sendJson(response, { result: result.rows[0] });
+    const mode = url.searchParams.get('mode');
+    const confirm = url.searchParams.get('confirm');
+
+    if (mode === 'inspect') {
+      sendJson(response, { result: await inspect(pool) });
       return;
     }
 
-    if (url.searchParams.get('confirm') !== 'apply-0012') {
+    if (confirm !== 'apply-0011' && confirm !== 'apply-0012') {
       sendJson(response, { error: { code: 'migration-confirmation-required' } }, 400);
       return;
     }
 
-    const before = await pool.query(`
-      SELECT
-        to_regclass('public.storage_control_storage_services') IS NOT NULL AS services,
-        to_regclass('public.storage_control_provider_secrets') IS NOT NULL AS secrets,
-        to_regclass('public.storage_control_storage_service_events') IS NOT NULL AS events,
-        EXISTS (
-          SELECT 1
-          FROM information_schema.columns
-          WHERE table_schema = 'public'
-            AND table_name = 'storage_control_provider_connections'
-            AND column_name = 'storage_service_id'
-        ) AS connection_column
-    `);
+    const before = await inspect(pool);
 
-    const state = before.rows[0];
+    if (confirm === 'apply-0011') {
+      const alreadyApplied = Boolean(
+        before?.derivative_jobs &&
+        before?.derivative_outputs &&
+        before?.storage_objects_derivative_column &&
+        before?.storage_copies_derivative_column,
+      );
+
+      if (!alreadyApplied) {
+        const migration = await readFile(
+          new URL('../db/migrations/0011_z_s_image_derivatives.sql', import.meta.url),
+          'utf8',
+        );
+        await pool.query(migration);
+      }
+
+      const after = await inspect(pool);
+      const verified = Boolean(
+        after?.derivative_jobs &&
+        after?.derivative_outputs &&
+        after?.storage_objects_derivative_column &&
+        after?.storage_copies_derivative_column,
+      );
+
+      sendJson(response, {
+        result: {
+          migration: '0011_z_s_image_derivatives',
+          appliedNow: !alreadyApplied,
+          alreadyApplied,
+          verified,
+          publicTableCount: after?.public_table_count ?? null,
+        },
+      }, verified ? 200 : 500);
+      return;
+    }
+
     const alreadyApplied = Boolean(
-      state?.services && state?.secrets && state?.events && state?.connection_column,
+      before?.storage_services &&
+      before?.provider_secrets &&
+      before?.storage_service_events &&
+      before?.provider_connection_service_column,
     );
 
     if (!alreadyApplied) {
@@ -155,23 +149,12 @@ export default async function handler(
       await pool.query(migration);
     }
 
-    const after = await pool.query(`
-      SELECT
-        to_regclass('public.storage_control_storage_services') IS NOT NULL AS services,
-        to_regclass('public.storage_control_provider_secrets') IS NOT NULL AS secrets,
-        to_regclass('public.storage_control_storage_service_events') IS NOT NULL AS events,
-        EXISTS (
-          SELECT 1
-          FROM information_schema.columns
-          WHERE table_schema = 'public'
-            AND table_name = 'storage_control_provider_connections'
-            AND column_name = 'storage_service_id'
-        ) AS connection_column
-    `);
-
-    const verified = after.rows[0];
-    const complete = Boolean(
-      verified?.services && verified?.secrets && verified?.events && verified?.connection_column,
+    const after = await inspect(pool);
+    const verified = Boolean(
+      after?.storage_services &&
+      after?.provider_secrets &&
+      after?.storage_service_events &&
+      after?.provider_connection_service_column,
     );
 
     sendJson(response, {
@@ -179,15 +162,10 @@ export default async function handler(
         migration: '0012_z_s_storage_services',
         appliedNow: !alreadyApplied,
         alreadyApplied,
-        verified: complete,
-        objects: {
-          storageControlStorageServices: Boolean(verified?.services),
-          storageControlProviderSecrets: Boolean(verified?.secrets),
-          storageControlStorageServiceEvents: Boolean(verified?.events),
-          providerConnectionStorageServiceId: Boolean(verified?.connection_column),
-        },
+        verified,
+        publicTableCount: after?.public_table_count ?? null,
       },
-    }, complete ? 200 : 500);
+    }, verified ? 200 : 500);
   } catch (error) {
     const candidate = error as { code?: unknown; message?: unknown };
     sendJson(response, {
