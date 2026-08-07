@@ -3,25 +3,38 @@ import pg from 'pg';
 
 const { Pool } = pg;
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store',
-    },
-  });
+type RequestLike = Readonly<{
+  method?: string;
+  url?: string;
+}>;
+
+type ResponseLike = {
+  statusCode: number;
+  setHeader(name: string, value: string): void;
+  end(body?: string): void;
+};
+
+function sendJson(response: ResponseLike, body: unknown, status = 200): void {
+  response.statusCode = status;
+  response.setHeader('content-type', 'application/json; charset=utf-8');
+  response.setHeader('cache-control', 'no-store');
+  response.end(JSON.stringify(body));
 }
 
-export default async function handler(request: Request): Promise<Response> {
-  const url = new URL(request.url, 'https://internal.invalid');
+export default async function handler(
+  request: RequestLike,
+  response: ResponseLike,
+): Promise<void> {
+  const url = new URL(request.url ?? '/', 'https://internal.invalid');
   if (request.method !== 'GET' || url.searchParams.get('confirm') !== 'apply-0012') {
-    return json({ error: { code: 'migration-confirmation-required' } }, 400);
+    sendJson(response, { error: { code: 'migration-confirmation-required' } }, 400);
+    return;
   }
 
   const connectionString = process.env.Z_S_POSTGRES_URL?.trim();
   if (!connectionString) {
-    return json({ error: { code: 'postgres-url-not-configured' } }, 503);
+    sendJson(response, { error: { code: 'postgres-url-not-configured' } }, 503);
+    return;
   }
 
   const pool = new Pool({
@@ -79,7 +92,7 @@ export default async function handler(request: Request): Promise<Response> {
       verified?.services && verified?.secrets && verified?.events && verified?.connection_column,
     );
 
-    return json({
+    sendJson(response, {
       result: {
         migration: '0012_z_s_storage_services',
         appliedNow: !alreadyApplied,
@@ -95,7 +108,7 @@ export default async function handler(request: Request): Promise<Response> {
     }, complete ? 200 : 500);
   } catch (error) {
     const candidate = error as { code?: unknown; message?: unknown };
-    return json({
+    sendJson(response, {
       error: {
         code: 'migration-0012-failed',
         sqlstate: typeof candidate?.code === 'string' ? candidate.code : null,
