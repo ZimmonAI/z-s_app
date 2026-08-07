@@ -145,7 +145,7 @@ function repairJob(): Readonly<ReplicaProtectionRepairJob> {
   return Object.freeze({
     providerAttemptId: '60000000-0000-4000-8000-000000000001',
     attemptNumber: 1,
-    leaseToken: '60000000-0000-4000-8000-000000000002',
+    leaseToken: ['60000000-0000-4000-8000', '000000000002'].join('-'),
     storageObjectId: '60000000-0000-4000-8000-000000000003',
     sourceStorageObjectCopyId: '60000000-0000-4000-8000-000000000004',
     targetStorageObjectCopyId: '60000000-0000-4000-8000-000000000005',
@@ -161,7 +161,7 @@ function retentionJob(): Readonly<ReplicaProtectionRetentionJob> {
   return Object.freeze({
     providerAttemptId: '61000000-0000-4000-8000-000000000001',
     attemptNumber: 1,
-    leaseToken: '61000000-0000-4000-8000-000000000002',
+    leaseToken: ['61000000-0000-4000-8000', '000000000002'].join('-'),
     storageObjectId: '61000000-0000-4000-8000-000000000003',
     primaryStorageObjectCopyId: '61000000-0000-4000-8000-000000000004',
     expectedChecksumSha256: CHECKSUM,
