@@ -35,7 +35,7 @@ function configuredCopy(role: 'primary' | 'replica', order: number, suffix: numb
     providerConnectionId: `54000000-0000-4000-8000-00000000000${suffix}`,
     role,
     order,
-    providerType: suffix === 1 ? 'minio' : 'r2',
+    providerType: role === 'primary' ? 'r2' : 'minio',
     bucketLabel: `private-bucket-${suffix}`,
     prefixTemplate: `client/video/${suffix}/*`,
     secretReferenceId: `vault:z-s:${suffix}`,
@@ -49,6 +49,7 @@ class ConfiguredRegistryHarness {
   beginCalls = 0;
   completeCalls = 0;
   abortCalls = 0;
+  copies: readonly Readonly<ConfiguredProviderCopyExecutionContext>[] = [];
   outcomes: readonly Readonly<{ configurationRouteTargetId: string; outcome: Readonly<DualProviderWriteOutcome> }>[] = [];
 
   readonly registry = {
@@ -60,6 +61,7 @@ class ConfiguredRegistryHarness {
       copies: readonly Readonly<ConfiguredProviderCopyExecutionContext>[];
     }): Promise<Readonly<ConfiguredProviderAttemptReservation>> => {
       this.beginCalls += 1;
+      this.copies = Object.freeze([...input.copies].sort((left, right) => left.order - right.order));
       return Object.freeze({
         objectWriteIntentId: input.objectWriteIntentId,
         storageObjectId: input.storageObjectId,
@@ -81,8 +83,16 @@ class ConfiguredRegistryHarness {
     }) => {
       this.completeCalls += 1;
       this.outcomes = input.outcomes;
-      const primary = input.outcomes[0]?.outcome;
-      const replicasReady = input.outcomes.slice(1).every((entry) => entry.outcome.state === 'verified');
+      const outcomeByTarget = new Map(
+        input.outcomes.map((entry) => [entry.configurationRouteTargetId, entry.outcome] as const),
+      );
+      const primaryCopy = this.copies.find((copy) => copy.role === 'primary');
+      const primary = primaryCopy === undefined
+        ? undefined
+        : outcomeByTarget.get(primaryCopy.configurationRouteTargetId);
+      const replicasReady = this.copies
+        .filter((copy) => copy.role === 'replica')
+        .every((copy) => outcomeByTarget.get(copy.configurationRouteTargetId)?.state === 'verified');
       const storageState = primary?.state !== 'verified' ? 'unavailable' : replicasReady ? 'ready' : 'degraded';
       return Object.freeze({
         storageObjectId: input.reservation.storageObjectId,
@@ -101,12 +111,15 @@ class ConfiguredRegistryHarness {
             : 'configuration-primary-write-failed',
         storageState,
         verifiedMedia: Object.freeze({ mediaType: 'application/octet-stream', mediaFamily: 'image' as const }),
-        targetCopies: Object.freeze(input.outcomes.map((entry, index) => Object.freeze({
-          role: index === 0 ? 'primary' as const : 'replica' as const,
-          order: index,
-          state: entry.outcome.state,
-          retryable: entry.outcome.retryable,
-        }))),
+        targetCopies: Object.freeze(this.copies.map((copy) => {
+          const outcome = outcomeByTarget.get(copy.configurationRouteTargetId);
+          return Object.freeze({
+            role: copy.role,
+            order: copy.order,
+            state: outcome?.state ?? 'failed',
+            retryable: outcome?.retryable ?? true,
+          });
+        })),
       });
     },
     abortConfiguredProviderWrite: async () => { this.abortCalls += 1; },
@@ -154,26 +167,26 @@ function ingestInput(copies: readonly Readonly<ConfiguredProviderCopyExecutionCo
   });
 }
 
-test('configured execution writes primary first and replicas in ascending persisted order', async () => {
+test('configured upload writes only the primary and returns degraded while replicas remain durable repair work', async () => {
   const registry = new ConfiguredRegistryHarness();
   const { writer, writes } = writerHarness();
   const copies = [configuredCopy('replica', 2, 3), configuredCopy('primary', 0, 1), configuredCopy('replica', 1, 2)];
   const adapter = new DualProviderObjectIngestAdapter({ registry: registry.registry, writer, mediaVerifier, resolveTarget: { resolve: () => { throw new Error('legacy resolver must not run'); } } });
   const receipt = await adapter.ingest(ingestInput(copies));
-  assert.deepEqual(writes, [
-    '54000000-0000-4000-8000-000000000001',
-    '54000000-0000-4000-8000-000000000002',
-    '54000000-0000-4000-8000-000000000003',
+  assert.deepEqual(writes, ['54000000-0000-4000-8000-000000000001']);
+  assert.equal(receipt.completionResult?.storageState, 'degraded');
+  assert.equal(receipt.completionResult?.objectProtectionStage, 'configuration-replica-repair-required');
+  assert.deepEqual(receipt.completionResult?.targetCopies?.map((copy) => [copy.role, copy.order, copy.state]), [
+    ['primary', 0, 'verified'],
+    ['replica', 1, 'failed'],
+    ['replica', 2, 'failed'],
   ]);
-  assert.equal(receipt.completionResult?.storageState, 'ready');
-  assert.deepEqual(receipt.completionResult?.targetCopies?.map((copy) => [copy.role, copy.order]), [
-    ['primary', 0], ['replica', 1], ['replica', 2],
-  ]);
+  assert.equal(registry.outcomes.length, 1);
   assert.equal(JSON.stringify(receipt).includes('private-bucket'), false);
   assert.equal(JSON.stringify(receipt).includes('vault:z-s'), false);
 });
 
-test('primary failure fails upload before any replica write', async () => {
+test('primary failure fails upload before any replica work can succeed', async () => {
   const registry = new ConfiguredRegistryHarness();
   const { writer, writes } = writerHarness(['54000000-0000-4000-8000-000000000001']);
   const copies = [configuredCopy('primary', 0, 1), configuredCopy('replica', 1, 2)];
@@ -185,14 +198,17 @@ test('primary failure fails upload before any replica write', async () => {
   assert.deepEqual(writes, ['54000000-0000-4000-8000-000000000001']);
   assert.equal(registry.completeCalls, 1);
   assert.equal(registry.abortCalls, 0);
+  assert.equal(registry.outcomes.length, 1);
+  assert.equal(registry.outcomes[0]?.outcome.state, 'failed');
 });
 
-test('replica failure records degraded result and leaves primary verified', async () => {
+test('replica provider unavailability cannot affect the primary upload request path', async () => {
   const registry = new ConfiguredRegistryHarness();
-  const { writer } = writerHarness(['54000000-0000-4000-8000-000000000002']);
+  const { writer, writes } = writerHarness(['54000000-0000-4000-8000-000000000002']);
   const copies = [configuredCopy('primary', 0, 1), configuredCopy('replica', 1, 2)];
   const adapter = new DualProviderObjectIngestAdapter({ registry: registry.registry, writer, mediaVerifier, resolveTarget: { resolve: () => { throw new Error('legacy resolver must not run'); } } });
   const receipt = await adapter.ingest(ingestInput(copies));
+  assert.deepEqual(writes, ['54000000-0000-4000-8000-000000000001']);
   assert.equal(receipt.completionResult?.storageState, 'degraded');
   assert.deepEqual(receipt.completionResult?.targetCopies?.map((copy) => copy.state), ['verified', 'failed']);
 });
