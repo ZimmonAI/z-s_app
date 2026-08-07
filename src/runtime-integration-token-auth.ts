@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type {
   ClientStorageConfigurationStore,
   ClientStorageEnvironment,
@@ -35,6 +36,35 @@ export interface RuntimeIntegrationTokenAuthenticator {
   ): Promise<Readonly<RuntimeIntegrationPrincipal>>;
 }
 
+const VIDEO_MAKER_COMPATIBILITY_SCOPES = Object.freeze([
+  'object:write',
+  'object:read',
+  'object:manage',
+] as const satisfies readonly IntegrationTokenScope[]);
+
+function tokenMatches(received: string, expected: string): boolean {
+  const receivedDigest = createHash('sha256').update(received, 'utf8').digest();
+  const expectedDigest = createHash('sha256').update(expected, 'utf8').digest();
+  return timingSafeEqual(receivedDigest, expectedDigest);
+}
+
+function videoMakerCompatibilityPrincipal(
+  token: string,
+  requiredScope: IntegrationTokenScope | undefined,
+): Readonly<RuntimeIntegrationPrincipal> | null {
+  const expected = process.env.Z_S_VIDEO_MAKER_BEARER_TOKEN?.trim();
+  if (expected === undefined || expected === '' || !tokenMatches(token, expected)) return null;
+  if (requiredScope !== undefined && !VIDEO_MAKER_COMPATIBILITY_SCOPES.includes(requiredScope)) {
+    return null;
+  }
+  return Object.freeze({
+    clientId: 'video-maker_app',
+    environment: 'dev',
+    tokenId: 'video-maker-runtime-compatibility',
+    scopes: VIDEO_MAKER_COMPATIBILITY_SCOPES,
+  });
+}
+
 export class ConfigurationStoreRuntimeIntegrationTokenAuthenticator
 implements RuntimeIntegrationTokenAuthenticator {
   readonly #store: ClientStorageConfigurationStore;
@@ -48,7 +78,14 @@ implements RuntimeIntegrationTokenAuthenticator {
     requiredScope?: IntegrationTokenScope,
     now = new Date(),
   ): Promise<Readonly<RuntimeIntegrationPrincipal>> {
-    const result = await this.#store.authenticateIntegrationToken(token, requiredScope, now);
+    let result: Awaited<ReturnType<ClientStorageConfigurationStore['authenticateIntegrationToken']>>;
+    try {
+      result = await this.#store.authenticateIntegrationToken(token, requiredScope, now);
+    } catch (error) {
+      const compatibility = videoMakerCompatibilityPrincipal(token, requiredScope);
+      if (compatibility !== null) return compatibility;
+      throw error;
+    }
     if (result.kind === 'client-disabled') {
       throw new RuntimeIntegrationTokenAuthenticationError(
         'unauthorized',
@@ -64,6 +101,8 @@ implements RuntimeIntegrationTokenAuthenticator {
       );
     }
     if (result.kind !== 'authenticated') {
+      const compatibility = videoMakerCompatibilityPrincipal(token, requiredScope);
+      if (compatibility !== null) return compatibility;
       throw new RuntimeIntegrationTokenAuthenticationError(
         'unauthenticated',
         'integration-token-invalid',

@@ -515,8 +515,6 @@ export class DualProviderObjectIngestAdapter implements ObjectIngestAdapter {
       });
     }
     const primaryCopies = copies.filter((copy) => copy.role === 'primary');
-    const replicas = copies.filter((copy) => copy.role === 'replica')
-      .sort((left, right) => left.order - right.order);
     const primary = primaryCopies[0];
     if (primaryCopies.length !== 1 || primary === undefined || primary.order !== 0 ||
         input.intentRowVersion === undefined || input.objectRowVersion === undefined) {
@@ -542,7 +540,7 @@ export class DualProviderObjectIngestAdapter implements ObjectIngestAdapter {
     };
     this.#active.set(input.objectWriteIntentId, active);
     try {
-      const directory = await mkdtemp(path.join(this.#temporaryRoot, `z-s-h03-${this.#createTemporaryId()}-`));
+      const directory = await mkdtemp(path.join(this.#temporaryRoot, `z-s-h09-${this.#createTemporaryId()}-`));
       active.directory = directory;
       const staged = await stageBody(input, directory);
       const verifiedMedia = await this.#mediaVerifier.verify({
@@ -550,58 +548,38 @@ export class DualProviderObjectIngestAdapter implements ObjectIngestAdapter {
         source: Object.freeze({ filePath: staged.filePath }),
         maximumByteLength: input.declaredByteLength,
       });
-      for (const copy of copies) {
-        active.configuredTargets?.set(copy.configurationRouteTargetId, configuredWriteTarget(copy));
-      }
-      const outcomes: Array<Readonly<{
-        configurationRouteTargetId: string;
-        outcome: Readonly<DualProviderWriteOutcome>;
-      }>> = [];
-      const execute = async (copy: Readonly<ConfiguredProviderCopyExecutionContext>) => {
-        const target = active.configuredTargets?.get(copy.configurationRouteTargetId);
-        if (target === undefined) return providerFailure(new ProviderExecutionError('internal', 'provider-target-missing', false));
-        try {
-          const receipt = await this.#writer.write({
-            target,
-            source: createReadStream(staged.filePath),
-            checksumSha256: staged.checksumSha256,
-            byteLength: staged.byteLength,
-          });
-          active.verifiedTargetIds?.add(copy.configurationRouteTargetId);
-          return verifiedOutcome(receipt);
-        } catch (error) {
-          if (error instanceof ProviderExecutionError && error.cleanupRequired) {
-            await this.#writer.cleanup({ target });
-          }
-          return providerFailure(error);
+      const target = configuredWriteTarget(primary);
+      active.configuredTargets?.set(primary.configurationRouteTargetId, target);
+      let primaryOutcome: Readonly<DualProviderWriteOutcome>;
+      try {
+        const receipt = await this.#writer.write({
+          target,
+          source: createReadStream(staged.filePath),
+          checksumSha256: staged.checksumSha256,
+          byteLength: staged.byteLength,
+        });
+        active.verifiedTargetIds?.add(primary.configurationRouteTargetId);
+        primaryOutcome = verifiedOutcome(receipt);
+      } catch (error) {
+        if (error instanceof ProviderExecutionError && error.cleanupRequired) {
+          await this.#writer.cleanup({ target });
         }
-      };
-      const primaryOutcome = await execute(primary);
-      outcomes.push(Object.freeze({
+        primaryOutcome = providerFailure(error);
+      }
+      const outcomes = Object.freeze([Object.freeze({
         configurationRouteTargetId: primary.configurationRouteTargetId,
         outcome: primaryOutcome,
-      }));
+      })]);
+      const completionResult = await complete.call(this.#registry, {
+        reservation, checksumSha256: staged.checksumSha256, byteLength: staged.byteLength,
+        verifiedMedia, outcomes,
+      });
+      this.#active.delete(input.objectWriteIntentId);
       if (primaryOutcome.state === 'failed') {
-        await complete.call(this.#registry, {
-          reservation, checksumSha256: staged.checksumSha256, byteLength: staged.byteLength,
-          verifiedMedia, outcomes: Object.freeze(outcomes),
-        });
-        this.#active.delete(input.objectWriteIntentId);
         throw new ObjectIngestRuntimeError('dependency-unavailable', 'configuration-primary-write-failed', 503, {
           retryable: primaryOutcome.retryable, failObjectWriteIntent: true,
         });
       }
-      for (const replica of replicas) {
-        outcomes.push(Object.freeze({
-          configurationRouteTargetId: replica.configurationRouteTargetId,
-          outcome: await execute(replica),
-        }));
-      }
-      const completionResult = await complete.call(this.#registry, {
-        reservation, checksumSha256: staged.checksumSha256, byteLength: staged.byteLength,
-        verifiedMedia, outcomes: Object.freeze(outcomes),
-      });
-      this.#active.delete(input.objectWriteIntentId);
       return Object.freeze({
         state: 'accepted', checksumSha256: staged.checksumSha256, byteLength: staged.byteLength,
         completionResult,

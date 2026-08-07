@@ -10,6 +10,7 @@ import {
   createVideoMakerRuntimeComposition,
   type VideoMakerRuntimeComposition,
 } from './runtime-local-composition.js';
+import { createReplicaProtectionRuntimeComposition } from './runtime-replica-protection-runtime.js';
 import type { StorageServiceApplicationService } from './storage-service-application.js';
 import { createStorageServiceRuntime } from './storage-service-runtime.js';
 
@@ -56,18 +57,25 @@ export function createVideoMakerControlRuntimeComposition(
     environment,
     clientControl.credentialResolver,
   );
+  const applicationRuntime = controlRuntime(
+    composition.runtime,
+    environment,
+    clientControl.authenticator,
+    clientControl.configurationStore,
+    clientControl.storageService,
+    clientControl.imageDerivativeStore,
+    clientControl.imageDerivativeWorker,
+  );
+  const protection = createReplicaProtectionRuntimeComposition({
+    runtime: applicationRuntime,
+    environment,
+    credentialResolver: clientControl.credentialResolver,
+    configurationStore: clientControl.configurationStore,
+  });
   return Object.freeze({
-    runtime: controlRuntime(
-      composition.runtime,
-      environment,
-      clientControl.authenticator,
-      clientControl.configurationStore,
-      clientControl.storageService,
-      clientControl.imageDerivativeStore,
-      clientControl.imageDerivativeWorker,
-    ),
+    runtime: protection.runtime,
     close: async () => {
-      await Promise.all([composition.close(), clientControl.close()]);
+      await Promise.all([composition.close(), clientControl.close(), protection.close()]);
     },
   });
 }

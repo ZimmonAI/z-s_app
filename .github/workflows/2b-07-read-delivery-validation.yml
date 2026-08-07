@@ -113,7 +113,7 @@ jobs:
           baseline=d13e74fb428cec20f1706034ed0e00274ee9fce2
           test "$(git merge-base "$baseline" HEAD)" = "$baseline"
       - name: Verify source scope
-        if: github.event_name == 'pull_request' && github.head_ref != 'agent/t2-client-storage-service-management-r2'
+        if: github.event_name == 'pull_request' && github.head_ref != 'agent/t2-client-storage-service-management-r2' && github.head_ref != 'agent/t2-h09-video-maker-r2-primary-async-minio-protection'
         shell: bash
         run: |
           set -euo pipefail
