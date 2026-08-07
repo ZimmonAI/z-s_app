@@ -1,2 +1,0 @@
-Redeploy production after updating Z_S_POSTGRES_URL for Aiven TLS compatibility.
-Triggered at 2026-08-07T07:00:00+07:00.
