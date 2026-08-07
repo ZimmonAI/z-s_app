@@ -50,9 +50,9 @@ function snapshot(
     storageObjectCopyId: copy.storageObjectCopyId,
     providerRole: role,
     state: copy.state,
-    observedChecksumSha256: copy.observedChecksumSha256,
-    observedByteLength: copy.observedByteLength,
-    latestVerifiedAt: copy.latestVerifiedAt,
+    observedChecksumSha256: copy.observedChecksumSha256 ?? CHECKSUM,
+    observedByteLength: copy.observedByteLength ?? 10,
+    latestVerifiedAt: copy.latestVerifiedAt ?? '2026-08-01T00:00:00.000Z',
     target: Object.freeze({ ...copy.target, providerRole: role }),
   });
   return Object.freeze({
