@@ -346,9 +346,15 @@ RETURNING
     const result = await this.#queryable.query<StorageServiceRow>(`
 UPDATE public.storage_control_storage_services AS services
 SET status = $4,
-    disabled_at = CASE WHEN $4 = 'disabled' THEN $5 ELSE NULL END,
-    archived_at = CASE WHEN $4 = 'archived' THEN $5 ELSE NULL END,
-    updated_at = $5
+    disabled_at = CASE
+      WHEN $4 = 'disabled' THEN $5::timestamptz
+      ELSE NULL::timestamptz
+    END,
+    archived_at = CASE
+      WHEN $4 = 'archived' THEN $5::timestamptz
+      ELSE NULL::timestamptz
+    END,
+    updated_at = $5::timestamptz
 FROM public.storage_control_clients AS clients
 WHERE clients.id = services.storage_control_client_id
   AND clients.client_id = $1
