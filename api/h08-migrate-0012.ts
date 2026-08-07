@@ -14,8 +14,9 @@ function json(body: unknown, status = 200): Response {
 }
 
 export default async function handler(request: Request): Promise<Response> {
-  if (request.method !== 'POST') {
-    return json({ error: { code: 'method-not-allowed' } }, 405);
+  const url = new URL(request.url);
+  if (request.method !== 'GET' || url.searchParams.get('confirm') !== 'apply-0012') {
+    return json({ error: { code: 'migration-confirmation-required' } }, 400);
   }
 
   const connectionString = process.env.Z_S_POSTGRES_URL?.trim();
